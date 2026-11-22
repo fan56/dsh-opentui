@@ -668,3 +668,104 @@ describe('ADR-0011 Q3/T7 — always grant is reachable through the real answerer
     expect(h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId)).toHaveLength(2)
   })
 })
+
+describe('C2 (2026-11-22 拍板) — always-grant scope covers the parent and all its subagents', () => {
+  // "父会话管到底": askTarget() resolves a registered child ask onto the
+  // parent channel, so the grant key is ALWAYS the parent session. A parent
+  // grant silently covers every registered child of the same tool; a child
+  // card answered 'always' writes (parent, tool); the fail-closed routing gate
+  // (unknown / foreign child) is NOT widened by any grant.
+  const CHILD = 'grant-child-1'
+  const SIBLING = 'grant-child-2'
+
+  function registerChild(h: Harness, childId: string, parent: string): void {
+    h.emitSessionEvent({ id: parent }, { type: 'subagent/catalog', data: { childId, childCreatedAt: 1 } })
+  }
+
+  /** Establish an always grant on `sessionId` through the REAL answerer path. */
+  async function grantAlways(h: Harness, sessionId: string, toolName: string, id: number): Promise<void> {
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, { toolName }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId).at(-1)!.payload
+    expect(ask.escalation).toBe(true)
+    h.send({
+      id, method: 'ask.response',
+      params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once', behavior: 'always', escalation: true },
+    })
+    expect((await h.waitFor(id)).ok).toBe(true)
+    expect(await mustSettle(pending, 'grant setup')).toBe('allowed-once')
+    expect(h.registry.hasGrant(sessionId, toolName)).toBe(true)
+  }
+
+  test('parent always-grant silently covers a registered child same-tool ask (no card)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+    await grantAlways(h, parent, 'bash', 100)
+
+    const cardCountBefore = h.askFrames('ask.request').length
+    const pendingBefore = h.registry.pendingCount()
+    const childAsk = h.emitHost('approval/request', approvalReq(CHILD, { toolName: 'bash' }))[0]
+    expect(await mustSettle(childAsk, 'child covered by parent grant')).toBe('allowed-once')
+    // Grant-hit path: no new card, no new pending ask, not a fail-closed settle.
+    expect(h.askFrames('ask.request')).toHaveLength(cardCountBefore)
+    expect(h.registry.pendingCount()).toBe(pendingBefore)
+    expect(h.registry.settlements().some((s) => s.code === ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)).toBe(false)
+  })
+
+  test('child ask answered always writes the grant to the parent key (parent + sibling inherit)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+    registerChild(h, SIBLING, parent)
+
+    // The child card is delivered on the parent channel; 'always' on it must
+    // write (parent, 'bash'), not (child, 'bash').
+    const childAsk = h.emitHost('approval/request', approvalReq(CHILD, { toolName: 'bash' }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').filter((f) => f.payload.childSessionId === CHILD).at(-1)!.payload
+    expect(ask.sessionId).toBe(parent)
+    h.send({
+      id: 101, method: 'ask.response',
+      params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once', behavior: 'always', escalation: true },
+    })
+    expect((await h.waitFor(101)).ok).toBe(true)
+    expect(await mustSettle(childAsk, 'child always → host')).toBe('allowed-once')
+    expect(h.registry.hasGrant(parent, 'bash')).toBe(true)
+    expect(h.registry.hasGrant(CHILD, 'bash')).toBe(false)
+    expect(h.registry.sessionGrants(parent)).toContain('bash')
+
+    // The same tool on the parent now short-circuits: no new card.
+    let cards = h.askFrames('ask.request').length
+    const parentAsk = h.emitHost('approval/request', approvalReq(parent, { toolName: 'bash' }))[0]
+    expect(await mustSettle(parentAsk, 'parent inherits child grant')).toBe('allowed-once')
+    expect(h.askFrames('ask.request')).toHaveLength(cards)
+
+    // A sibling child of the same parent inherits it too.
+    cards = h.askFrames('ask.request').length
+    const siblingAsk = h.emitHost('approval/request', approvalReq(SIBLING, { toolName: 'bash' }))[0]
+    expect(await mustSettle(siblingAsk, 'sibling inherits child grant')).toBe('allowed-once')
+    expect(h.askFrames('ask.request')).toHaveLength(cards)
+  })
+
+  test('grant never widens fail-closed: foreign-parent and unregistered children stay unavailable', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    await grantAlways(h, parent, 'bash', 100)
+    expect(h.registry.hasGrant(parent, 'bash')).toBe(true)
+
+    // A child of a DIFFERENT parent is foreign to this binding even when this
+    // parent has granted the tool — the routing gate is consulted first.
+    getSubagentIndex(h.ctx).noteCatalog('foreign-child', 'other-parent')
+    const foreign = h.emitHost('approval/request', approvalReq('foreign-child', { toolName: 'bash' }))[0]
+    expect(await mustSettle(foreign, 'foreign child despite grant')).toBe('unavailable')
+
+    // An unregistered child stays unknown, grant or no grant.
+    const unknown = h.emitHost('approval/request', approvalReq('never-registered', { toolName: 'bash' }))[0]
+    expect(await mustSettle(unknown, 'unknown child despite grant')).toBe('unavailable')
+
+    expect(h.askFrames('ask.request').filter((f) => f.payload.childSessionId !== undefined)).toHaveLength(0)
+    const failClosed = h.registry.settlements().filter((s) => s.code === ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)
+    expect(failClosed).toHaveLength(2)
+  })
+})
