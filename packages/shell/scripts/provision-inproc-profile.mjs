@@ -6,9 +6,11 @@
 // Invoked by the launcher on EVERY start (S6: bridge is the sole seam; the
 // former env escape hatch that skipped provisioning is removed with it).
 // The `opentui` profile path is otherwise untouched.
-// Seven local-FS steps (the first is the host-version gate), no pnpm/npm, no install scripts:
+// Eight steps (the first is the host-version gate). Steps 1-3 and 5-8 are
+// local-FS only; step 4 (companions) is the one unfrozen step that MAY run a
+// package manager (user decision 2026-11-22 — "npm 安装好的时候，registry 和其他几个依赖插件，默认装好").
 //
-//   [1/7] host     — detect the running dsh version. OUTSIDE the supported
+//   [1/8] host     — detect the running dsh version. OUTSIDE the supported
 //                    window (>=0.2.2-rc.3 <0.3.0) => fail-fast with the three
 //                    fail-fast elements: the host would otherwise skip the
 //                    bridge bundle silently (it only records the conflict in
@@ -17,32 +19,47 @@
 //                    exact-version exemption in compatibility.json. Never
 //                    grants outside the window: --accept-risk is not a way to
 //                    mask a genuine incompatibility.
-//   [2/7] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
+//   [2/8] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
 //                    dsh.profile.bundles = [@deepseek-ai/dsh-base,
-//                    @aiwayds/dsh-opentui-bridge]. NO @deepseek-ai/* dependency
-//                    is ever written: the host's installation-first bundle
-//                    resolution supplies those bundles from the running dsh
-//                    closure (wild-package shadowing is the historical
+//                    @aiwayds/dsh-opentui-bridge] PLUS any companion bundles
+//                    already declared in dependencies. NO @deepseek-ai
+//                    dependency is ever written: the host's installation-first
+//                    bundle resolution supplies those bundles from the running
+//                    dsh closure (wild-package shadowing is the historical
 //                    incident this guard prevents).
-//   [3/7] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
+//   [3/8] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
+
 //                    REAL DIRECTORY COPY of THIS installation's dist/bridge.
 //                    S6 symlink-debt retirement: no absolute symlink (no path
 //                    binding, no multi-worktree last-writer-wins, no dangling
 //                    link when a worktree is removed). Converged every launch;
 //                    idempotent when the copy's index.js hash matches.
-//   [4/7] verify   — confirm the bridge is a real directory carrying the
-//                    shipped files; refuse any @deepseek-ai copy in the profile.
-//   [5/7] identity — T5 guard: hash the materialized bridge's index.js and
+//   [4/8] companions — install the minimal companion set (default: the
+//                    @aiwayds/dsh-subagent-registry bundle, which self-mounts
+//                    the `use_agent` tool through its own cordis.patch.yml).
+//                    Resolves `latest`, guards major/downgrade, skips when
+//                    already at that version, and is disabled wholesale by
+//                    DSH_OPENTUI_COMPANION_LATEST=off. A failed install is a
+//                    WARN (never a boot blocker); step 5 then verifies that
+//                    whatever IS declared in the manifest is fully mounted.
+//   [5/8] verify   — confirm the bridge is a real directory carrying the
+//                    shipped files; refuse any @deepseek-ai copy in the profile;
+//                    cross-check companion manifest deps <-> bundle entries <-
+//                    -> installed node_modules (no half-provisioned state).
+//   [6/8] identity — T5 guard: hash the materialized bridge's index.js and
 //                    compare with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
-//   [6/7] patch    — generate $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml
+//   [7/8] patch    — generate $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml
 //                    from the embedded inproc-only template (web-app
 //                    compensation rows removed, profileRevision stamped). The
 //                    template also registers the standalone sessionController
 //                    shim plus the real @deepseek-ai/dsh-api-session-controller
-//                    plugin — no dsh-web-app bundle is pulled in.
-//   [7/7] shim     — generate the local shim package under the profile's
+//                    plugin — no dsh-web-app bundle is pulled in. Companion
+//                    mounts ride their own bundle patches (activated by the
+//                    manifest bundle entries), so no duplicate rows are added
+//                    here.
+//   [8/8] shim     — generate the local shim package under the profile's
 //                    node_modules (@aiwayds scope) that the patch row resolves.
 //                    Its
 //                    @deepseek-ai/cordis import is resolved by the host against
@@ -67,9 +84,11 @@
 // convergence, so a fingerprint mismatch still fails loud.
 //
 // Hard guard: this script only ever touches the ONE profile named
-// `opentui-inproc`. It never runs a package manager and never writes a
-// dependency into the manifest.
+// `opentui-inproc`. The ONLY package-manager call is step [4/8], scoped to the
+// explicit companion catalog; it never writes a @deepseek-ai dependency into
+// the manifest (those bundles come from the running dsh closure).
 
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   closeSync,
@@ -108,6 +127,15 @@ import {
   ensureHostExemption,
   isHostVersionSupported,
 } from './lib/host-compat.mjs'
+// Companion policy is a pure table; only the spawn and registry query live
+// here (see step [4/8]). Mirrors dsh-tui-pi's companion-latest pattern.
+import {
+  COMPANIONS,
+  COMPANION_LATEST_ENV,
+  decideCompanionInstall,
+  queryDistTagLatest,
+  selectCompanions,
+} from './lib/inproc-companions.mjs'
 
 const PREFIX = 'dsh-opentui(inproc): '
 const PROFILE = 'opentui-inproc'
@@ -137,12 +165,13 @@ const lockPath = join(profileDir, LOCK_NAME)
 // S6: the patch/shim steps are unconditional (the env escape hatch that used
 // to skip them is removed with the legacy seam). The launcher runs this script
 // on every start; --repair-bridge and direct invocation converge identically.
-const TOTAL_STEPS = 7
+const TOTAL_STEPS = 8
+const COMPANION_INSTALL_TIMEOUT_MS = 10 * 60 * 1000
 const PATCH_NAME = 'cordis.patch.yml'
 const patchPath = join(profileDir, PATCH_NAME)
 const PATCH_REVISION_MARKER = '# profileRevision: '
 // Local shim package generated under the profile's node_modules. It lives in
-// the @aiwayds scope (never @deepseek-ai — see the guard in step [4/7]) so the
+// the @aiwayds scope (never @deepseek-ai — see the guard in step [5/8]) so the
 // host resolves it from the profile scope; its own @deepseek-ai/cordis import
 // is routed by the host's runtime interception to the same dsh closure that
 // serves the bridge. The patch row uses this bare package name.
@@ -560,10 +589,19 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
   config:
     maxActiveSubagents: 3
 
+# Companion mounts (2026-11-22 unfreeze). The minimal set installed by
+# provision-inproc-profile.mjs step [4/8] is @aiwayds/dsh-subagent-registry,
+# which registers the use_agent / ask_agent tools globally and carries its OWN
+# cordis.patch.yml mount row. That row is activated by the dsh.profile.bundles
+# entry that dsh plugin add writes into package.json — no duplicate row is added
+# here (a same-id insert from this profile layer would only shadow the bundle's
+# own patch). DSH_OPENTUI_COMPANION_LATEST=off skips the install; the default
+# roster stays the locally-defined agents under $DSH_HOME/agents.
+
 # Standalone sessionController support (no dsh-web-app bundle). The real
 # controller needs 13 injects; 11 come from dsh-base, and the two web-only ones
 # (fileUploads, workspaceRegistry) are satisfied by the local shim package
-# generated in step [7/7]. No connection shim: dsh-api-gateway's optional
+# generated in step [8/8]. No connection shim: dsh-api-gateway's optional
 # ctx.inject(['connection']) calls connection.rpc.intercept(...), which a no-op
 # stub cannot honor; leaving connection absent only keeps the controller's
 # SessionMediaReferences sub-plugin pending, which does not block list().
@@ -582,7 +620,7 @@ const PATCH_CONTENT = `${PATCH_HEADER}${PATCH_TEMPLATE}`
 const KNOWN_PATCH_MD5 = new Set(['54b66bf37fbbb93a6f9dd204a24473f7'])
 
 // --- Standalone sessionController shim template -----------------------------
-// Generated into the profile's node_modules (step [7/7]) so its runtime imports
+// Generated into the profile's node_modules (step [8/8]) so its runtime imports
 // are resolved from the profile scope by the host, exactly like the bridge.
 // The real controller imports fileUploads / workspaceRegistry as TYPES ONLY;
 // only the narrow methods below are ever called, so no dsh-web-app closure is
@@ -804,16 +842,161 @@ function readManifest() {
   return readJsonObject(manifestPath)
 }
 
+/**
+ * Companion bundles already declared in the manifest must survive the step-2
+ * convergence: otherwise every launch would strip them and step 4 would
+ * reinstall. Only packages from OUR catalog that the manifest already declares
+ * are preserved, so a stray dependency can never smuggle a bundle in.
+ */
+const managedBundles = (existing) => {
+  const declared = COMPANIONS
+    .filter((entry) => Object.prototype.hasOwnProperty.call(existing?.dependencies ?? {}, entry.name))
+    .map((entry) => entry.name)
+  return [...new Set([...BUNDLES, ...declared])]
+}
+
 const desiredManifest = (existing) => ({
   ...existing,
   dsh: {
     ...(existing?.dsh ?? {}),
     profile: {
       ...(existing?.dsh?.profile ?? {}),
-      bundles: [...BUNDLES],
+      bundles: managedBundles(existing),
     },
   },
 })
+
+/** Version actually mounted in the profile node_modules, or undefined. */
+function installedCompanionVersion(name) {
+  try {
+    return JSON.parse(readFileSync(join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')).version
+  } catch {
+    return undefined
+  }
+}
+
+/** Only the companion step needs a global dsh; a satisfied run stays offline. */
+function requireDshOnPath() {
+  const which = spawnSync('which', ['dsh'], { encoding: 'utf8' })
+  if (which.status !== 0 || !which.stdout.trim()) {
+    fail(
+      'no global `dsh` on PATH for companion installation',
+      `Step [4/8] needs the host CLI to run \`dsh plugin --profile ${PROFILE} add\`. ` +
+        `Install dsh, or set ${COMPANION_LATEST_ENV}=off to skip companions.`,
+    )
+  }
+}
+
+/**
+ * Step [4/8] — install the minimal companion set.
+ *
+ * The install is done through `dsh plugin add`, which is the one supported way
+ * to put a @aiwayds package into a profile: it writes the dependency, appends
+ * the bundle entry (that entry is what activates the plugin's OWN
+ * cordis.patch.yml mount row), and installs node_modules — including the
+ * registry's `dsh-jev-core` dependency, which the client's spin-attention
+ * probe then finds in the profile. With `nodeLinker: hoisted` +
+ * `autoInstallPeers: false` in this profile, no @deepseek-ai peer is copied
+ * into the profile, so step [5/8]'s no-@deepseek-ai guard still holds.
+ */
+function provisionCompanions() {
+  const selected = selectCompanions(process.env)
+  if (selected.length === 0) {
+    const off = ['0', 'false', 'off'].includes(String(process.env[COMPANION_LATEST_ENV] ?? '').trim().toLowerCase())
+    say(4, 'companions', off ? `skipped (${COMPANION_LATEST_ENV}=off)` : 'none selected')
+    return
+  }
+
+  const manifest = readManifest() ?? {}
+  const specs = []
+  for (const entry of selected) {
+    const currentPin = installedCompanionVersion(entry.name)
+    const resolved = queryDistTagLatest(entry.name, { cwd: profileDir, env: process.env })
+    const decision = decideCompanionInstall({
+      packageName: entry.name,
+      declaredRange: entry.declaredRange,
+      resolved,
+      currentPin,
+    })
+    if (decision.action === 'skip') {
+      note(`companion ${entry.name}: skip (${decision.reason})`)
+    } else {
+      note(`companion ${entry.name}: ${currentPin ?? 'absent'} -> ${decision.spec} (${decision.reason})`)
+      specs.push(decision.spec)
+    }
+  }
+
+  if (specs.length === 0) {
+    say(4, 'companions', `already satisfied (${selected.length}/${selected.length})`)
+    return
+  }
+
+  requireDshOnPath()
+  const run = spawnSync('dsh', ['plugin', '--profile', PROFILE, 'add', ...specs], {
+    stdio: 'inherit',
+    env: { ...process.env, DSH_HOME: dshHome },
+    cwd: profileDir,
+    timeout: COMPANION_INSTALL_TIMEOUT_MS,
+  })
+  if (run.error) {
+    warn(`companion install failed to start: ${run.error.message}`)
+    say(4, 'companions', `installed 0 of ${specs.length} (failed to start)`)
+    return
+  }
+  if (run.status !== 0) {
+    warn(`dsh plugin add exited ${run.status}; companions are optional — the client still launches`)
+    say(4, 'companions', `installed 0 of ${specs.length} (exit ${run.status})`)
+    return
+  }
+
+  // Readback: an exit 0 is not proof the requested versions landed.
+  const landed = specs.filter((spec) => {
+    const at = spec.lastIndexOf('@')
+    const name = spec.slice(0, at)
+    const pin = spec.slice(at + 1)
+    const actual = installedCompanionVersion(name)
+    return pin === 'latest' ? actual !== undefined : actual === pin
+  })
+  if (landed.length !== specs.length) {
+    const missing = specs.filter((spec) => !landed.includes(spec))
+    warn(`companion version readback mismatch: ${missing.join(', ')}`)
+  }
+  say(4, 'companions', `installed ${landed.length} of ${specs.length}`)
+}
+
+/**
+ * Step [5/8] cross-check: the companion state has three views — manifest
+ * dependencies, manifest bundles and installed node_modules. A provisioning
+ * pass that updated only one of them is a "two-state drift"; refuse to boot
+ * rather than booting a profile that composes a bundle it cannot resolve.
+ * Only catalog packages are considered, so a user's own dependencies are
+ * never touched or judged here.
+ */
+function verifyCompanionState() {
+  const manifest = readManifest()
+  if (!manifest) return 0
+  const dependencies = manifest.dependencies ?? {}
+  const bundles = manifest.dsh?.profile?.bundles ?? []
+  const declared = COMPANIONS.filter((entry) =>
+    Object.prototype.hasOwnProperty.call(dependencies, entry.name))
+  for (const entry of declared) {
+    if (!bundles.includes(entry.name)) {
+      fail(
+        `companion drift: ${entry.name} is a dependency but not a profile bundle`,
+        `Re-run provisioning (dsh-opentui --repair-bridge) to restore the bundle entry. ` +
+          `Set ${COMPANION_LATEST_ENV}=off only when you intend to manage companions yourself.`,
+      )
+    }
+    if (installedCompanionVersion(entry.name) === undefined) {
+      fail(
+        `companion drift: ${entry.name} is declared but not installed in the profile`,
+        `Re-run provisioning (dsh-opentui --repair-bridge), or remove the dependency from ${manifestPath} ` +
+          `if the companion is no longer wanted.`,
+      )
+    }
+  }
+  return declared.length
+}
 
 function linkState(path) {
   let lst
@@ -923,7 +1106,7 @@ function verifyBridgeIdentity() {
     )
   }
 
-  say(5, 'identity', `name=${fp.name} version=${fp.version} sha256=${fp.sha256.slice(0, 12)}…`)
+  say(6, 'identity', `name=${fp.name} version=${fp.version} sha256=${fp.sha256.slice(0, 12)}…`)
   note(`bridge identity OK — ${resolved}`)
 }
 
@@ -1001,7 +1184,7 @@ function provisionPatch() {
 
   const localRevision = readPatchRevision(current)
   if (current === PATCH_CONTENT && localRevision === PATCH_REVISION) {
-    say(6, 'patch', 'already current, skipping')
+    say(7, 'patch', 'already current, skipping')
     return
   }
 
@@ -1018,7 +1201,7 @@ function provisionPatch() {
   const tmpPath = `${patchPath}.tmp-${process.pid}-${Date.now()}`
   writeFileSync(tmpPath, PATCH_CONTENT)
   renameSync(tmpPath, patchPath)
-  say(6, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
+  say(7, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
 }
 
 // --- Standalone sessionController shim ownership ---------------------------
@@ -1066,10 +1249,10 @@ function provisionShim() {
   const indexChanged = convergeShimFile(SHIM_INDEX_PATH, SHIM_INDEX_CONTENT, 'session controller shim index.mjs', SHIM_REVISION)
   const pkgChanged = convergeShimFile(SHIM_PKG_PATH, SHIM_PKG_CONTENT, 'session controller shim package.json', undefined)
   if (!indexChanged && !pkgChanged) {
-    say(7, 'shim', 'already current, skipping')
+    say(8, 'shim', 'already current, skipping')
     return
   }
-  say(7, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
+  say(8, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
 }
 
 // --- The provision pass itself (runs under the lock) ------------------------
@@ -1096,12 +1279,12 @@ function runProvision({ repair = false } = {}) {
   // or symlinked-in path that could drift with cwd or a moved install.
   const bridgeDir = realpathSync(bridgeDirRaw)
 
-  // [1/7] Host compatibility: fail loud when the running dsh is outside the
+  // [1/8] Host compatibility: fail loud when the running dsh is outside the
   // supported window (the host would otherwise skip the bridge silently), and
   // grant the exact-version exemption when it is in-window but not exempted.
   verifyHostCompatibility(bridgeDir)
 
-  // [2/7] Manifest: write / converge the profile manifest. Only
+  // [2/8] Manifest: write / converge the profile manifest. Only
   // dsh.profile.bundles is managed; every other field is preserved.
   {
     const existing = existsSync(manifestPath) ? readManifest() : undefined
@@ -1123,11 +1306,11 @@ function runProvision({ repair = false } = {}) {
       const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
       writeFileSync(tmpPath, `${JSON.stringify(desired, null, 2)}\n`)
       renameSync(tmpPath, manifestPath)
-      say(2, 'manifest', `wrote bundles [${BUNDLES.join(', ')}]`)
+      say(2, 'manifest', `wrote bundles [${managedBundles(existing ?? {}).join(', ')}]`)
     }
   }
 
-  // [3/7] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
+  // [3/8] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
   // retirement). The old design wrote an ABSOLUTE symlink to THIS
   // installation's dist/bridge: that bound the profile to one install path and
   // let multiple worktrees sharing a DSH_HOME leave the link pointing at
@@ -1157,8 +1340,13 @@ function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [4/7] Verify: linkPath is a REAL directory (never a symlink) carrying the
+  // [4/8] Companion installation. Runs after the bridge copy and before the
+  // verify step so a half-provisioned manifest is caught by step [5/8].
+  provisionCompanions()
+
+  // [5/8] Verify: linkPath is a REAL directory (never a symlink) carrying the
   // shipped bridge files, and no @deepseek-ai package leaked into the profile.
+  // Companion state is cross-checked too (deps <-> bundles <-> node_modules).
   {
     let st
     try { st = lstatSync(linkPath) } catch (error) { fail(`post-write verification failed for ${linkPath}: ${error?.message ?? error}`) }
@@ -1178,14 +1366,15 @@ function runProvision({ repair = false } = {}) {
         'The host closure supplies @deepseek-ai/* bundles; they must never be copied into a profile directory.',
       )
     }
-    say(4, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile`)
+    const companionCount = verifyCompanionState()
+    say(5, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile; ${companionCount} companion(s) consistent`)
   }
 
-  // [5/7] Identity guard always runs, including on the conflict path, so a
+  // [6/8] Identity guard always runs, including on the conflict path, so a
   // repointed / replaced bridge cannot slip through as a mere WARN.
   verifyBridgeIdentity()
 
-  // [6/7] Inproc patch generation + [7/7] the local shim package the patch row
+  // [7/8] Inproc patch generation + [8/8] the local shim package the patch row
   // resolves. S6: unconditional (no env escape hatch).
   provisionPatch()
   provisionShim()

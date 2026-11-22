@@ -153,7 +153,9 @@ interface Run {
 
 function runProvision(home: string, extraEnv: Record<string, string> = {}): Run {
   const result = Bun.spawnSync([process.execPath, SCRIPT], {
-    env: { ...process.env, DSH_HOME: home, ...extraEnv },
+    // Keep this host-version gate test offline: companions are a separate step
+    // (see inproc-companions.test.ts) and their registry query is irrelevant here.
+    env: { ...process.env, DSH_HOME: home, DSH_OPENTUI_COMPANION_LATEST: 'off', ...extraEnv },
     stdout: 'pipe',
     stderr: 'pipe',
   })
@@ -170,7 +172,7 @@ describe('provision-inproc-profile.mjs host gate', () => {
     try {
       const run = runProvision(root, { [HOST_VERSION_ENV]: '0.2.2-rc.4' })
       expect(run.status).toBe(0)
-      expect(run.stdout).toContain('[1/7] host')
+      expect(run.stdout).toContain('[1/8] host')
       expect(run.stdout).toContain('granted exact-version exemption')
       expect(run.stdout).toContain('PASS')
       const compat = JSON.parse(readFileSync(join(root, 'profiles', 'opentui-inproc', COMPATIBILITY_FILENAME), 'utf8'))
