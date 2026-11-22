@@ -2743,6 +2743,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
   interface ApprovalServiceLike {
     overrideOf?(session: unknown): string | undefined
+    effectivePolicy?(session: unknown): string | undefined
   }
   interface WritableSessionLike {
     append(type: string, data: Record<string, unknown>): unknown
@@ -2761,10 +2762,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  can appear (evidence: .proof/f1-a1-ask-routing/01-child-approval-rejection-evidence.md).
    *
    *  Re-pin the delegation 'never' to 'ask' on the CHILD session log so child
-   *  approvals flow through the parent ask channel and the F1 card. Idempotent
-   *  and fail-closed: we only touch a child of THIS binding, never re-append when
-   *  the child is already answerable, and if the child session / services cannot
-   *  be resolved we leave policy intact (host keeps its never→rejected default). */
+   *  approvals flow through the parent ask channel and the F1 card — but ONLY
+   *  when the PARENT's current effective policy is 'ask'. Under full access the
+   *  parent is 'never' (asking is pointless: it is auto-rejected), so we leave the
+   *  child policy untouched and, crucially, do NOT mark the child repinned — a
+   *  later switch back to 'ask' plus a catalog replay can still re-pin it.
+   *
+   *  Idempotent and fail-CLOSED: we only touch a child of THIS binding, never
+   *  re-append when the child is already answerable, and if the parent session /
+   *  approval service / effectivePolicy cannot be resolved we never touch the
+   *  child log (host keeps its never→rejected default). */
   function repinChildApprovalPolicy(childId: string, parentSessionId: string): void {
     if (binding === undefined || parentSessionId !== binding.sessionId) return
     if (repinnedChildren.has(childId)) return
@@ -2786,6 +2793,56 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return
     }
     if (childSession === undefined || typeof childSession.append !== 'function') return
+
+    // Parent-policy gate: re-pin only when the PARENT's effective policy is
+    // 'ask'. Under full access ('never') a child ask would be auto-rejected
+    // before the bridge answerer runs, so asking is pointless — leave the child
+    // log alone. Fail-closed: any inability to READ the parent policy (missing
+    // service, unresolved parent, throwing effectivePolicy, non-'ask' value)
+    // means we never modify the child log. The 'never' path deliberately does
+    // NOT add to repinnedChildren so a later 'ask' + catalog replay can re-pin.
+    let parentSession: unknown
+    try {
+      parentSession = sessions.get(parentSessionId)
+    } catch (err) {
+      logger.warn(
+        '[dsh-opentui-bridge] child approval re-pin skipped: parent session lookup failed child=%s parent=%s: %s',
+        childId, parentSessionId, String(err),
+      )
+      return
+    }
+    if (parentSession === undefined) {
+      logger.info(
+        '[dsh-opentui-bridge] child approval re-pin skipped: parent session not found child=%s parent=%s',
+        childId, parentSessionId,
+      )
+      return
+    }
+    if (approval === undefined || typeof approval.effectivePolicy !== 'function') {
+      logger.warn(
+        '[dsh-opentui-bridge] child approval re-pin skipped: approval.effectivePolicy unavailable child=%s parent=%s',
+        childId, parentSessionId,
+      )
+      return
+    }
+    let parentPolicy: string | undefined
+    try {
+      parentPolicy = approval.effectivePolicy(parentSession)
+    } catch (err) {
+      logger.warn(
+        '[dsh-opentui-bridge] child approval re-pin skipped: effectivePolicy threw child=%s parent=%s: %s',
+        childId, parentSessionId, String(err),
+      )
+      return
+    }
+    if (parentPolicy !== 'ask') {
+      logger.info(
+        '[dsh-opentui-bridge] child approval re-pin skipped: parent effective policy=%s (not ask) child=%s parent=%s',
+        String(parentPolicy), childId, parentSessionId,
+      )
+      return
+    }
+
     // Only re-pin a 'never' (the delegation pin) or an unset policy. An
     // already-answerable 'ask' policy needs no append — avoid duplicate churn
     // on replayed catalog rows and on children forked with an explicit 'ask'.
