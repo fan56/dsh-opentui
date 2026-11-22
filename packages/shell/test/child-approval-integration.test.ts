@@ -109,6 +109,14 @@ function makeHarness(): Harness {
     whenIdle() { return new Promise<void>(() => {}) }, // hold the turn open
   }
   const child = makeChildSession()
+  // The bridge's syncChildApprovalPolicy now consults BOTH the child session and
+  // its parent before mirroring the parent policy. Mirror the real host contract
+  // in the fake: sessions.get resolves the parent too (any non-child id — the
+  // catalog handler already rejects a foreign parent before sync runs), and
+  // approval.effectivePolicy is `overrideOf(session) ?? config.policy ?? 'ask'`
+  // (dsh-user-approval/lib/index.js:177). config.policy='ask' matches every case's
+  // expected re-pin (delegation 'never' overridden → child policy 'ask').
+  const fakeParentSession = { id: "fake-parent-session" }
   let disposeBridge: (() => void) | undefined
 
   const ctx: any = {
@@ -120,8 +128,19 @@ function makeHarness(): Harness {
       return () => listeners.set(name, next.filter((l) => l !== listener))
     },
     get(name: string) {
-      if (name === "sessions") return { get(id: string) { return id === "child-1" ? child : undefined } }
-      if (name === "approval") return { overrideOf(session: FakeChildSession) { return session.policy() } }
+      if (name === "sessions") {
+        return { get(id: string) { return id === "child-1" ? child : fakeParentSession } }
+      }
+      if (name === "approval") {
+        const overrideOf = (session: FakeChildSession) => (session === child ? child.policy() : undefined)
+        const configPolicy = "ask"
+        return {
+          overrideOf,
+          effectivePolicy(session: FakeChildSession) {
+            return overrideOf(session) ?? configPolicy ?? "ask"
+          },
+        }
+      }
       return undefined
     },
     agents: {
