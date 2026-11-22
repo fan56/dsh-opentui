@@ -729,6 +729,68 @@ describe("dock semantic accents (think violet / tool cyan)", () => {
 })
 
 /**
+ * F4: the lower-zone todo tree rows (green) and running subagent rows (blue)
+ * get their own cool accents, off the shared `tone:"running"` amber
+ * (#e0af68) and off each other. Both are picked from the theme's named hue
+ * ramps through the same 4.5:1 contrast walk as think/tool.
+ */
+describe("dock semantic accents — todo green / agent blue (F4 row separation)", () => {
+	const darkTheme = () => createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
+
+	test("dsh-blue dark: todo green[200] #7fd88f, agent blue[300] #6b82fe", () => {
+		const theme = darkTheme()
+		expect(colorRgb(dockAccentColor(theme, "todo"))).toEqual([127, 216, 143]) // #7fd88f
+		expect(colorRgb(dockAccentColor(theme, "agent"))).toEqual([107, 130, 254]) // #6b82fe
+	})
+
+	test("todo and agent clear the dark text floor and stay far apart", () => {
+		const theme = darkTheme()
+		const todo = dockAccentColor(theme, "todo")
+		const agent = dockAccentColor(theme, "agent")
+		for (const picked of [todo, agent]) {
+			expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+			expect(colorRgb(picked)).not.toEqual(colorRgb(theme.text.base))
+		}
+		expect(colorDistance(todo, agent)).toBeGreaterThan(40)
+	})
+
+	test("both row accents are clearly off the shared running amber #e0af68", () => {
+		const theme = darkTheme()
+		const amber = RGBA.fromHex("#e0af68")
+		for (const accent of ["todo", "agent"] as const) {
+			const picked = dockAccentColor(theme, accent)
+			expect(colorDistance(picked, amber)).toBeGreaterThan(60)
+			expect(colorRgb(picked)).not.toEqual(colorRgb(amber))
+		}
+	})
+
+	test("all four accents stay mutually distinct (panel identity)", () => {
+		const theme = darkTheme()
+		const picks = (["think", "tool", "todo", "agent"] as const).map((a) => dockAccentColor(theme, a))
+		for (let i = 0; i < picks.length; i++) {
+			for (let j = i + 1; j < picks.length; j++) {
+				expect(colorDistance(picks[i]!, picks[j]!)).toBeGreaterThan(30)
+			}
+		}
+	})
+
+	test("no hue ramp → polarity-aware static fallback for todo/agent", () => {
+		const noHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(dockAccentColor(noHues, "todo")).toBe("#7fd88f")
+		expect(dockAccentColor(noHues, "agent")).toBe("#6b82fe")
+		const lightNoHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#ffffff") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(dockAccentColor(lightNoHues, "todo")).toBe("#1f8c44")
+		expect(dockAccentColor(lightNoHues, "agent")).toBe("#2b44b8")
+	})
+})
+
+/**
  * Review 2.2: the contrast walk is bidirectional. The old one-way blend
  * toward black made an under-contrast border muddier on a DARK surface; the
  * walk now goes toward white on dark surfaces and black on light ones, and

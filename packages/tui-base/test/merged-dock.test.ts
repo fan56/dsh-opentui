@@ -474,7 +474,7 @@ describe("mergedDockLines — line-level skin metadata (D3/D5/D13/D14)", () => {
 		expect(doneLine.fadeOutAt).toBe(3_500)
 	})
 
-	test("todo / agent / indicator lines carry no accent and no id", () => {
+	test("scene A: subagent rows carry the agent accent, the todo brief stays neutral; no id/fade/marker", () => {
 		const todos = Array.from({ length: 12 }, (_, i) => todo(`t${i + 1}`, "in_progress"))
 		const lines = mergedDockLines({ tools: [], todos, agents: [agent("a")] }, { innerWidth: 60, now })
 		const lower = lines.filter(
@@ -485,8 +485,44 @@ describe("mergedDockLines — line-level skin metadata (D3/D5/D13/D14)", () => {
 			expect(line.id).toBeUndefined()
 			expect(line.fadeOutAt).toBeUndefined()
 			expect(line.marker).toBeUndefined()
+		}
+		// Batch decision: the scene-A todo brief (upper zone) stays neutral — no
+		// accent — so it never reads as a colored tree row (avoids mixed-signal).
+		const briefs = lower.filter((l) => l.kind === "todo")
+		expect(briefs.length).toBeGreaterThan(0)
+		for (const line of briefs) for (const segment of line.segments) expect(segment.accent).toBeUndefined()
+		// Subagent content is agent-accented; the branch/indent glyph stays muted.
+		const agents = lower.filter((l) => l.kind === "agent")
+		expect(agents.length).toBeGreaterThan(0)
+		for (const line of agents) {
+			expect(line.segments.some((s) => s.accent === "agent")).toBe(true)
+			expect(line.segments[0]!.accent).toBeUndefined()
+		}
+		// Scroll indicators carry no accent.
+		for (const line of lower.filter((l) => l.kind.startsWith("more-"))) {
 			for (const segment of line.segments) expect(segment.accent).toBeUndefined()
 		}
+	})
+
+	test("todo tree rows and subagent rows resolve to DIFFERENT accents", () => {
+		const opts = { innerWidth: 80, now }
+		// Scene C: no running subagent / think → the compact todo tree. Every
+		// todo row (header + items) carries the green "todo" accent.
+		const todoLines = mergedDockLines(
+			{ tools: [], todos: [todo("alpha", "in_progress"), todo("beta", "pending")], agents: [] },
+			opts,
+		).filter((l) => l.kind === "todo")
+		expect(todoLines.length).toBeGreaterThan(0)
+		for (const line of todoLines) for (const segment of line.segments) expect(segment.accent).toBe("todo")
+
+		// Scene A: a running subagent renders an "agent"-accented content segment.
+		const agentLine = mergedDockLines({ tools: [], todos: [], agents: [agent("a")] }, opts).find((l) => l.kind === "agent")!
+		const agentAccent = agentLine.segments.find((s) => s.accent !== undefined)!.accent
+		expect(agentAccent).toBe("agent")
+
+		// The two row kinds must not share an accent token — that is the whole
+		// point of F4 (both used to be tone:"running" amber).
+		expect(todoLines[0]!.segments[0]!.accent).not.toBe(agentAccent)
 	})
 
 	test("width law holds with emoji/CJK/VS16/ZWJ after adding skin fields", () => {

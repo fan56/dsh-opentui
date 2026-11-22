@@ -622,12 +622,12 @@ export function todoTreeLines(todos: readonly Todo[]): MergedDockLine[] {
 	const done = todos.filter((todo) => todo.status === "completed").length
 	if (done === todos.length) return []
 	const lines: MergedDockLine[] = [
-		{ kind: "todo", segments: [{ text: t("overlay.widgets.todosHeader", { done, total: todos.length }), tone: "running" }] },
+		{ kind: "todo", segments: [{ text: t("overlay.widgets.todosHeader", { done, total: todos.length }), tone: "running", accent: "todo" }] },
 	]
 	todos.forEach((todo, i) => {
 		const branch = i === todos.length - 1 ? "└─ " : "├─ "
 		const glyph = TODO_STATUS_GLYPHS[todo.status] ?? TODO_STATUS_GLYPHS.pending
-		lines.push({ kind: "todo", segments: [{ text: `${branch}${glyph} ${todo.content}`, tone: "running" }] })
+		lines.push({ kind: "todo", segments: [{ text: `${branch}${glyph} ${todo.content}`, tone: "running", accent: "todo" }] })
 	})
 	return lines
 }
@@ -1257,35 +1257,49 @@ export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA 
 }
 
 /**
- * Semantic dock line accents (think / tool) — the two activity lines get
- * their own color families so they read as panels, not as default body copy:
+ * Semantic dock line accents — each activity line family gets its own color
+ * family so it reads as its own panel, not as default body copy:
  *   - think: VIOLET (`purple` ramp; dsh-tui-pi's `thinking` text token),
  *   - tool:  CYAN/TEAL (`cyan` ramp; dsh-tui-pi's blue tool panel family but
- *     shifted off the footer blue so it never reads as chrome).
- * Both are picked from the theme's named hue ramps, preferring a soft mid
- * step and walking the ramp until the text clears 4.5:1 on the theme
+ *     shifted off the footer blue so it never reads as chrome),
+ *   - todo:  GREEN (`green` ramp) — the compact todo tree rows,
+ *   - agent: BLUE (`blue` ramp) — running subagent rows.
+ * todo/agent are deliberately cool and far off `warning.base` (#e0af68,
+ * the shared `tone:"running"` amber), so the two lower-zone row kinds stay
+ * distinguishable both from that amber and from each other. Never reuse a
+ * semantic alias (`accent`/`interactive`) here: on themes that alias both to
+ * one hue that would collapse todo/agent (and tool) back to one color.
+ * Every accent is picked from the theme's named hue ramps, preferring a soft
+ * mid step and walking the ramp until the text clears 4.5:1 on the theme
  * surface (dark: later steps are dimmer; light: later steps are lighter).
  * Status glyphs (⚙/✔/✘) never use this — they keep their tone color.
  */
-export type DockAccent = "think" | "tool"
+export type DockAccent = "think" | "tool" | "todo" | "agent"
 
 /** Preferred steps: a soft mid swatch first, then the rest of the ramp. */
 const DOCK_ACCENT_STEPS: Record<DockAccent, readonly number[]> = {
 	think: [200, 300, 100, 400, 500, 600, 700, 800, 900],
 	tool: [300, 200, 100, 400, 500, 600, 700, 800, 900],
+	todo: [200, 300, 100, 400, 500, 600, 700, 800, 900],
+	agent: [300, 200, 100, 400, 500, 600, 700, 800, 900],
 }
 
-/** Fallback hue ramps when the theme carries no named hue record: violet →
- * accent (think), teal → interactive (tool). */
+/** Named hue ramps per accent. todo/agent use literal ramps only — a shared
+ * semantic alias (`accent`/`interactive`) would let them (and tool) collapse
+ * back onto one hue on themes that alias those tokens. */
 const DOCK_ACCENT_HUES: Record<DockAccent, readonly string[]> = {
 	think: ["purple", "violet", "accent"],
 	tool: ["cyan", "teal", "interactive"],
+	todo: ["green"],
+	agent: ["blue"],
 }
 
 /** No-theme fallbacks per surface polarity (dsh-blue dark indices). */
 const DOCK_ACCENT_FALLBACK: Record<DockAccent, { dark: string; light: string }> = {
 	think: { dark: "#9d7cd8", light: "#6d47ad" },
 	tool: { dark: "#449da7", light: "#077786" },
+	todo: { dark: "#7fd88f", light: "#1f8c44" },
+	agent: { dark: "#6b82fe", light: "#2b44b8" },
 }
 
 type HueRamp = Readonly<Record<number, RGBA | undefined>>

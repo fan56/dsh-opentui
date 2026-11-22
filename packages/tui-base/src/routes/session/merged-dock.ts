@@ -399,7 +399,9 @@ function agentLine(agent: MergedAgent, position: number, count: number, parentIn
 		index: parentIndex,
 		segments: [
 			{ text: `${indent}${branch}`, tone: "muted" },
-			{ text: content, tone: "running" },
+			// Cool blue accent separates a running subagent from the amber
+			// `tone:"running"` body copy and from the green todo tree rows.
+			{ text: content, tone: "running", accent: "agent" },
 		],
 	}
 }
