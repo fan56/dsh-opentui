@@ -9,10 +9,12 @@ import { describe, expect, test } from 'bun:test'
 import {
   DEFAULT_GATE_REASON,
   WRITE_TOOL_POLICY,
+  apply,
   createPreExecuteListener,
   decideAsk,
   resolveApprovalGateConfig,
 } from '../src/approval-gate'
+import type { GateExecLike } from '../src/approval-gate'
 
 const allow = () => Promise.resolve({ kind: 'allow' as const })
 
@@ -152,5 +154,140 @@ describe('approval gate: empty policy = all pass (explicit)', () => {
       expect(Object.keys(cfg.tools)).toHaveLength(0)
       expect(decideAsk({ name: 'bash' }, cfg)).toBeUndefined()
     }
+  })
+})
+
+/**
+ * Listener-layer policy bypass. These drive the real `apply(ctx) →
+ * ctx.on('tools/pre-execute')` registration with a fake cordis ctx whose `get`
+ * serves the approval service — the seam the research confirmed exists at
+ * runtime. Every uncertain path must fall back to today's behaviour (ask).
+ */
+describe('approval gate: listener policy bypass (session effective policy)', () => {
+  type Listener = (exec: GateExecLike, next: () => Promise<{ kind: 'allow' }>) => Promise<unknown>
+
+  function makeGateListener(options: {
+    getApproval?: () => unknown
+    noGet?: boolean
+    getThrows?: boolean
+  } = {}) {
+    const listeners = new Map<string, Listener>()
+    const infoLogs: string[] = []
+    const debugLogs: string[] = []
+    const format = (fmt: unknown, params: unknown[]) => {
+      let text = String(fmt)
+      for (const param of params) text = text.replace('%s', String(param))
+      return text
+    }
+    const ctx: any = {
+      logger: {
+        info(fmt: unknown, ...params: unknown[]) { infoLogs.push(format(fmt, params)) },
+        warn() {},
+        debug(fmt: unknown, ...params: unknown[]) { debugLogs.push(format(fmt, params)) },
+      },
+      on(name: string, listener: Listener) {
+        listeners.set(name, listener)
+        return () => {}
+      },
+      effect(execute: () => () => void) { return execute() },
+    }
+    if (!options.noGet) {
+      ctx.get = (name: string) => {
+        if (options.getThrows) throw new Error('ctx.get failed')
+        return name === 'approval' ? options.getApproval?.() : undefined
+      }
+    }
+    apply(ctx, { enabled: true, reason: 'r', tools: { bash: 'ask', write: 'ask' } })
+    const listener = listeners.get('tools/pre-execute')
+    if (listener === undefined) throw new Error('gate did not register tools/pre-execute')
+    return { listener, infoLogs, debugLogs }
+  }
+
+  const execWithSession = (name: string, sessionId = 'sess-1'): GateExecLike => ({
+    name,
+    agent: { session: { id: sessionId } },
+  })
+
+  async function run(listener: Listener, exec: GateExecLike) {
+    let nextCalls = 0
+    const decision = await listener(exec, () => {
+      nextCalls += 1
+      return allow()
+    })
+    return { decision, nextCalls }
+  }
+
+  test('effectivePolicy=never → next() passes the write with no ask, debug logged (not info)', async () => {
+    const { listener, infoLogs, debugLogs } = makeGateListener({
+      getApproval: () => ({ effectivePolicy: () => 'never' }),
+    })
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect(decision).toEqual({ kind: 'allow' })
+    expect(nextCalls).toBe(1)
+    expect(debugLogs.some((line) => line.includes(
+      'policy bypass: bash passes without ask (session sess-1 effective policy never)',
+    ))).toBe(true)
+    expect(infoLogs.some((line) => line.includes('policy bypass'))).toBe(false)
+  })
+
+  test('effectivePolicy=ask → still emits ask (no bypass)', async () => {
+    const { listener } = makeGateListener({
+      getApproval: () => ({ effectivePolicy: () => 'ask' }),
+    })
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect(decision).toEqual({ kind: 'ask', reason: 'r' })
+    expect(nextCalls).toBe(0)
+  })
+
+  test('exec without agent.session → still emits ask', async () => {
+    const { listener } = makeGateListener({
+      getApproval: () => ({ effectivePolicy: () => 'never' }),
+    })
+    const { decision, nextCalls } = await run(listener, { name: 'bash' })
+    expect((decision as { kind: string }).kind).toBe('ask')
+    expect(nextCalls).toBe(0)
+  })
+
+  test('approval service missing → still emits ask', async () => {
+    const { listener } = makeGateListener()
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect((decision as { kind: string }).kind).toBe('ask')
+    expect(nextCalls).toBe(0)
+  })
+
+  test('effectivePolicy throwing → still emits ask (contained)', async () => {
+    const { listener } = makeGateListener({
+      getApproval: () => ({
+        effectivePolicy() { throw new Error('projection not ready') },
+      }),
+    })
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect((decision as { kind: string }).kind).toBe('ask')
+    expect(nextCalls).toBe(0)
+  })
+
+  test('ctx.get absent → still emits ask', async () => {
+    const { listener } = makeGateListener({ noGet: true })
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect((decision as { kind: string }).kind).toBe('ask')
+    expect(nextCalls).toBe(0)
+  })
+
+  test('ctx.get throwing → lookup contained, still emits ask', async () => {
+    const { listener } = makeGateListener({ getThrows: true })
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect((decision as { kind: string }).kind).toBe('ask')
+    expect(nextCalls).toBe(0)
+  })
+
+  test('approval resolved per call: a service loaded after apply is observed', async () => {
+    let approval: unknown = undefined
+    const { listener } = makeGateListener({ getApproval: () => approval })
+    const first = await run(listener, execWithSession('bash'))
+    expect((first.decision as { kind: string }).kind).toBe('ask')
+    approval = { effectivePolicy: () => 'never' }
+    const second = await run(listener, execWithSession('bash'))
+    expect(second.decision).toEqual({ kind: 'allow' })
+    expect(second.nextCalls).toBe(1)
   })
 })

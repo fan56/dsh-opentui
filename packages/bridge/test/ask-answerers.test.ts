@@ -64,7 +64,15 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()!()
 })
 
-function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlineMs?: unknown } = {}): Harness {
+function makeHarness(overrides: {
+  onThrows?: boolean
+  noOn?: boolean
+  askDeadlineMs?: unknown
+  /** Install a fake cordis `ctx.get` (the base fake has none, so the catalog
+   *  re-pin guard early-returns). Used by the F1 policy-inheritance tests to
+   *  actually reach `ctx.get('sessions'/'approval')`. */
+  repinGet?: (name: string) => unknown
+} = {}): Harness {
   const previousSwitch = process.env[STDIO_SWITCH]
   process.env[STDIO_SWITCH] = '1'
 
@@ -146,6 +154,7 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlin
       get() { return undefined },
     },
   }
+  if (overrides.repinGet !== undefined) ctx.get = overrides.repinGet
   if (overrides.noOn) delete ctx.on
   // F1-A2: the construction point reads askDeadlineMs from the plugin config.
   const config = overrides.askDeadlineMs !== undefined ? { askDeadlineMs: overrides.askDeadlineMs } : {}
@@ -767,5 +776,412 @@ describe('C2 (2026-11-22 拍板) — always-grant scope covers the parent and al
     expect(h.askFrames('ask.request').filter((f) => f.payload.childSessionId !== undefined)).toHaveLength(0)
     const failClosed = h.registry.settlements().filter((s) => s.code === ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)
     expect(failClosed).toHaveLength(2)
+  })
+})
+
+describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未知子首事件 / (i) 全量 re-sync', () => {
+  // The base makeHarness fake ctx has NO get, so the sync guard early-returns at
+  // `typeof ctx.get !== 'function'`. Every test here passes an explicit `repinGet`
+  // so the sync genuinely reaches ctx.get('sessions'/'approval'/'sessionController')
+  // (research red-flag #4: without this the assertions are false greens).
+  const CHILD = 'mirror-child-1'
+
+  function makeChildSession(id: string) {
+    const appended: Array<{ type: string; data: Record<string, unknown> }> = []
+    const header: { parentSession?: string; origin?: string } = {}
+    const session = {
+      id,
+      header,
+      // Faithful reentrancy guard (dsh-session/lib/index.js:1652 publicationEntry):
+      // a synchronous re-append while THIS session's publish is in flight throws.
+      appending: false,
+      append(type: string, data: Record<string, unknown>) {
+        if (session.appending) throw new Error('session append cannot reenter while another append is being published')
+        appended.push({ type, data })
+      },
+    }
+    return { appended, header, session }
+  }
+
+  interface SyncOptions {
+    parentPolicy?: string | undefined
+    overrideOfChild?: string | undefined
+    parentResolves?: boolean
+    sessionsGetThrows?: boolean
+    approvalMissing?: boolean
+    effectivePolicyThrows?: boolean
+    /** Additional child sessions served by the fake sessions service (for the
+     *  genuine "full re-sync over ALL index rows" assertion). */
+    extraChildren?: string[]
+  }
+
+  function makeSyncHarness(options: SyncOptions = {}) {
+    const child = makeChildSession(CHILD)
+    const extras = new Map<string, ReturnType<typeof makeChildSession>>()
+    for (const id of options.extraChildren ?? []) extras.set(id, makeChildSession(id))
+    let boundParentId = ''
+    // Mutable live parent policy + host session.list rows — lets a single test
+    // simulate "resume with empty index, policy switches, then Stop reconcile".
+    const live = { parentPolicy: options.parentPolicy }
+    let hostRows: Array<Record<string, unknown>> = []
+    // FIELD root cause: sessions.get resolves only LIVE sessions; the host detaches
+    // a child when its turn ends. Toggle to simulate detach / re-attach on resume.
+    let childDetached = false
+    const h = makeHarness({
+      repinGet(name: string) {
+        if (name === 'sessions') {
+          return {
+            get(id: string) {
+              if (id === CHILD) return childDetached ? undefined : child.session
+              const extra = extras.get(id)
+              if (extra !== undefined) return extra.session
+              if (id === boundParentId) {
+                if (options.sessionsGetThrows) throw new Error('sessions.get(parent) boom')
+                return options.parentResolves === false ? undefined : { id: boundParentId }
+              }
+              return undefined
+            },
+          }
+        }
+        if (name === 'approval') {
+          if (options.approvalMissing) return undefined
+          return {
+            effectivePolicy(s: unknown) {
+              if (options.effectivePolicyThrows) throw new Error('effectivePolicy boom')
+              return s !== null && typeof s === 'object' && (s as { id?: unknown }).id === boundParentId
+                ? live.parentPolicy
+                : undefined
+            },
+            overrideOf(s: unknown) {
+              if (s !== child.session) return undefined
+              // Faithful fake: reflect the last mirrored policy so repeat events
+              // are genuine idempotency checks, not false greens.
+              const last = child.appended.at(-1)
+              return last ? (last.data.policy as string) : options.overrideOfChild
+            },
+          }
+        }
+        if (name === 'sessionController') {
+          return { list: async () => ({ items: hostRows }) }
+        }
+        return undefined
+      },
+    })
+    return {
+      h,
+      child,
+      extras,
+      async bindParent(id: number): Promise<string> {
+        const { sessionId } = await startTurn(h, id)
+        boundParentId = sessionId
+        child.header.parentSession = sessionId
+        child.header.origin = 'subagent'
+        // Default host list: one resumed subagent row under this parent.
+        if (hostRows.length === 0) {
+          hostRows = [{ sessionId: CHILD, parentSessionId: sessionId, origin: 'subagent', running: true, updatedAt: 1 }]
+        }
+        return sessionId
+      },
+      emitCatalog(parentId: string, createdAt = 1) {
+        h.emitSessionEvent({ id: parentId }, {
+          type: 'subagent/catalog',
+          data: { childId: CHILD, childCreatedAt: createdAt },
+        })
+      },
+      emitParentPolicy(parentId: string, policy: string) {
+        h.emitSessionEvent({ id: parentId }, { type: 'approval/policy', data: { policy } })
+      },
+      emitParentTurnStart(parentId: string) {
+        h.emitSessionEvent({ id: parentId }, { type: 'turn/start', data: { turn: 1 } })
+      },
+      /** (b3) the child's OWN turn/start (session id === child id). The host
+       *  publishes this from the child's own commit(), so the child's `appending`
+       *  guard is TRUE for the whole listener dispatch — a synchronous append to
+       *  the same child must throw (mirrors session-event-scope.test.ts). */
+      emitChildTurnStart(childId: string) {
+        const target = childId === CHILD ? child : extras.get(childId)
+        if (target !== undefined) target.session.appending = true
+        try {
+          h.emitSessionEvent({ id: childId }, { type: 'turn/start', data: { turn: 2 } })
+        } finally {
+          if (target !== undefined) target.session.appending = false
+        }
+      },
+      setChildDetached(detached: boolean) { childDetached = detached },
+      emitChildDelegation(childId: string, parentId: string) {
+        h.emitSessionEvent(
+          { id: childId, header: { parentSession: parentId, origin: 'subagent' } },
+          { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
+        )
+      },
+      /** (c) generalized: ANY first live event from an unknown child session. */
+      emitChildLiveEvent(session: Record<string, unknown>, type: string) {
+        h.emitSessionEvent(session, { type, data: {} })
+      },
+      setParentPolicy(policy: string) { live.parentPolicy = policy },
+      setHostRows(rows: Array<Record<string, unknown>>) { hostRows = rows },
+      /** Drive the real subagents.stopChildren RPC → reconcileSubagentIndex →
+       *  syncFromList + full re-sync (i/R2-2). */
+      async stopChildren(parentId: string, id = 901): Promise<void> {
+        h.send({ id, method: 'subagents.stopChildren', params: { parentSessionId: parentId } })
+        await h.waitFor(id)
+      },
+      indexChildIds(): string[] { return [...getSubagentIndex(h.ctx).rows.keys()] },
+      /** (c) sync is deferred via queueMicrotask (host rejects reentrant append). */
+      flushMicrotasks() { return Promise.resolve().then(() => {}) },
+    }
+  }
+
+  const ask = (policy: string) => [{ type: 'approval/policy', data: { policy } }]
+
+  test('(a) catalog + parent ask → child log append approval/policy ask', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(21)
+    r.emitCatalog(parentId)
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(a) catalog + parent full access(never) → child mirrors to never (no pointless ask)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never' })
+    const parentId = await r.bindParent(22)
+    r.emitCatalog(parentId)
+    expect(r.child.appended).toEqual(ask('never'))
+  })
+
+  test('(b) parent approval/policy ask→never → already-ask child mirrored to never', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(23)
+    r.emitCatalog(parentId)                 // (a): child → ask
+    expect(r.child.appended).toEqual(ask('ask'))
+    r.emitParentPolicy(parentId, 'never')   // (b): mirror every known child → never
+    expect(r.child.appended).toEqual([...ask('ask'), ...ask('never')])
+  })
+
+  test('(b) parent never→ask → never child self-healed to ask (REAL recovery path, no catalog replay)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(24)
+    r.emitCatalog(parentId)                 // (a): parent never == child never → no append
+    expect(r.child.appended).toHaveLength(0)
+    r.emitParentPolicy(parentId, 'ask')     // (b): recovery via parent policy event
+    expect(r.child.appended).toEqual(ask('ask'))
+    expect(r.h.warns.some((line) => line.includes('self-healed never→ask'))).toBe(true)
+  })
+
+  test('(c) child delegation pin BEFORE catalog → child synced without any catalog frame', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(25)
+    r.emitChildDelegation(CHILD, parentId)  // no catalog at all
+    await r.flushMicrotasks()               // deferred to dodge host reentrant-append guard
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('sync idempotency: repeated parent policy events do not re-append', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(26)
+    r.emitCatalog(parentId)
+    r.emitParentPolicy(parentId, 'ask')
+    r.emitParentPolicy(parentId, 'ask')
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(b)/(c) scope guard: unrelated session events never drive a sync', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(27)
+    // (b) an unrelated session's policy change is not the binding's parent.
+    r.emitParentPolicy('some-other-session', 'never')
+    expect(r.child.appended).toHaveLength(0)
+    // (c) a delegation pin whose header.parentSession is another session.
+    r.emitChildDelegation('unrelated-child', 'another-parent')
+    await r.flushMicrotasks()
+    expect(r.child.appended).toHaveLength(0)
+  })
+
+  test('fail-closed: unresolved parent / missing approval / throwing effectivePolicy → no append', async () => {
+    const missing = makeSyncHarness({ parentPolicy: 'ask', parentResolves: false })
+    const missingParentId = await missing.bindParent(28)
+    missing.emitCatalog(missingParentId)
+    expect(missing.child.appended).toHaveLength(0)
+
+    const throwing = makeSyncHarness({ parentPolicy: 'ask', sessionsGetThrows: true })
+    const throwingParentId = await throwing.bindParent(29)
+    throwing.emitCatalog(throwingParentId)
+    expect(throwing.child.appended).toHaveLength(0)
+
+    const noApproval = makeSyncHarness({ approvalMissing: true })
+    const noApprovalParentId = await noApproval.bindParent(30)
+    noApproval.emitCatalog(noApprovalParentId)
+    expect(noApproval.child.appended).toHaveLength(0)
+
+    const policyThrows = makeSyncHarness({ parentPolicy: 'ask', effectivePolicyThrows: true })
+    const policyThrowsParentId = await policyThrows.bindParent(31)
+    policyThrows.emitCatalog(policyThrowsParentId)
+    expect(policyThrows.child.appended).toHaveLength(0)
+  })
+
+  test('(b2) FIELD 2026-11-23: parent turn/start re-syncs known child from LIVE policy (redundant recovery)', async () => {
+    // The real machine saw (b)'s approval/policy event not trigger a mirror even
+    // though the host publishes it (see 03-live-trigger-diagnosis.md). The redundant
+    // turn/start hook re-syncs from the LIVE effective policy, so this recovers even
+    // when the policy value changed without an approval/policy event reaching (b).
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(39)
+    r.emitCatalog(parentId)                 // parent never == child never → no append
+    expect(r.child.appended).toHaveLength(0)
+    // Policy switched live to ask; no approval/policy event—only a turn/start.
+    r.setParentPolicy('ask')
+    r.emitParentTurnStart(parentId)
+    expect(r.child.appended).toEqual(ask('ask'))
+    // Idempotent: a second turn/start does not re-append.
+    r.emitParentTurnStart(parentId)
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  // ---- (b3) FIELD root cause: known child re-attached on turn/start ------------
+
+  test('(b3) detached child + parent flips ask→never → child turn/start mirrors never', async () => {
+    // FIELD root cause: sessions.get resolves only LIVE sessions. The child was
+    // settled (detached) when the parent flipped to never, so (b)/(b2) no-op.
+    // When the child is continued, the host re-attaches it and its turn/start
+    // (before any tool call) must mirror the LIVE parent policy.
+    const r = makeSyncHarness({ parentPolicy: 'ask', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(51)
+    r.emitCatalog(parentId)                       // live ask, child never → re-pin ask
+    expect(r.child.appended).toEqual(ask('ask'))
+    r.setChildDetached(true)                      // child's turn ends → host detaches
+    r.setParentPolicy('never')
+    r.emitParentPolicy(parentId, 'never')         // (b) : child UNDEF → no-op
+    r.emitParentTurnStart(parentId)               // (b2): child UNDEF → no-op
+    expect(r.child.appended).toEqual(ask('ask'))  // still ask while detached
+    r.setChildDetached(false)                     // resume/continue → host re-attaches
+    r.emitChildTurnStart(CHILD)                   // (b3): child known + turn/start
+    await r.flushMicrotasks()                     // deferred to dodge reentrant-append guard
+    expect(r.child.appended).toEqual([...ask('ask'), ...ask('never')])
+  })
+
+  test('(b3) detached child + parent flips never→ask → child turn/start re-pins ask (danger direction)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(52)
+    r.emitCatalog(parentId)                       // parent never == child never → no append
+    expect(r.child.appended).toHaveLength(0)
+    r.setChildDetached(true)
+    r.setParentPolicy('ask')
+    r.emitParentPolicy(parentId, 'ask')           // (b): no-op (detached)
+    expect(r.child.appended).toHaveLength(0)
+    r.setChildDetached(false)                     // re-attach on resume
+    r.emitChildTurnStart(CHILD)                   // (b3): re-pin ask → writes get a card
+    await r.flushMicrotasks()                     // deferred to dodge reentrant-append guard
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(b3) negative: unknown child turn/start with no index row is NOT synced (no false claim)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    await r.bindParent(53)
+    // No catalog — child not in index. A turn/start from a session that is not a
+    // known child must not drive (b3); header-less → (c) guard also rejects it.
+    r.emitChildTurnStart('never-seen-child')
+    expect(r.indexChildIds()).toEqual([])
+    expect(r.child.appended).toHaveLength(0)
+  })
+
+  // ---- R2-1(i) / R2-2: resume self-heal --------------------------------------
+
+  test('(i) resume bind with parent ALREADY ask → Stop reconcile re-pins the resumed child', async () => {
+    // Fresh bridge after TUI restart: index is EMPTY (no catalog/seed replay),
+    // the host list still has the child. A Stop action drives reconcile →
+    // syncFromList → full re-sync with LIVE effectivePolicy (ask) → re-pin.
+    const r = makeSyncHarness({ parentPolicy: 'ask', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(41)
+    expect(r.indexChildIds()).not.toContain(CHILD) // empty index after "restart"
+    // (b) on an empty index is structurally a no-op — no sync possible yet.
+    r.emitParentPolicy(parentId, 'ask')
+    expect(r.child.appended).toHaveLength(0)
+    // Stop action → reconcile → syncFromList seeds rows → (i) full re-sync.
+    await r.stopChildren(parentId, 911)
+    expect(r.indexChildIds()).toContain(CHILD)
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(i) resume bind, parent switches ask AFTER resume → (b) no-op on empty index, Stop reconcile heals', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(42)
+    // Resume with parent still full-access: reconcile would pin never (no-op).
+    // Parent switches to ask while index is still empty: (b) sees zero rows.
+    r.setParentPolicy('ask')
+    r.emitParentPolicy(parentId, 'ask')
+    expect(r.child.appended).toHaveLength(0) // structural failure of (b) on empty index
+    // Stop reconcile reads LIVE effectivePolicy (ask), not the stale event value.
+    await r.stopChildren(parentId, 912)
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(i)+Stop full re-sync covers ALL index rows, not just the event child', async () => {
+    const SECOND = 'mirror-child-2'
+    const r = makeSyncHarness({ parentPolicy: 'ask', overrideOfChild: 'never', extraChildren: [SECOND] })
+    const parentId = await r.bindParent(43)
+    r.setHostRows([
+      { sessionId: CHILD, parentSessionId: parentId, origin: 'subagent', running: true, updatedAt: 1 },
+      { sessionId: SECOND, parentSessionId: parentId, origin: 'subagent', running: true, updatedAt: 2 },
+    ])
+    await r.stopChildren(parentId, 913)
+    expect(r.indexChildIds().sort()).toEqual([CHILD, SECOND].sort())
+    expect(r.child.appended).toEqual(ask('ask'))
+    expect(r.extras.get(SECOND)!.appended).toEqual(ask('ask'))
+  })
+
+  test('(i) bind completion re-syncs a WARM index (in-process resume)', async () => {
+    // A reconnect with a warm index: the idempotent session.open resume path
+    // mirrors the live parent policy onto already-known children.
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(44)
+    r.emitCatalog(parentId)                 // catalog seeds index + mirrors never (no-op)
+    expect(r.child.appended).toHaveLength(0)
+    r.setHostRows([])                       // keep index warm; stop reconcile not needed
+    // Parent policy changed live WITHOUT an approval/policy event (e.g. missed
+    // while disconnected): a second resume bind must re-sync from live policy.
+    r.setParentPolicy('ask')
+    r.h.send({ id: 914, method: 'session.open', params: { mode: 'resume', id: parentId } })
+    await r.h.waitFor(914)
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  // ---- R2-1(ii): unknown child's first live event → noteCatalog + sync -------
+
+  test('(ii) unknown child first live event (valid header) → noteCatalog into index + sync', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(45)
+    expect(r.indexChildIds()).not.toContain(CHILD)
+    // ANY live event (not just delegation pin) from an unknown child with a
+    // valid header claims it into the index AND mirrors the parent policy.
+    r.emitChildLiveEvent({ id: CHILD, header: { parentSession: parentId, origin: 'subagent' } }, 'turn/start')
+    await r.flushMicrotasks()
+    expect(r.indexChildIds()).toContain(CHILD) // claimed into the INDEX (not a seen-set)
+    expect(r.child.appended).toEqual(ask('ask'))
+    // Once in the index, a later parent policy event (b) can take over.
+    r.emitParentPolicy(parentId, 'never')
+    expect(r.child.appended).toEqual([...ask('ask'), ...ask('never')])
+  })
+
+  test('(ii) header mismatch (not this binding\'s child) → NOT indexed, NOT synced', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(46)
+    const FOREIGN = 'foreign-child-1'
+    // Wrong parentSession in header.
+    r.emitChildLiveEvent({ id: FOREIGN, header: { parentSession: 'another-parent', origin: 'subagent' } }, 'turn/start')
+    // Wrong origin.
+    r.emitChildLiveEvent({ id: 'plain-fork', header: { parentSession: parentId, origin: 'fork' } }, 'turn/start')
+    // Missing header.
+    r.emitChildLiveEvent({ id: 'headerless' }, 'turn/start')
+    await r.flushMicrotasks()
+    expect(r.indexChildIds()).toEqual([])
+    expect(r.child.appended).toHaveLength(0)
+  })
+
+  test('(ii) unknown child without a live event stays invisible (no false claim)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    await r.bindParent(47)
+    // No event at all — the child is not magically added; only (i) reconcile
+    // (Stop action) can seed it from session.list.
+    expect(r.indexChildIds()).toEqual([])
+    expect(r.child.appended).toHaveLength(0)
   })
 })

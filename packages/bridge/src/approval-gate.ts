@@ -105,9 +105,32 @@ export type PreToolDecisionLike =
   | { kind: 'cancel' }
   | GateAskDecision
 
-/** Structural slice of the host's `ToolExecution` — only `.name` is read. */
+/** Structural slice of the host's `ToolExecution` — `.name` gates the policy,
+ *  `.agent.session` is the live session consulted for the effective approval
+ *  policy (written by dsh-agent-loop / pipeline at runtime). Kept local so the
+ *  gate imports no host package. */
 export interface GateExecLike {
   readonly name?: unknown
+  readonly agent?: { readonly session?: unknown }
+}
+
+/** Local structural face of the host approval service (no runtime import).
+ *  Only `effectivePolicy` is read, and every call is contained. */
+interface ApprovalPolicyLike {
+  effectivePolicy?(session: unknown): string | undefined
+}
+
+/** Resolves the current effective approval policy of an exec's session, or
+ *  `undefined` when it cannot be determined (fail-open → keep asking). */
+export type GatePolicyLookup = (exec: GateExecLike) => string | undefined
+
+/** Pull a printable session id out of the opaque session face for logging. */
+function sessionIdOf(session: unknown): string {
+  if (session !== null && typeof session === 'object') {
+    const id = (session as { id?: unknown }).id
+    if (typeof id === 'string' && id !== '') return id
+  }
+  return '(unknown)'
 }
 
 /**
@@ -127,13 +150,28 @@ export function decideAsk(exec: GateExecLike | null | undefined, config: Approva
   return decision
 }
 
-/** Build the `tools/pre-execute` listener from a normalized policy. */
+/** Build the `tools/pre-execute` listener from a normalized policy.
+ *
+ *  `lookup` (when provided) reads the session's effective approval policy on
+ *  every hit. A session on 'never' (host full access) rejects every ask BEFORE
+ *  the bridge answerer runs, so asking there would only produce an instant
+ *  rejection — the listener lets the call through with `next()` instead. Every
+ *  uncertain path (no lookup / no session / service or method missing / lookup
+ *  threw / any policy other than 'never') stays on the original ask path. */
 export function createPreExecuteListener(
   config: ApprovalGateConfig,
+  lookup?: GatePolicyLookup,
+  onBypass?: (exec: GateExecLike) => void,
 ): (exec: GateExecLike, next: () => Promise<PreToolDecisionLike>) => Promise<PreToolDecisionLike> {
   return (exec, next) => {
     const decision = decideAsk(exec, config)
-    if (decision !== undefined) return Promise.resolve(decision)
+    if (decision !== undefined) {
+      if (lookup?.(exec) === 'never') {
+        onBypass?.(exec)
+        return next()
+      }
+      return Promise.resolve(decision)
+    }
     return next()
   }
 }
@@ -143,9 +181,12 @@ export interface GateContext {
   logger?: {
     info(format: unknown, ...params: unknown[]): void
     warn(format: unknown, ...params: unknown[]): void
+    debug?(format: unknown, ...params: unknown[]): void
   }
   on?(name: string, listener: (...args: unknown[]) => unknown): () => void
   effect(execute: () => () => void | Promise<void>, label?: string): unknown
+  /** Cordis service lookup (works without declaring an injection). */
+  get?(name: string, strict?: boolean): unknown
 }
 
 export const name = 'dsh-opentui-approval-gate'
@@ -171,7 +212,37 @@ export function apply(ctx: GateContext, config: unknown): unknown {
       ctx.logger?.warn('[approval-gate] ctx.on unavailable — gate not registered (all tools pass)')
       return () => {}
     }
-    const listener = createPreExecuteListener(policy)
+    // Resolve the approval service PER pre-execute, never once at registration:
+    // cordis may load it after the gate, and /permission switches the effective
+    // policy at runtime. Any lookup failure degrades to "no policy" → ask.
+    const lookup: GatePolicyLookup = (exec) => {
+      const session = exec.agent?.session
+      if (session === undefined || session === null) return undefined
+      let approval: ApprovalPolicyLike | undefined
+      try {
+        approval = typeof ctx.get === 'function'
+          ? ctx.get('approval') as ApprovalPolicyLike | undefined
+          : undefined
+      } catch {
+        return undefined
+      }
+      if (typeof approval?.effectivePolicy !== 'function') return undefined
+      try {
+        return approval.effectivePolicy(session)
+      } catch {
+        return undefined
+      }
+    }
+    const onBypass = (exec: GateExecLike): void => {
+      const toolName = typeof exec.name === 'string' && exec.name !== '' ? exec.name : '(unknown)'
+      // Per-call debug only: under full access EVERY gated write would log here.
+      ctx.logger?.debug?.(
+        '[approval-gate] policy bypass: %s passes without ask (session %s effective policy never)',
+        toolName,
+        sessionIdOf(exec.agent?.session),
+      )
+    }
+    const listener = createPreExecuteListener(policy, lookup, onBypass)
     const unsub = ctx.on('tools/pre-execute', listener as (...args: unknown[]) => unknown)
     return () => {
       try {
