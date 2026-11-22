@@ -186,6 +186,10 @@ const SHIM_DIR = join(profileDir, 'node_modules', ...SHIM_PACKAGE.split('/'))
 const SHIM_INDEX_PATH = join(SHIM_DIR, 'index.mjs')
 const SHIM_PKG_PATH = join(SHIM_DIR, 'package.json')
 const SHIM_REVISION_MARKER = '// shimRevision: '
+// PATCH_TEMPLATE is a JS backtick literal: any backtick INSIDE the template
+// body must be escaped (\`), otherwise it terminates the string and the
+// provisioner dies with a syntax error at runtime (the R2-3 maxDepth comment
+// hit exactly this). Keep template-body prose backtick-free or escaped.
 const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs — provider zai-coding-cn, key read by the host from ZAI_CODING_CN_API_KEY):
 - id: llm-pi-ai
   name: "@deepseek-ai/dsh-llm-pi-ai"

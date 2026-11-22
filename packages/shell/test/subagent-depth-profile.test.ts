@@ -20,12 +20,18 @@ describe("shipped inproc profile: subagent delegation depth", () => {
   // so a direct child is 1 > 0 and every delegation is refused (dispatch dead).
   // Pin 1 allows direct children but rejects grandchildren (2 > 1), closing
   // R2-3; volatile() means this is only the initial default, not a runtime lock.
+  // The trailing \n is a LINE ANCHOR: without it "maxDepth: 1" is a substring
+  // of "maxDepth: 10", so a tampered pin of 10 falsely passes.
   test("the subagent config block pins maxDepth to 1 (0 would kill all dispatch)", () => {
     expect(src).toContain(
-      "- id: subagent\n  name: \"@deepseek-ai/dsh-subagent\"\n  config:\n    maxActiveSubagents: 3\n    maxDepth: 1",
+      "- id: subagent\n  name: \"@deepseek-ai/dsh-subagent\"\n  config:\n    maxActiveSubagents: 3\n    maxDepth: 1\n",
     )
   })
 
+  // Negative assertion: the UNANCHORED needle is deliberately stronger here —
+  // it also catches "maxDepth: 0.5" and a value at EOF, which an anchored
+  // "maxDepth: 0\n" would miss. There is no prefix-substring false-green risk
+  // for not.toContain, so no line anchor is needed on this one.
   test("the pin is never 0 (direct child depth 1 > 0 => dispatch dead)", () => {
     expect(src).not.toContain("maxDepth: 0")
   })
