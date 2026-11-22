@@ -1,5 +1,5 @@
 /**
- * 025 W2-5b — pure helpers for the `/goals` command (plan §4.2). UI-free and
+ * 025 W2-5b — pure helpers for the `/goal` command (plan §4.2). UI-free and
  * table-testable: argument parsing + status-row formatting + explicit write
  * confirmation rows. All human text is resolved through `t()` so en/zh stay
  * keyed in parity; no seam/transport/state lives here.
@@ -24,7 +24,7 @@ const KNOWN_OPS = new Set(["create", "edit", "pause", "resume", "complete", "cle
  * The misspelled subcommand token, or undefined when the input is a bare read
  * or a recognized op. `parseGoalsArgs` keeps its historical status fallback;
  * this separate probe lets the command surface an explicit hint so a typo like
- * `/goals destory` no longer silently degrades to a status read.
+ * `/goal destory` no longer silently degrades to a status read.
  */
 export function goalsUnknownOp(argText: string): string | undefined {
 	const trimmed = argText.trim()
@@ -34,13 +34,13 @@ export function goalsUnknownOp(argText: string): string | undefined {
 	return KNOWN_OPS.has(token) ? undefined : token
 }
 
-/** i18n hint for a misspelled `/goals` subcommand (en/zh keyed, parity-checked). */
+/** i18n hint for a misspelled `/goal` subcommand (en/zh keyed, parity-checked). */
 export function goalsUnknownOpHint(token: string): string {
 	return t("command.goals.unknownOp", { op: token.slice(0, 48) })
 }
 
 /**
- * Parse `/goals [op] [text]`. Unknown or missing op -> status; bare write op
+ * Parse `/goal [op] [text]`. Unknown or missing op -> status; bare write op
  * with no objective (create/edit) -> an op whose empty objective the command
  * refuses and prompts for. Kept deliberately simple: one subcommand + free text.
  */

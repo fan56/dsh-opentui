@@ -1233,11 +1233,11 @@ export function coreCommands(): SlashCommand[] {
 			},
 		},
 		{
-			// 025-w2-5 — the /goals status surface. No args = read current goal
+			// 025-w2-5 — the /goal status surface. No args = read current goal
 			// (zero-side-effect default). Explicit write subcommands go through a
 			// yes/no confirm before touching the seam. Service absence / no active
 			// session -> honest degrade notice, never a fake-empty goal.
-			name: "/goals",
+			name: "/goal",
 			description: t("command.goals.description"),
 			async run(ctx, argText) {
 				const goals = ctx.seam.goals

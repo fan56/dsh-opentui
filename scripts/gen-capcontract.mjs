@@ -193,7 +193,7 @@ const W2_4_DIRECTORY_ADAPTERS = [
   "@deepseek-ai/dsh-web#web/listProviders",
   "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
 ]
-// W2-5 /goals face: seven goals ids (plan §4.2). All unary, all service=goals,
+// W2-5 /goal face: seven goals ids (plan §4.2). All unary, all service=goals,
 // scope {context:agent, wire:agentId} — the wire carries the agentId STRING and
 // the arm resolves it in place via CAP_SCOPE_TABLE (data-driven scope
 // substitution, d94161a, table-driven — AMEND-5 erratum; not caller-side live).
