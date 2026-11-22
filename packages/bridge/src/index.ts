@@ -2734,6 +2734,80 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  // ---- F1: delegated child approval policy re-pin -------------------------
+  /** Local structural faces for the host services consulted when re-pinning a
+   *  delegated child's approval policy. No runtime @deepseek-ai/* import — same
+   *  no-import discipline as the other host faces in this file. */
+  interface SessionsServiceLike {
+    get?(id: string): unknown
+  }
+  interface ApprovalServiceLike {
+    overrideOf?(session: unknown): string | undefined
+  }
+  interface WritableSessionLike {
+    append(type: string, data: Record<string, unknown>): unknown
+  }
+
+  /** Child ids already processed by the re-pin guard (idempotent: a replayed
+   *  catalog row must not append a second policy event). */
+  const repinnedChildren = new Set<string>()
+
+  /** F1 (2026-11-22 real-machine收尾): the host pins EVERY delegated child's
+   *  approval policy to 'never' (`dsh-subagent` captureDelegatedPolicyOverrides /
+   *  appendDelegatedPolicyOverrides, source:'delegation'). `dsh-user-approval`'s
+   *  `decide()` returns 'rejected' on that policy BEFORE dispatching the
+   *  'approval/request' waterfall — so this bridge's F1 answerer is never
+   *  invoked for a child, no `ask.request` frame is emitted and no child card
+   *  can appear (evidence: .proof/f1-a1-ask-routing/01-child-approval-rejection-evidence.md).
+   *
+   *  Re-pin the delegation 'never' to 'ask' on the CHILD session log so child
+   *  approvals flow through the parent ask channel and the F1 card. Idempotent
+   *  and fail-closed: we only touch a child of THIS binding, never re-append when
+   *  the child is already answerable, and if the child session / services cannot
+   *  be resolved we leave policy intact (host keeps its never→rejected default). */
+  function repinChildApprovalPolicy(childId: string, parentSessionId: string): void {
+    if (binding === undefined || parentSessionId !== binding.sessionId) return
+    if (repinnedChildren.has(childId)) return
+    const get = ctx.get
+    if (typeof get !== 'function') return
+    let sessions: SessionsServiceLike | undefined
+    let approval: ApprovalServiceLike | undefined
+    try {
+      sessions = get.call(ctx, 'sessions') as SessionsServiceLike | undefined
+      approval = get.call(ctx, 'approval') as ApprovalServiceLike | undefined
+    } catch {
+      return
+    }
+    if (typeof sessions?.get !== 'function') return
+    let childSession: WritableSessionLike | undefined
+    try {
+      childSession = sessions.get(childId) as WritableSessionLike | undefined
+    } catch {
+      return
+    }
+    if (childSession === undefined || typeof childSession.append !== 'function') return
+    // Only re-pin a 'never' (the delegation pin) or an unset policy. An
+    // already-answerable 'ask' policy needs no append — avoid duplicate churn
+    // on replayed catalog rows and on children forked with an explicit 'ask'.
+    if (approval !== undefined && typeof approval.overrideOf === 'function') {
+      const current = approval.overrideOf(childSession)
+      if (current !== undefined && current !== 'never') {
+        repinnedChildren.add(childId)
+        return
+      }
+    }
+    try {
+      childSession.append('approval/policy', { policy: 'ask' })
+      repinnedChildren.add(childId)
+      logger.info(
+        '[dsh-opentui-bridge] child approval re-pinned to ask child=%s parent=%s (delegation never pin overridden)',
+        childId, parentSessionId,
+      )
+    } catch (err) {
+      logger.warn('[dsh-opentui-bridge] child approval re-pin failed child=%s: %s', childId, String(err))
+    }
+  }
+
   /** `session/event` listener. TURN event types are gated on the currently open
    *  session id AND the in-flight turn's numeric turn, so other sessions —
    *  including subagent child sessions riding the same firehose — never leak
@@ -2797,6 +2871,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId,
         typeof data.childCreatedAt === 'number' ? data.childCreatedAt : undefined,
       )
+      // F1: the host pins this child's approval policy to 'never' at delegation,
+      // which short-circuits decide() before our F1 answerer ever sees a child
+      // ask (no card, child tool auto-rejected). Re-pin to 'ask' on the child log
+      // so the child's approvals route through this bridge's parent channel.
+      repinChildApprovalPolicy(childId, sessionId)
       const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
       const label = typeof data.label === 'string' && data.label !== ''
         ? data.label
