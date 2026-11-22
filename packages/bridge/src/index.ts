@@ -2757,6 +2757,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       const label = typeof data.label === 'string' && data.label !== ''
         ? data.label
         : (typeof data.name === 'string' ? data.name : '')
+      // F5: forward the host's v3 child reservation `name` verbatim. It is a
+      // sibling-unique child slug (NOT a registry agent name) and the seam
+      // needs it as a separate channel; `label` alone cannot distinguish an
+      // ad-hoc child titled with a task from a `use_agent` agent name.
+      const name = typeof data.name === 'string' && data.name !== '' ? data.name : ''
       // Stable synthetic pairing key; no agent.settle is emitted for catalog
       // children, so runId:seq is only the roster map key here. childCreatedAt
       // is the host's real wall clock (epoch ms) — forward it so the seam can
@@ -2766,6 +2771,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId: boundId,
         childId,
         label,
+        ...(name !== '' ? { name } : {}),
         runId: `catalog:${childId}`,
         seq: 0,
         ...(typeof data.childCreatedAt === 'number' ? { childCreatedAt: data.childCreatedAt } : {}),

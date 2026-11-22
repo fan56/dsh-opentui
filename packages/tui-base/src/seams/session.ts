@@ -544,6 +544,10 @@ export interface SeamTurnCallbacks {
 export interface SeamSubagentView {
 	id: string
 	label: string
+	/** Batch F5: the host v3 `subagent/catalog` child reservation name (unique
+	 * among siblings). NOT a registry agent name — `use_agent` already carries
+	 * the agent name in `label`. Absent when the producer never supplied one. */
+	name?: string
 	model?: string
 	status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
 	rounds: number
