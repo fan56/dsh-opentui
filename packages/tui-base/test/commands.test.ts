@@ -2141,18 +2141,23 @@ describe("026 /permission — current session preset mirror", () => {
 			defaultOptions: [],
 			defaultPreset: "workspace-write",
 		})
-		expect(lines[0]).toBe("current preset workspace-write (available: workspace-write, danger-full-access)")
+		expect(lines[0]).toBe("available presets: workspace-write, danger-full-access")
 		expect(lines).toContain("workspace-write — sandboxed")
-		expect(lines[lines.length - 1]).toBe("default preset: workspace-write")
+		expect(lines[lines.length - 2]).toBe("default preset: workspace-write")
+		expect(lines[lines.length - 1]).toContain("host-authoritative")
+		// S1: never claim the default is the current session value.
+		expect(lines.some((l) => l.startsWith("current preset"))).toBe(false)
 	})
 
-	test("bare shows current preset + catalog lines with descriptions (E6 answer-bearing)", async () => {
+	test("bare shows catalog presets + honest default/current wording (E6 answer-bearing)", async () => {
 		const seam = new RecordingSeam()
 		const ctx = makeCtx(seam)
 		await permCmd().run(ctx, "")
-		expect(ctx.lines[0]).toBe("current preset workspace-write (available: workspace-write, danger-full-access)")
+		expect(ctx.lines[0]).toBe("available presets: workspace-write, danger-full-access")
 		expect(ctx.lines.some((l) => l.includes("sandboxed"))).toBe(true)
-		expect(ctx.lines.some((l) => l.includes("default preset"))).toBe(true)
+		expect(ctx.lines.some((l) => l.startsWith("default preset:"))).toBe(true)
+		expect(ctx.lines.some((l) => l.includes("host-authoritative"))).toBe(true)
+		expect(ctx.lines.some((l) => l.startsWith("current preset"))).toBe(false)
 		expect(seam.permissionSwitchCalls).toHaveLength(0)
 	})
 
@@ -2229,6 +2234,42 @@ describe("026 /permission — current session preset mirror", () => {
 		const ctx = makeCtx(seam)
 		await permCmd().run(ctx, "")
 		expect(ctx.lines[0]).toContain("not available on this host")
+	})
+
+	// 026 review C1 — the "already" short-circuit used defaultPreset as if it
+	// were the current session value. After a switch to a non-default preset,
+	// switching BACK to the default was wrongly refused. Host apply() is
+	// idempotent, so re-submitting is harmless: no rejection, always switch.
+	test("C1 positive: target == defaultPreset is NOT rejected, switch is submitted", async () => {
+		const seam = new RecordingSeam()
+		// default = workspace-write; the user asks for exactly the default.
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "workspace-write")
+		expect(seam.permissionSwitchCalls).toEqual(["workspace-write"])
+		expect(ctx.lines.join(" ")).not.toContain("already")
+		expect(ctx.lines[0]).toContain("permission preset set to workspace-write")
+	})
+
+	test("C1 negative control: unknown preset is still rejected (validation intact)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "no-such-preset")
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+		expect(ctx.lines[0]).toContain("unknown preset")
+	})
+
+	test("C1 negative control: default-equal RISK preset still needs confirm (old short-circuit skipped the modal)", async () => {
+		const seam = new RecordingSeam()
+		seam.permissionCatalog = {
+			options: [{ value: "danger-full-access", name: "Full access" }],
+			defaultOptions: [],
+			defaultPreset: "danger-full-access", // target == default AND risk
+		}
+		const ctx = makeCtx(seam, "cancel")
+		await permCmd().run(ctx, "danger-full-access")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+		expect(ctx.lines.join(" ")).not.toContain("already")
 	})
 })
 

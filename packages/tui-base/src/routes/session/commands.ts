@@ -402,17 +402,24 @@ export function cwdBasename(cwd: string | undefined): string | undefined {
 	return parts[parts.length - 1] || trimmed
 }
 
-/** Bare `/permission` view lines from a catalog — web handler text
- *  `current preset X (available: …)` (深读 2.2(1)) + a description line per
- *  option (optionsOf detail, 深读 2.2(4)). Pure for unit testing. */
+/** Bare `/permission` view lines from a catalog. Pure for unit testing.
+ *
+ *  026 review S1: our seam has NO readable current-session preset face. rc.5
+ *  does register a `permissions` projection with `currentValue`, but the bridge
+ *  wires `session/observeProjections` only as a raw push stream with no consumer
+ *  face — wiring one is a new capability slice, not this one-line fix. So never
+ *  label `defaultPreset` as "current" (that lies whenever default !== current,
+ *  i.e. after a switch). State only what we can actually read and defer the
+ *  current-session value to the host. */
 export function permissionCatalogLines(catalog: SeamPermissionCatalog): string[] {
 	const names = catalog.options.map((option) => option.value).join(", ")
-	const lines = [`current preset ${catalog.defaultPreset} (available: ${names})`]
+	const lines = [`available presets: ${names}`]
 	for (const option of catalog.options) {
 		const detail = option.description === undefined || option.description === "" ? "" : ` — ${option.description}`
 		lines.push(`${option.value}${detail}`)
 	}
 	lines.push(`default preset: ${catalog.defaultPreset}`)
+	lines.push("current session preset is host-authoritative (not readable here); use /permission <preset> to set it")
 	return lines
 }
 
@@ -1895,10 +1902,13 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.permission.unknown", { name: arg, available: names }))
 					return
 				}
-				if (target.value === catalog.defaultPreset) {
-					ctx.say(t("command.permission.already", { name: target.value }))
-					return
-				}
+				// 026 review C1: NO "already" short-circuit. We cannot read the
+				// real current-session preset (no readable projection face), so
+				// comparing the target against `defaultPreset` is wrong — after a
+				// session switches to a non-default preset, switching back to the
+				// default was wrongly refused. The host `apply()` is idempotent
+				// (`current !== name` before append, permission-presets :488), so
+				// re-submitting the default is harmless. Always go through switch.
 				if (isRiskPermissionPreset(target.value, target.name)) {
 					const verdict = await ctx.pickOne(t("command.permission.riskTitle", { name: target.value }), [
 						{ title: t("command.permission.riskAck"), value: "ack" },
