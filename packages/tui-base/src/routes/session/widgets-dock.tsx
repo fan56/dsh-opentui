@@ -1294,11 +1294,20 @@ const DOCK_ACCENT_HUES: Record<DockAccent, readonly string[]> = {
 	agent: ["blue"],
 }
 
-/** No-theme fallbacks per surface polarity (dsh-blue dark indices). */
+/** Minimum text contrast every dock accent must clear on its surface. */
+const DOCK_ACCENT_MIN_CONTRAST = 4.5
+
+/** No-theme fallbacks per surface polarity (dsh-blue dark indices).
+ * oldfox C3: the old light todo value #1f8c44 (green[100]) is only 4.29:1 on
+ * white / 3.83:1 on #f2f2f2. The light green ramp has NO step at/above 4.5:1
+ * (100 is its darkest), so todo.light uses a deeper green from outside that
+ * ramp: #187a3b (5.40:1 white / 4.83:1 #f2f2f2), still far from agent blue
+ * (#2b44b8), tool cyan (#077786) and think purple (#6d47ad). dark #7fd88f
+ * already clears the floor and is unchanged. */
 const DOCK_ACCENT_FALLBACK: Record<DockAccent, { dark: string; light: string }> = {
 	think: { dark: "#9d7cd8", light: "#6d47ad" },
 	tool: { dark: "#449da7", light: "#077786" },
-	todo: { dark: "#7fd88f", light: "#1f8c44" },
+	todo: { dark: "#7fd88f", light: "#187a3b" },
 	agent: { dark: "#6b82fe", light: "#2b44b8" },
 }
 
@@ -1306,6 +1315,15 @@ type HueRamp = Readonly<Record<number, RGBA | undefined>>
 
 export function dockAccentColor(theme: ComponentTheme | undefined, accent: DockAccent): string | RGBA {
 	const background = theme?.background?.base
+	/** The static fallback is CONTRAST-VALIDATED too (oldfox C3): a readable
+	 * color beats an unreadable table value. When it already clears the floor
+	 * `boostUntilContrast` returns the table hex verbatim (tests pin it); only
+	 * a surface where the table value itself fails gets a deeper/shallower mix. */
+	const validatedFallback = (bg: PowerlineColor): string => {
+		const fallback = DOCK_ACCENT_FALLBACK[accent]
+		const darkSurface = relativeLuminance(bg) < 0.5
+		return boostUntilContrast(darkSurface ? fallback.dark : fallback.light, bg, DOCK_ACCENT_MIN_CONTRAST).color
+	}
 	const hues = theme?.hue as unknown as Readonly<Record<string, HueRamp | undefined>> | undefined
 	for (const name of DOCK_ACCENT_HUES[accent]) {
 		const ramp = hues?.[name]
@@ -1315,15 +1333,16 @@ export function dockAccentColor(theme: ComponentTheme | undefined, accent: DockA
 			.filter((value): value is RGBA => value !== undefined)
 		if (candidates.length === 0) continue
 		if (background === undefined) return candidates[0]!
-		const preferred = candidates.find((value) => contrastRatio(value, background) >= 4.5)
+		const preferred = candidates.find((value) => contrastRatio(value, background) >= DOCK_ACCENT_MIN_CONTRAST)
 		if (preferred !== undefined) return preferred
-		// No stock step clears the floor (custom surface): return the most
-		// readable step rather than an unreadable stock one.
-		return candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+		// No stock step clears the floor (custom surface — e.g. dsh-blue light's
+		// green ramp tops out at 4.29:1). Use the validated static fallback for
+		// this polarity instead of returning an unreadable in-ramp swatch.
+		return validatedFallback(background)
 	}
-	const fallback = DOCK_ACCENT_FALLBACK[accent]
-	const darkSurface = background === undefined || relativeLuminance(background) < 0.5
-	return darkSurface ? fallback.dark : fallback.light
+	// No theme background at all: no surface to measure against — keep the
+	// historic dark-polarity table value (the no-surface case is dark by law).
+	return background === undefined ? DOCK_ACCENT_FALLBACK[accent].dark : validatedFallback(background)
 }
 
 /** Whether the dock needs the shared animation clock right now (pure):

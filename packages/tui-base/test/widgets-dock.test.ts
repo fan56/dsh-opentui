@@ -785,8 +785,47 @@ describe("dock semantic accents — todo green / agent blue (F4 row separation)"
 			hue: {},
 			background: { base: RGBA.fromHex("#ffffff") },
 		} as unknown as Parameters<typeof dockAccentColor>[0]
-		expect(dockAccentColor(lightNoHues, "todo")).toBe("#1f8c44")
+		// oldfox C3: #1f8c44 was only 4.29:1 on white; deeper green #187a3b.
+		expect(dockAccentColor(lightNoHues, "todo")).toBe("#187a3b")
 		expect(dockAccentColor(lightNoHues, "agent")).toBe("#2b44b8")
+	})
+
+	// oldfox C3 (返工): contrast is now a MECHANICAL assertion on every accent —
+	// no manual spot-check. Both the theme ramp-walk path and the no-ramp static
+	// fallback path are measured against both polarity surfaces; #f2f2f2 is the
+	// near-white surface that used to push the old todo fallback to 3.83:1.
+	test("every ramp-resolved accent clears 4.5:1 on both theme surfaces", () => {
+		for (const mode of ["dark", "light"] as const) {
+			const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), mode))
+			for (const accent of ["think", "tool", "todo", "agent"] as const) {
+				const picked = dockAccentColor(theme, accent)
+				expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+			}
+		}
+	})
+
+	test("every static fallback clears 4.5:1 on dark, white and #f2f2f2 surfaces", () => {
+		for (const bg of ["#0a0a0f", "#ffffff", "#f2f2f2"]) {
+			const noHues = {
+				hue: {},
+				background: { base: RGBA.fromHex(bg) },
+			} as unknown as Parameters<typeof dockAccentColor>[0]
+			for (const accent of ["think", "tool", "todo", "agent"] as const) {
+				const picked = dockAccentColor(noHues, accent)
+				expect(contrastRatio(picked, bg)).toBeGreaterThanOrEqual(4.5)
+			}
+		}
+	})
+
+	test("the deepened light todo green stays far from agent/tool/think accents", () => {
+		const lightNoHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#ffffff") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		const todo = dockAccentColor(lightNoHues, "todo")
+		for (const accent of ["agent", "tool", "think"] as const) {
+			expect(colorDistance(todo, dockAccentColor(lightNoHues, accent))).toBeGreaterThan(40)
+		}
 	})
 })
 

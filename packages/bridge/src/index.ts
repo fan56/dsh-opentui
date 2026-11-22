@@ -41,7 +41,7 @@ import { dirname, join } from 'node:path'
 // this module only connects them to dispatch + turn/session lifecycle.
 import { ASK_FRAME_TYPES, validateAskResponse } from './ask-frames'
 import type { AskOutcome, AskRequestPayload, AskResponseParams, AskSettledPayload } from './ask-frames'
-import { AskRegistry } from './ask-registry'
+import { AskRegistry, DEFAULT_MAX_ASK_WAIT_MS } from './ask-registry'
 // ADR-0011 T7 — redacted decision journal + session-scoped permission summary.
 import { alwaysGrantToolsFromJournal, askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // M3-02 — section registration skeleton lives in append-section.ts; index.ts
@@ -1950,6 +1950,32 @@ function parseRequest(raw: string): ParsedRequest {
   return { id, method: obj.method, params }
 }
 
+/**
+ * oldfox S1 (终审返工): normalize the profile-patch `askDeadlineMs` at the one
+ * AskRegistry construction point. A non-number / NaN / negative value is
+ * IGNORED (null → no per-ask clock) with ONE warn; a value above the registry's
+ * maxAskWaitMs hard cap is CLAMPED to the cap with ONE warn. Otherwise the
+ * number passes through. `warn` is injectable so the two cases are unit-testable
+ * without a live bridge, and the cap is the same exported constant the registry
+ * arms its hard-cap timer with (no drift between check and enforcement).
+ */
+export function resolveAskDeadlineMs(
+  raw: unknown,
+  maxAskWaitMs: number = DEFAULT_MAX_ASK_WAIT_MS,
+  warn: (format: unknown, ...params: unknown[]) => void = () => {},
+): number | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'number' || Number.isNaN(raw) || raw < 0) {
+    warn('[dsh-opentui-bridge] invalid askDeadlineMs %s ignored (no per-ask deadline)', String(raw))
+    return null
+  }
+  if (raw > maxAskWaitMs) {
+    warn('[dsh-opentui-bridge] askDeadlineMs %d exceeds maxAskWaitMs %d; clamped to hard cap', raw, maxAskWaitMs)
+    return maxAskWaitMs
+  }
+  return raw
+}
+
 export function apply(ctx: BridgeContext, config: unknown): unknown {
   const logger = ctx.logger
 
@@ -2544,7 +2570,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   const askDeadlineMsRaw = config !== null && typeof config === 'object'
     ? (config as { askDeadlineMs?: unknown }).askDeadlineMs
     : undefined
-  const askDeadlineMs = typeof askDeadlineMsRaw === 'number' ? askDeadlineMsRaw : null
+  // S1: validate once here (never per ask) — invalid/negative → ignored + warn;
+  // above the 1h hard cap → clamped + warn (else the config silently loses to
+  // the cap timer). The registry still owns the cap it actually enforces.
+  const askDeadlineMs = resolveAskDeadlineMs(askDeadlineMsRaw, DEFAULT_MAX_ASK_WAIT_MS, (fmt, ...params) =>
+    logger.warn(fmt, ...params),
+  )
 
   const ask = new AskRegistry({
     askDeadlineMs,

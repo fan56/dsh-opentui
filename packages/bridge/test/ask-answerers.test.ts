@@ -18,7 +18,8 @@
  *  - terminal / teardown settles the answerer promise (never hangs).
  */
 import { afterEach, describe, expect, test } from 'bun:test'
-import { apply, getAskRegistry } from '../src/index'
+import { apply, getAskRegistry, resolveAskDeadlineMs } from '../src/index'
+import { DEFAULT_MAX_ASK_WAIT_MS } from '../src/ask-registry'
 import { ASK_ERROR_CODES } from '../src/ask-frames'
 import { getSubagentIndex } from '../src/subagent-index'
 import type { AskRegistry } from '../src/ask-registry'
@@ -46,6 +47,8 @@ interface Harness {
   frames: string[]
   registry: AskRegistry
   ctx: any
+  /** S1: formatted logger.warn calls, including construction-time config warns. */
+  warns: string[]
   listeners: Map<string, Array<(...args: any[]) => any>>
   send(frame: unknown): void
   latest(id: number | string): Frame | undefined
@@ -61,7 +64,7 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()!()
 })
 
-function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlineMs?: number } = {}): Harness {
+function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlineMs?: unknown } = {}): Harness {
   const previousSwitch = process.env[STDIO_SWITCH]
   process.env[STDIO_SWITCH] = '1'
 
@@ -120,8 +123,9 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlin
     },
   }
   let disposeBridge: (() => void) | undefined
+  const warns: string[] = []
   const ctx: any = {
-    logger: { info() {}, warn() {}, error() {}, debug() {} },
+    logger: { info() {}, warn(format: unknown, ...params: unknown[]) { warns.push(`${String(format)} ${params.map(String).join(' ')}`) }, error() {}, debug() {} },
     effect(execute: () => () => void) {
       disposeBridge = execute()
       return { dispose: () => disposeBridge?.() }
@@ -182,6 +186,7 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlin
     frames,
     registry,
     ctx,
+    warns,
     listeners,
     send(frame: unknown) {
       const line = `${JSON.stringify(frame)}\n`
@@ -568,6 +573,39 @@ describe('F1-A2 — askDeadlineMs config wiring + timeout outcome decision', () 
     expect(h.registry.settlements()[0].outcome).toBe('denied')
     expect(h.registry.settlements()[0].code).toBe(ASK_ERROR_CODES.DEADLINE_EXCEEDED)
     expect(await mustSettle(pending, 'timed-out child ask')).toBe('rejected')
+  })
+
+  // oldfox S1: config validation at the single construction point.
+  test('S1: non-number / NaN / negative askDeadlineMs is ignored with ONE warn', async () => {
+    const warns: unknown[][] = []
+    const warn = (...args: unknown[]) => { warns.push(args) }
+    for (const raw of ['20', NaN, -1]) {
+      expect(resolveAskDeadlineMs(raw, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBeNull()
+    }
+    expect(warns).toHaveLength(3) // one warn per ignored config, not one per ask
+
+    // The real apply() path uses the same helper and warns at construction.
+    const h = makeHarness({ askDeadlineMs: -1 })
+    expect(h.warns.filter((line) => line.includes('invalid askDeadlineMs'))).toHaveLength(1)
+    const { sessionId } = await startTurn(h, 1)
+    h.emitHost('approval/request', approvalReq(sessionId))
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(1) // hard cap only — no per-ask clock
+  })
+
+  test('S1: askDeadlineMs above maxAskWaitMs is clamped to the hard cap with ONE warn', async () => {
+    const warns: unknown[][] = []
+    const warn = (...args: unknown[]) => { warns.push(args) }
+    expect(resolveAskDeadlineMs(DEFAULT_MAX_ASK_WAIT_MS + 1, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(DEFAULT_MAX_ASK_WAIT_MS)
+    expect(warns).toHaveLength(1)
+    expect(String(warns[0]![0])).toContain('clamped')
+
+    const h = makeHarness({ askDeadlineMs: DEFAULT_MAX_ASK_WAIT_MS + 1 })
+    expect(h.warns.filter((line) => line.includes('clamped to hard cap'))).toHaveLength(1)
+    const { sessionId } = await startTurn(h, 1)
+    h.emitHost('approval/request', approvalReq(sessionId))
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(2) // deadline (at the cap) + hard cap still armed
   })
 })
 
