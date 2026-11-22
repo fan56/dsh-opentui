@@ -20,6 +20,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { apply, getAskRegistry } from '../src/index'
 import { ASK_ERROR_CODES } from '../src/ask-frames'
+import { getSubagentIndex } from '../src/subagent-index'
 import type { AskRegistry } from '../src/ask-registry'
 
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
@@ -418,6 +419,103 @@ describe('ADR-0011 T4 — fail-closed + cleanup settle', () => {
     h.dispose() // idempotent
     expect(await mustSettle(pending, 'teardown')).toBe('cancelled')
     expect(h.registry.timerCount()).toBe(0)
+  })
+})
+
+describe('F1-A1 — multi-session ask routing (catalog-driven child → parent ask channel)', () => {
+  const CHILD = 'child-session-1'
+
+  /** The parent journal's `subagent/catalog` row is the ONLY fact that creates
+   *  an ask-routing target — mirroring the host's `establishCatalogChild`. */
+  function registerChild(h: Harness, childId: string, parent: string): void {
+    h.emitSessionEvent({ id: parent }, { type: 'subagent/catalog', data: { childId, childCreatedAt: 1 } })
+  }
+
+  test('catalog-registered child ask routes onto the parent channel with identity fields and round-trips', async () => {
+    const h = makeHarness()
+    const { sessionId: parent, turnId } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+
+    const pending = h.emitHost('approval/request', approvalReq(CHILD))[0]
+    await sleep(0)
+
+    const asks = h.askFrames('ask.request')
+    expect(asks).toHaveLength(1)
+    const payload = asks[0].payload
+    // Delivery addressee stays the parent: ask.response / grant / clearSession
+    // all still key on the bound session, so the card is answerable.
+    expect(payload.sessionId).toBe(parent)
+    expect(payload.eventId).toBe(`${turnId}:ask-1`)
+    expect(payload.kind).toBe('approval')
+    expect(payload.childSessionId).toBe(CHILD)
+    expect(payload.parentSessionId).toBe(parent)
+
+    h.send({ id: 20, method: 'ask.response', params: {
+      eventId: payload.eventId, kind: 'approval', verdict: 'allowed-once',
+    } })
+    expect((await h.waitFor(20)).ok).toBe(true)
+    expect(await mustSettle(pending, 'routed child ask')).toBe('allowed-once')
+    // The answer reached the registry as a normal settlement, not a fail-closed.
+    expect(h.registry.settlements()[0].outcome).toBe('approved')
+  })
+
+  test('parent ask is unchanged: no child identity fields on the frame', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent) // presence of a child must not alter a parent ask
+
+    const pending = h.emitHost('approval/request', approvalReq(parent))[0]
+    await sleep(0)
+    const payload = h.askFrames('ask.request').at(-1)!.payload
+    expect(payload.sessionId).toBe(parent)
+    expect(payload.childSessionId).toBeUndefined()
+    expect(payload.parentSessionId).toBeUndefined()
+
+    h.send({ id: 21, method: 'ask.response', params: {
+      eventId: payload.eventId, kind: 'approval', verdict: 'allowed-once',
+    } })
+    expect((await h.waitFor(21)).ok).toBe(true)
+    expect(await mustSettle(pending, 'parent regression')).toBe('allowed-once')
+  })
+
+  test('unknown child and child of another parent stay fail-closed (no frame)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    // A target row only count when its parentSessionId is THIS binding.
+    getSubagentIndex(h.ctx).noteCatalog('child-of-other', 'other-parent')
+
+    const unknown = h.emitHost('approval/request', approvalReq('never-registered'))[0]
+    expect(await mustSettle(unknown, 'unknown child')).toBe('unavailable')
+    const foreign = h.emitHost('approval/request', approvalReq('child-of-other'))[0]
+    expect(await mustSettle(foreign, 'child of different parent')).toBe('unavailable')
+
+    expect(h.askFrames('ask.request')).toHaveLength(0)
+    expect(h.registry.settlements().map((s) => s.code)).toEqual([
+      ASK_ERROR_CODES.CHANNEL_UNAVAILABLE,
+      ASK_ERROR_CODES.CHANNEL_UNAVAILABLE,
+    ])
+  })
+
+  test('settled child no longer routes (fail-closed)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+    // The child's own turn/end flips its index status to settled.
+    h.emitSessionEvent({ id: CHILD }, { type: 'turn/end', data: {} })
+
+    const pending = h.emitHost('approval/request', approvalReq(CHILD))[0]
+    expect(await mustSettle(pending, 'settled child')).toBe('unavailable')
+    expect(h.askFrames('ask.request')).toHaveLength(0)
+  })
+
+  test('no in-flight turn fails closed even for a registered child (regression)', async () => {
+    const h = makeHarness()
+    // No session.open / session.send → no binding, no activeTurn.
+    getSubagentIndex(h.ctx).noteCatalog(CHILD, 'parent-with-no-turn')
+    const pending = h.emitHost('approval/request', approvalReq(CHILD))[0]
+    expect(await mustSettle(pending, 'registered child but no turn')).toBe('unavailable')
+    expect(h.askFrames('ask.request')).toHaveLength(0)
+    expect(h.registry.settlements()[0].code).toBe(ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)
   })
 })
 

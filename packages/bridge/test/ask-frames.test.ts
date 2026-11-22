@@ -77,6 +77,27 @@ describe('validateAskRequest', () => {
     expect(result.value.escalation).toBe(true)
   })
 
+  test('F1-A1: child-session identity fields are optional and round-trip', () => {
+    const base = validateAskRequest({ eventId: 't:ask-1', sessionId: 'parent', kind: 'approval' })
+    expect(base.ok).toBe(true)
+    if (base.ok) {
+      expect(base.value.childSessionId).toBeUndefined()
+      expect(base.value.parentSessionId).toBeUndefined()
+    }
+    const child = validateAskRequest({
+      eventId: 't:ask-2', sessionId: 'parent', kind: 'approval',
+      childSessionId: 'child-1', parentSessionId: 'parent',
+    })
+    expect(child.ok).toBe(true)
+    if (child.ok) {
+      expect(child.value.childSessionId).toBe('child-1')
+      expect(child.value.parentSessionId).toBe('parent')
+    }
+    // Bad shapes are rejected with BAD_PARAMS (same as every other field).
+    expect(validateAskRequest({ ...valid, childSessionId: '' }).ok).toBe(false)
+    expect(validateAskRequest({ ...valid, parentSessionId: 42 }).ok).toBe(false)
+  })
+
   test('rejects missing eventId, bad kind, and empty options (BAD_PARAMS)', () => {
     expect(validateAskRequest({ ...valid, eventId: '' }).ok).toBe(false)
     expect(validateAskRequest({ ...valid, kind: 'unknown' }).ok).toBe(false)
