@@ -12,6 +12,7 @@ import { TuiKeybind } from "../src/config/keybind"
 import type { SeamRow } from "../src/routes/session/seam-rows"
 import {
 	activityDockTab,
+	activityDockTabLabels,
 	dockTabAtPosition,
 	dockTabBarLayout,
 	mainTabLines,
@@ -143,5 +144,34 @@ describe("tab bar width law (no clipToWidth re-crop)", () => {
 			lineWidth({ kind: "todo", segments: [{ text: layout.todoLabel, tone: "muted" }] }) +
 			lineWidth({ kind: "todo", segments: [{ text: layout.tailGap + layout.tail, tone: "muted" }] })
 		expect(total).toBe(W)
+	})
+})
+
+describe("B2c-2 — active tab ASCII [] marker (shared by framed + compact)", () => {
+	test("the active tab label alone is bracketed; both states are exact", () => {
+		expect(activityDockTabLabels("main", "1 main", "2 todo")).toEqual({ main: "[1 main]", todo: "2 todo" })
+		expect(activityDockTabLabels("todo", "1 main", "2 todo")).toEqual({ main: "1 main", todo: "[2 todo]" })
+	})
+
+	test("CJK locale labels are bracketed too (ASCII brackets around the whole label)", () => {
+		expect(activityDockTabLabels("main", "1 主面板", "2 待办")).toEqual({ main: "[1 主面板]", todo: "2 待办" })
+		expect(activityDockTabLabels("todo", "1 主面板", "2 待办")).toEqual({ main: "1 主面板", todo: "[2 待办]" })
+	})
+
+	test("hit zones track the bracketed labels (width-derived, no hard-code)", () => {
+		// main active: main label is 8 cols incl. brackets.
+		const mainActive = activityDockTabLabels("main", "1 main", "2 todo")
+		const layoutMain = dockTabBarLayout(W, mainActive.main, mainActive.todo, "")
+		expect(dockTabAtPosition(2, 0, 0, 0, layoutMain)).toBe("main") // inside "[1 main]"
+		const todoAt = 2 + lineWidth({ kind: "todo", segments: [{ text: "[1 main]" + layoutMain.between, tone: "muted" }] })
+		expect(dockTabAtPosition(todoAt, 0, 0, 0, layoutMain)).toBe("todo")
+
+		// todo active: brackets migrate to the todo label; its zone grows by 2.
+		const todoActive = activityDockTabLabels("todo", "1 main", "2 todo")
+		const layoutTodo = dockTabBarLayout(W, todoActive.main, todoActive.todo, "")
+		expect(dockTabAtPosition(2, 0, 0, 0, layoutTodo)).toBe("main")
+		const todoAt2 = 2 + lineWidth({ kind: "todo", segments: [{ text: "1 main" + layoutTodo.between, tone: "muted" }] })
+		expect(dockTabAtPosition(todoAt2, 0, 0, 0, layoutTodo)).toBe("todo")
+		expect(dockTabAtPosition(todoAt2 + lineWidth({ kind: "todo", segments: [{ text: "[2 todo]", tone: "muted" }] }), 0, 0, 0, layoutTodo)).toBeUndefined()
 	})
 })

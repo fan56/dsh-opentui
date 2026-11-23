@@ -721,6 +721,21 @@ export function dockTabBarLayout(innerWidth: number, mainLabel: string, todoLabe
 	return { mainLabel: main, todoLabel: todo, between, tailGap, tail }
 }
 
+/** B2c-2: the ONE label source for both dock modes. The active tab is wrapped
+ * in ASCII `[` … `]` so the user can see which tab owns the content area.
+ * ASCII only — the earlier `▸`/`●` and CJK glyph family is ambiguous-width and
+ * gets swallowed behind modal dialogs (prior art in this file). Brackets are
+ * grapheme-stable (width 1 each) and survive every terminal mode.
+ * Both the framed title and the compact rule row call this helper, so the
+ * marker can never diverge; `dockTabBarLayout` takes the returned strings and
+ * `dockTabAtPosition` derives hit zones from that layout's widths — the
+ * clickable region therefore tracks the brackets automatically. */
+export function activityDockTabLabels(tab: ActivityDockTab, mainLabel: string, todoLabel: string): { main: string; todo: string } {
+	return tab === "main"
+		? { main: `[${mainLabel}]`, todo: todoLabel }
+		: { main: mainLabel, todo: `[${todoLabel}]` }
+}
+
 /** Which tab does a screen-cell click hit? `screenX/screenY` are the framed
  * box's absolute origin; the box title starts at +2 columns (┏ then the
  * mandatory ━). The hit zone is each tab LABEL's full display width and TWO
@@ -1801,8 +1816,13 @@ export function WidgetsDock(props: {
 	// exactly `width()`. Click handling is on the box below (the box title
 	// itself is not a renderable, so autoFocus:false requires an explicit
 	// onMouseUp with a coordinate hit test).
-	const tabBar = () =>
-		dockTabBarLayout(titleSlotWidth(), t("overlay.widgets.tab.main"), t("overlay.widgets.tab.todo"), "")
+	// B2c-2: both modes share ONE label source so the active-tab marker can't
+	// diverge between the framed title and the compact rule row.
+	const tabLabels = () => activityDockTabLabels(activityDockTab(), t("overlay.widgets.tab.main"), t("overlay.widgets.tab.todo"))
+	const tabBar = () => {
+		const labels = tabLabels()
+		return dockTabBarLayout(titleSlotWidth(), labels.main, labels.todo, "")
+	}
 	const mergedTitleText = () => {
 		const { lines, info } = mergedFrame()
 		const base = mergedTitle({
@@ -1937,7 +1957,10 @@ export function WidgetsDock(props: {
 	// tab labels nor any reaction to `activityDockTab`, so the user never saw
 	// "1 主面板 / 2 待办". Mirror the framed affordance here: the same layout,
 	// the same signal, the same keymap commands (already global-mode).
-	const compactTabBar = () => dockTabBarLayout(width(), t("overlay.widgets.tab.main"), t("overlay.widgets.tab.todo"), "")
+	const compactTabBar = () => {
+		const labels = tabLabels()
+		return dockTabBarLayout(width(), labels.main, labels.todo, "")
+	}
 	// A MergedDockLine (not a raw <text> child): the renderer blanks CJK
 	// graphemes in a bare text node but paints them through mergedLineView's
 	// span styling (the same path `┃ 活动` and the todo tree use).

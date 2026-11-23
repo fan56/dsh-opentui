@@ -603,13 +603,14 @@ describe("WidgetsDock on the real renderer", () => {
 			const base = "🔧 tool · 🤖 subagent"
 			const suffix = "1/14"
 			const slot = WIDTH - 4
-			// R2: tab 条并入标题区 — the two tab labels lead the merged title;
-			// the base title + right-aligned N/M suffix law is unchanged.
-			const tabHead = "1 main  2 todo "
+			// R2 + B2c-2: tab 条并入标题区，激活 tab 用 ASCII [] 标记 —
+			// the two tab labels lead the merged title; base title + N/M law
+			// unchanged. main is active at this point → `[1 main]`.
+			const tabHead = "[1 main]  2 todo "
 			const titleText = `${tabHead}${base}`
 			const expected = `┏━${titleText}${" ".repeat(slot - stringWidth(titleText) - stringWidth(suffix))}${suffix}━┓`
 			expect(title).toBe(expected)
-			expect(title).toContain("1 main")
+			expect(title).toContain("[1 main]")
 			expect(title).toContain("2 todo")
 			expect(title.includes("todos [✓]")).toBe(false)
 
@@ -693,9 +694,10 @@ describe("WidgetsDock on the real renderer", () => {
 			const header = "● Todos (0/1)"
 			const child = "└─ ● task 1"
 			const inner = WIDTH - 2
-			// R2: tab 条并入标题区 — the tab labels lead the title on the top
-			// border; the framed dock still has exactly 4 occupied rows.
-			const tabHead = "1 main  2 todo "
+			// R2 + B2c-2: tab 条并入标题区，激活 tab 用 ASCII [] 标记 —
+			// the tab labels lead the title on the top border; the framed dock
+			// still has exactly 4 occupied rows. main active → `[1 main]`.
+			const tabHead = "[1 main]  2 todo "
 			const titleText = `${tabHead}🧩 activity`
 			expect(occupied[0]).toBe(`┏━${titleText}${"━".repeat(inner - 1 - stringWidth(titleText))}┓`)
 			expect(occupied[1]).toBe(`┃${header}${" ".repeat(inner - stringWidth(header))}┃`)
@@ -783,7 +785,7 @@ describe("WidgetsDock on the real renderer", () => {
 			const occupied = lines.filter((l) => l.trim() !== "")
 			// B2c: compact terminals now carry the tab bar as the first row.
 			expect(occupied).toHaveLength(4) // 1 tab bar + 2 upper rule lines + 1 lower summary
-			expect(occupied[0]!.trimEnd()).toBe("   1 main  2 todo") // compact tab bar (paddingLeft=3)
+			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo") // compact tab bar (paddingLeft=3), main active marker
 			expect(occupied[1]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
 			expect(occupied[2]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
 			expect(occupied[2]!.includes("bash")).toBe(true)
@@ -885,8 +887,9 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			const paint = () => setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			let occupied = paint().filter((l) => l.trim() !== "")
-			// The tab bar leads the compact dock, on EVERY row tier.
-			expect(occupied[0]!.trimEnd()).toBe("   1 main  2 todo")
+			// The tab bar leads the compact dock, on EVERY row tier. The active
+			// tab carries the ASCII [] marker; main is active at first.
+			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo")
 			expect(activityDockTab()).toBe("main")
 			expect(occupied.some((l) => l.includes("bash"))).toBe(true) // main: rule form
 
@@ -895,7 +898,7 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			occupied = paint().filter((l) => l.trim() !== "")
 			expect(activityDockTab()).toBe("todo")
-			expect(occupied[0]!.trimEnd()).toBe("   1 main  2 todo") // bar survives the switch
+			expect(occupied[0]!.trimEnd()).toBe("   1 main  [2 todo]") // marker MIGRATES to the active tab
 			expect(occupied.some((l) => l.includes("bash"))).toBe(false) // rule lines dropped
 			expect(occupied.some((l) => l.includes("├─ ● romeo"))).toBe(true) // todo tree shown
 
@@ -904,6 +907,7 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			occupied = paint().filter((l) => l.trim() !== "")
 			expect(activityDockTab()).toBe("main")
+			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo") // marker migrates back
 			expect(occupied.some((l) => l.includes("bash"))).toBe(true)
 		} finally {
 			resetActivityDockTab()
@@ -1142,6 +1146,7 @@ describe("R5-2 — dock cleanup resets the cross-session active panel", () => {
 			resetActivePanel()
 		}
 	})
+
 })
 
 /** Compare a captured fg to a target string/RGBA accent (channel tolerance). */
