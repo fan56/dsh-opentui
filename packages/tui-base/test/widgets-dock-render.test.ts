@@ -584,9 +584,15 @@ describe("WidgetsDock on the real renderer", () => {
 			const base = "🔧 tool · 🤖 subagent"
 			const suffix = "1/14"
 			const slot = WIDTH - 4
-			const expected = `┏━${base}${" ".repeat(slot - stringWidth(base) - stringWidth(suffix))}${suffix}━┓`
+			// R2: tab 条并入标题区 — the two tab labels lead the merged title;
+			// the base title + right-aligned N/M suffix law is unchanged.
+			const tabHead = "1 main  2 todo "
+			const titleText = `${tabHead}${base}`
+			const expected = `┏━${titleText}${" ".repeat(slot - stringWidth(titleText) - stringWidth(suffix))}${suffix}━┓`
 			expect(title).toBe(expected)
-			expect(title.includes("todo")).toBe(false)
+			expect(title).toContain("1 main")
+			expect(title).toContain("2 todo")
+			expect(title.includes("todos [✓]")).toBe(false)
 
 			// 2 subagents fit → NO N/M anywhere in the title.
 			setRows([
@@ -665,7 +671,11 @@ describe("WidgetsDock on the real renderer", () => {
 			const header = "● Todos (0/1)"
 			const child = "└─ ● task 1"
 			const inner = WIDTH - 2
-			expect(occupied[0]).toBe(`┏━🧩 activity${"━".repeat(inner - 1 - stringWidth("🧩 activity"))}┓`)
+			// R2: tab 条并入标题区 — the tab labels lead the title on the top
+			// border; the framed dock still has exactly 4 occupied rows.
+			const tabHead = "1 main  2 todo "
+			const titleText = `${tabHead}🧩 activity`
+			expect(occupied[0]).toBe(`┏━${titleText}${"━".repeat(inner - 1 - stringWidth(titleText))}┓`)
 			expect(occupied[1]).toBe(`┃${header}${" ".repeat(inner - stringWidth(header))}┃`)
 			expect(occupied[2]).toBe(`┃${child}${" ".repeat(inner - stringWidth(child))}┃`)
 			expect(occupied[3]).toBe(`┗${"━".repeat(inner)}┛`)
