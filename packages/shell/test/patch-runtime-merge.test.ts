@@ -33,6 +33,10 @@ const TEMPLATE = [
   '  config:',
   '    maxActiveSubagents: 3',
   '    maxDepth: 1',
+  '- id: session-log-deepseek',
+  '  name: "@deepseek-ai/dsh-session-log-deepseek"',
+  '  config:',
+  '    enabled: true',
   '',
 ].join('\n')
 
@@ -113,6 +117,43 @@ describe('B1 S3 E2 — permission.defaultPreset !!js guard semantics', () => {
     const current = TEMPLATE.replace('maxActiveSubagents: 3', 'maxActiveSubagents: 5')
     const out = mergeRuntimeFields(TEMPLATE, current)
     expect(out.content).toContain("enabled: !!js process.env.DSH_OPENTUI_APPROVAL_GATE !== 'off'")
+  })
+})
+
+describe('batch-gate — session-log-deepseek.enabled survives provisioner re-run (design 05 §4.3a)', () => {
+  test('runtime false is carried over; the !!js approval enabled line is untouched', () => {
+    const current = TEMPLATE.replace('enabled: true', 'enabled: false')
+    const out = mergeRuntimeFields(fixture(current).template, current)
+    expect(out.mergedFields).toEqual(['session-log-deepseek.enabled'])
+    expect(out.notes).toEqual([])
+    expect(out.content).toContain('    enabled: false\n')
+    expect(out.content).not.toContain('    enabled: true\n')
+    expect(out.content).toContain("enabled: !!js process.env.DSH_OPENTUI_APPROVAL_GATE !== 'off'")
+    // Only the session-log boolean differs from the template.
+    expect(out.content).toBe(current)
+  })
+
+  test('mutate false → re-run provisioner → still false (merge is idempotent)', () => {
+    const current = TEMPLATE.replace('enabled: true', 'enabled: false')
+    const first = mergeRuntimeFields(TEMPLATE, current)
+    const second = mergeRuntimeFields(first.content, first.content)
+    expect(second.content).toBe(first.content)
+    expect(second.content).toContain('    enabled: false\n')
+    expect(second.mergedFields).toEqual([])
+  })
+
+  test('non-boolean / expression value is refused with a WARN (no !!js injection)', () => {
+    const current = TEMPLATE.replace('enabled: true', 'enabled: !!js something')
+    const out = mergeRuntimeFields(TEMPLATE, current)
+    expect(out.content).toBe(TEMPLATE)
+    expect(out.mergedFields).toEqual([])
+    expect(out.notes.join(' ')).toContain('failed the boolean allow-list')
+  })
+
+  test('unchanged true default needs no merge and emits no WARN', () => {
+    const out = mergeRuntimeFields(TEMPLATE, TEMPLATE)
+    expect(out.content).toBe(TEMPLATE)
+    expect(out.mergedFields).not.toContain('session-log-deepseek.enabled')
   })
 })
 

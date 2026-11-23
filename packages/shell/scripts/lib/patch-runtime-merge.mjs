@@ -39,6 +39,31 @@ function replaceOnce(text, needle, replacement) {
   return { text: text.replace(needle, replacement), ok: true, count: 1 }
 }
 
+/** Locate the single `enabled:` line inside a top-level `- id: <id>` sequence item.
+ *  Scoped to the entry block so the approval-gate `enabled: !!js ...` line (a
+ *  different entry) is never mistaken for session-log-deepseek's boolean. */
+function findEntryEnabled(text, id) {
+  const idRe = new RegExp(`^- id: ${id}[ \\t]*$`, 'm')
+  const idMatch = idRe.exec(text)
+  if (idMatch === null) return undefined
+  const blockStart = idMatch.index + idMatch[0].length
+  const rest = text.slice(blockStart)
+  const nextEntry = /^- (?:id|insert):/m.exec(rest)
+  const blockEnd = nextEntry === null ? text.length : blockStart + nextEntry.index
+  const block = text.slice(blockStart, blockEnd)
+  const re = /^([ \t]*)enabled:([ \t]*)(\S.*?)[ \t]*$/gm
+  const matches = allMatches(block, re)
+  if (matches.length !== 1) return undefined // absent or duplicate → refuse
+  const m = matches[0]
+  return { absoluteIndex: blockStart + m.index, full: m[0], indent: m[1], gap: m[2], value: m[3] }
+}
+
+/** Accept only a boolean scalar (bare or quoted), never an expression/injection. */
+function safeBoolean(raw) {
+  const core = raw.trim().replace(/^(['"])(.*)\1$/, '$2')
+  return core === 'true' || core === 'false' ? core : undefined
+}
+
 /**
  * Merge runtime-written volatile fields from `current` into a fresh `template`.
  *
@@ -109,6 +134,37 @@ export function mergeRuntimeFields(template, current) {
       }
     } else if (curr.length > 1) {
       out.notes.push('permission.defaultPreset: duplicate lines in current patch; runtime value not merged')
+    }
+  }
+
+  // --- session-log-deepseek.enabled (boolean, entry-scoped) ------------------
+  {
+    const tmpl = findEntryEnabled(template, 'session-log-deepseek')
+    const curr = findEntryEnabled(current, 'session-log-deepseek')
+    if (tmpl !== undefined && curr !== undefined) {
+      const tmplValue = tmpl.value.trim()
+      const currValue = curr.value.trim()
+      // B1 S4-S6 / design 05 §4.3a: carry the host-written boolean across
+      // launcher restarts. A `!!js` expression or any non-boolean is refused
+      // (same scalar allow-list discipline as the other two fields).
+      if (currValue !== tmplValue) {
+        const plain = safeBoolean(currValue)
+        if (plain !== undefined) {
+          const needle = tmpl.full
+          const replacement = `${tmpl.indent}enabled:${tmpl.gap}${plain}`
+          const res = replaceOnce(out.content, needle, replacement)
+          if (res.ok) {
+            out.content = res.text
+            out.mergedFields.push('session-log-deepseek.enabled')
+          } else {
+            out.notes.push('session-log-deepseek.enabled: template line not unique; runtime value not merged')
+          }
+        } else {
+          out.notes.push('session-log-deepseek.enabled: runtime value failed the boolean allow-list; template value kept')
+        }
+      }
+    } else if (curr === undefined && /^- id: session-log-deepseek[ \t]*$/m.test(current)) {
+      out.notes.push('session-log-deepseek.enabled: duplicate or missing enabled line in current patch; runtime value not merged')
     }
   }
 
