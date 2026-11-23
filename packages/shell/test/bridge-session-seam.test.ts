@@ -792,7 +792,16 @@ describe("covered lifecycle + turn stream", () => {
 		await done
 	})
 
-	test("newSession clears the bound id before the next turn stages session.open{mode:new}", async () => {
+	// W3 /new fix — local helpers for the close→open hypothesis tests.
+	const turnCb = () => ({
+		onThinkingDelta() {},
+		onContentDelta() {},
+		onApprove: async () => "allowed-once" as const,
+		onError() {},
+	})
+	const methodsSince = (h: ReturnType<typeof makeHarness>, from: number) => h.requests.slice(from).map((r) => r.method)
+
+	test("newSession clears the bound id; the next turn closes the old session then opens {mode:new} (ADR-0010 OPEN→CLOSING→OPENING)", async () => {
 		const h = makeHarness()
 		h.replies.set("session.open", {
 			kind: "fn",
@@ -804,19 +813,139 @@ describe("covered lifecycle + turn stream", () => {
 		h.replies.set("session.send", { kind: "value", value: { turnId: "t2" } })
 		// bind an id first
 		h.seam.resumeSession("old")
-		const first = h.seam.turn("1", { onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {} })
+		const first = h.seam.turn("1", turnCb())
 		await Bun.sleep(0)
 		h.emit({ type: "turn.end", payload: { turnId: "t2", text: "" } })
 		await first
 		expect(h.seam.currentSessionId()).toBe("old")
 
+		const atNew = h.requests.length
 		h.seam.newSession()
 		expect(h.seam.currentSessionId()).toBeUndefined()
-		const second = h.seam.turn("2", { onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {} })
+		// P2-8: /new only stages; the close is owed by the NEXT turn, not here.
+		expect(methodsSince(h, atNew)).not.toContain("session.close")
+
+		const second = h.seam.turn("2", turnCb())
 		await Bun.sleep(0)
-		expect(h.lastRequest("session.open")?.params).toEqual({ mode: "new", replace: true })
+		expect(methodsSince(h, atNew).slice(0, 2)).toEqual(["session.close", "session.open"])
+		expect(h.lastRequest("session.open")?.params).toEqual({ mode: "new" })
+		// The bridge guard (index.ts:3920-3923) rejects new+replace with BAD_PARAMS.
+		expect(h.requests.some((r) => r.method === "session.open" && r.params?.mode === "new" && r.params?.replace === true)).toBe(false)
 		expect(h.seam.currentSessionId()).toBe("fresh")
 		h.emit({ type: "turn.end", payload: { turnId: "t2", text: "" } })
+		await second
+	})
+
+	test("/new: close SESSION_NOT_OPEN means already closed — still opens {mode:new} and resolves", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "old" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t1" } })
+		h.seam.resumeSession("old")
+		const first = h.seam.turn("1", turnCb())
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t1", text: "" } })
+		await first
+
+		h.replies.set("session.close", { kind: "error", error: new BridgeProtocolError("SESSION_NOT_OPEN", "no session open") })
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "fresh" } })
+		const atNew = h.requests.length
+		h.seam.newSession()
+		const second = h.seam.turn("2", turnCb())
+		await Bun.sleep(0)
+		expect(methodsSince(h, atNew).slice(0, 2)).toEqual(["session.close", "session.open"])
+		expect(h.lastRequest("session.open")?.params).toEqual({ mode: "new" })
+		expect(h.seam.currentSessionId()).toBe("fresh")
+		h.emit({ type: "turn.end", payload: { turnId: "t2" } })
+		await second
+	})
+
+	for (const code of ["BRIDGE_DEAD", "BRIDGE_RECOVERING", "BRIDGE_TIMEOUT", "BRIDGE_CLOSED", "BRIDGE_WRITE_FAILED"] as const) {
+		test(`/new: close ${code} rejects with no open, keeps attached + staged intent; next turn retries close→open (F1)`, async () => {
+			const h = makeHarness()
+			h.replies.set("session.open", { kind: "value", value: { sessionId: "old" } })
+			h.replies.set("session.send", { kind: "value", value: { turnId: "t1" } })
+			h.seam.resumeSession("old")
+			const first = h.seam.turn("1", turnCb())
+			await Bun.sleep(0)
+			h.emit({ type: "turn.end", payload: { turnId: "t1", text: "" } })
+			await first
+
+			h.replies.set("session.close", { kind: "error", error: new BridgeProtocolError(code, `${code} refused`) })
+			const atNew = h.requests.length
+			h.seam.newSession()
+			await expect(h.seam.turn("2", turnCb())).rejects.toMatchObject({ code })
+			expect(methodsSince(h, atNew)).toEqual(["session.close"]) // no open was sent
+			expect(h.seam.status().sessionAttached).toBe(true)
+			expect(h.seam.currentSessionId()).toBeUndefined()
+			expect(h.seam.stagedSessionId()).toBeUndefined() // staged {mode:new}, not a resume id
+
+			// Transport recovers: the restored MUST still drive close→open.
+			h.replies.set("session.close", { kind: "value", value: {} })
+			h.replies.set("session.open", { kind: "value", value: { sessionId: "fresh" } })
+			const atRetry = h.requests.length
+			const second = h.seam.turn("3", turnCb())
+			await Bun.sleep(0)
+			expect(methodsSince(h, atRetry).slice(0, 2)).toEqual(["session.close", "session.open"])
+			expect(h.lastRequest("session.open")?.params).toEqual({ mode: "new" })
+			h.emit({ type: "turn.end", payload: { turnId: "t3", text: "" } })
+			await second
+			expect(h.seam.currentSessionId()).toBe("fresh")
+		})
+	}
+
+	test("/new: close ok but open-new fails → attached=false; next turn self-heals with a bare open (no close)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "old" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t1" } })
+		h.seam.resumeSession("old")
+		const first = h.seam.turn("1", turnCb())
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t1", text: "" } })
+		await first
+
+		h.replies.set("session.open", { kind: "error", error: new BridgeProtocolError("BAD_PARAMS", "open-new failed") })
+		const atNew = h.requests.length
+		h.seam.newSession()
+		await expect(h.seam.turn("2", turnCb())).rejects.toMatchObject({ code: "BAD_PARAMS" })
+		expect(methodsSince(h, atNew)).toEqual(["session.close", "session.open"])
+		expect(h.seam.status().sessionAttached).toBe(false)
+		expect(h.seam.currentSessionId()).toBeUndefined()
+
+		// With attached=false the next turn re-stages {mode:new} itself: no close.
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "fresh" } })
+		const atHeal = h.requests.length
+		const second = h.seam.turn("3", turnCb())
+		await Bun.sleep(0)
+		expect(methodsSince(h, atHeal).slice(0, 1)).toEqual(["session.open"])
+		expect(methodsSince(h, atHeal)).not.toContain("session.close")
+		expect(h.lastRequest("session.open")?.params).toEqual({ mode: "new" })
+		h.emit({ type: "turn.end", payload: { turnId: "t3", text: "" } })
+		await second
+		expect(h.seam.currentSessionId()).toBe("fresh")
+	})
+
+	test("resume while attached still sends {mode:resume, replace:true} and never closes (resume branch unchanged)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", {
+			kind: "fn",
+			fn: (params) => ({ kind: "value", value: { sessionId: params?.mode === "resume" ? String(params.id) : "fresh" } }),
+		})
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t9" } })
+		h.seam.resumeSession("A")
+		const first = h.seam.turn("1", turnCb())
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t9", text: "" } })
+		await first
+
+		const atResume = h.requests.length
+		h.seam.resumeSession("B")
+		const second = h.seam.turn("2", turnCb())
+		await Bun.sleep(0)
+		expect(methodsSince(h, atResume).slice(0, 1)).toEqual(["session.open"])
+		expect(methodsSince(h, atResume)).not.toContain("session.close")
+		expect(h.lastRequest("session.open")?.params).toEqual({ mode: "resume", id: "B", replace: true })
+		expect(h.seam.currentSessionId()).toBe("B")
+		h.emit({ type: "turn.end", payload: { turnId: "t9", text: "" } })
 		await second
 	})
 

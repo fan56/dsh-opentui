@@ -2367,14 +2367,14 @@ export class BridgeSessionSeam implements SessionSeam {
 		// the next turn (remote-host-session.ts:746-751 staging parity).
 		//
 		// P2-8 LOCK WINDOW (deliberate, no behavior change): after /new but before
-		// the next turn, the BRIDGE still holds the OLD session open because no
-		// `session.open` has been sent yet. #sessionAttached intentionally stays
-		// true so the staged open carries `replace:true` (without it the bridge
-		// answers ALREADY_OPEN). Consequence: during this window another process
-		// that resumes the old id gets SESSION_LOCKED from the bridge, even
-		// though this client already reports currentSessionId() === undefined.
-		// That is the intended cost of keeping `replace` available (ADR-0010 §
-		// session.open replace semantics); do NOT clear #sessionAttached here.
+		// the next turn, the BRIDGE still holds the OLD session open. The close is
+		// owed by turn() at the start of that next turn (ADR-0010:58
+		// OPEN → CLOSING → OPENING(newId)); it is deliberately NOT sent here so
+		// /new stays a synchronous staging operation. Consequence: during this
+		// window another process that resumes the old id gets SESSION_LOCKED from
+		// the bridge, even though this client already reports
+		// currentSessionId() === undefined. #sessionAttached intentionally stays
+		// true to remember that the close is owed; do NOT clear it here.
 		this.#currentSessionId = undefined
 		this.#pendingOpen = { mode: "new" }
 		// P1-1: starting a fresh session abandons the DEAD session entirely —
@@ -4003,10 +4003,43 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (this.#pendingOpen !== undefined) {
 				const pending = this.#pendingOpen
 				this.#pendingOpen = undefined
+				if (pending.mode === "new" && this.#sessionAttached) {
+					// ADR-0010:58 defines /new as OPEN → CLOSING → OPENING(newId):
+					// close the old binding BEFORE minting a new one. The bridge
+					// rejects `{mode:"new", replace:true}` outright (replace is
+					// only legal with mode:"resume" and an explicitly named id,
+					// bridge/src/index.ts:3920-3923), so the old client wire broke
+					// here with BAD_PARAMS. Never send replace on the new path.
+					try {
+						await this.#transport.request("session.close")
+					} catch (err) {
+						const code = err instanceof BridgeProtocolError ? err.code
+							: err !== null && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
+								? (err as { code: string }).code
+								: undefined
+						if (code === "SESSION_NOT_OPEN") {
+							// The bridge already has no binding: treat as closed and
+							// continue to the new open below.
+						} else {
+							// Transport locally refused / state unknown (BRIDGE_DEAD,
+							// BRIDGE_CLOSED, BRIDGE_RECOVERING, BRIDGE_TIMEOUT,
+							// BRIDGE_WRITE_FAILED, ...). We still own the old session:
+							// restore the staged intent so the next turn() retries the
+							// whole close→open sequence instead of silently sending
+							// into the old journal with no bound id (oldfox F1).
+							this.#pendingOpen = pending
+							throw err
+						}
+					}
+					this.#sessionAttached = false
+					// close() and open() are two awaits: a dispose() may have landed
+					// in between. Do not open on a torn-down seam.
+					if (this.#disposed) throw new BridgeProtocolError("DISPOSED", "bridge seam is disposed")
+				}
 				const params: Record<string, unknown> =
 					pending.mode === "resume"
 						? { mode: "resume", id: pending.id, ...(this.#sessionAttached ? { replace: true } : {}) }
-						: { mode: "new", ...(this.#sessionAttached ? { replace: true } : {}) }
+						: { mode: "new" }
 				try {
 					const opened = asRecord(await this.#transport.request("session.open", params))
 					if (typeof opened.sessionId === "string") this.#currentSessionId = opened.sessionId
@@ -4019,7 +4052,11 @@ export class BridgeSessionSeam implements SessionSeam {
 					}
 					this.#sessionAttached = true
 				} catch (err) {
-					// SESSION_LOCKED / SESSION_NOT_FOUND surface to the turn caller.
+					// SESSION_LOCKED / SESSION_NOT_FOUND / BAD_PARAMS surface to the
+					// turn caller. On the /new path close already succeeded (or no
+					// session was attached): attached stays false and the intent is
+					// NOT restored, so the next turn() re-stages {mode:"new"} via
+					// the !sessionAttached branch above and self-heals.
 					throw err
 				}
 			}
