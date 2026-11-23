@@ -1931,8 +1931,38 @@ export function WidgetsDock(props: {
 	const frameHeight = () => 2 + tabContentLines().length
 	// Compact lower zone: the same todo tree as the framed dock (with a narrow
 	// fallback for an over-budget tree). No scroll zone in the compact form.
+	// B2c followup: the R2 tab bar was wired ONLY into the framed (>= 31 rows)
+	// box title. On compact terminals (<= COMPOSER_COMPACT_TERMINAL_ROWS, i.e.
+	// the shipped 80x24 / 120x24 pane) the rule branch below had neither the
+	// tab labels nor any reaction to `activityDockTab`, so the user never saw
+	// "1 主面板 / 2 待办". Mirror the framed affordance here: the same layout,
+	// the same signal, the same keymap commands (already global-mode).
+	const compactTabBar = () => dockTabBarLayout(width(), t("overlay.widgets.tab.main"), t("overlay.widgets.tab.todo"), "")
+	// A MergedDockLine (not a raw <text> child): the renderer blanks CJK
+	// graphemes in a bare text node but paints them through mergedLineView's
+	// span styling (the same path `┃ 活动` and the todo tree use).
+	const compactTabBarLine = (): MergedDockLine => {
+		const bar = compactTabBar()
+		return { kind: "tool", segments: [{ text: `${bar.mainLabel}${bar.between}${bar.todoLabel}`, tone: "muted" }] }
+	}
 	const compactLower = () => mergedCompactLowerLines(props.rows)
-	const compactHeight = () => 2 + compactLower().length
+	// main keeps the 2 rule lines + the lower zone; todo shows the pure todo
+	// tree via the SAME builder the framed todo tab uses. When the tree is
+	// empty both return no content rows — the empty state is the tab bar alone.
+	const compactContent = () =>
+		activityDockTab() === "main" ? compactLower() : todoTabLines(props.rows, width(), mergedDockCursor())
+	const compactRuleCount = () => (activityDockTab() === "main" ? 2 : 0)
+	// +1 for the new tab-bar row.
+	const compactHeight = () => 1 + compactRuleCount() + compactContent().length
+	let compactDockBox: Renderable | undefined
+	const onCompactTitleMouseUp = (event: MouseEvent) => {
+		onActivityPanelMouseUp(event)
+		if (compactDockBox === undefined) return
+		// The compact box has paddingLeft=3 (vs the framed box's ┏ + ━ = 2),
+		// so shift the hit-test origin one cell right.
+		const tab = dockTabAtPosition(event.x, event.y, compactDockBox.screenX + 1, compactDockBox.screenY, compactTabBar())
+		if (tab !== undefined) onDockTabMouseUp(tab, event)
+	}
 
 	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
 	// R5: the framed activity board is no longer "heavy blue for the whole
@@ -1984,13 +2014,29 @@ export function WidgetsDock(props: {
 				<Show
 					when={frame() === "frame"}
 					fallback={
-						<box flexShrink={0} flexDirection="column" width="100%" height={compactHeight()} paddingLeft={3}>
-							<For each={activityRuleLines(props.rows)}>{lineView}</For>
-							{/* Compact terminals keep the 2-line rule form for
-							 * think/tool. The lower zone now renders the SAME todo
-							 * tree as the framed dock (no scroll zone); only an
-							 * over-budget tree degrades to one summary line. */}
-							<For each={compactLower()}>{mergedLineView}</For>
+						<box
+							ref={(el) => {
+								compactDockBox = el
+							}}
+							flexShrink={0}
+							flexDirection="column"
+							width="100%"
+							height={compactHeight()}
+							paddingLeft={3}
+							onMouseUp={onCompactTitleMouseUp}
+						>
+							{/* B2c: the tab bar rides the first row on compact
+							 * terminals too — the same affordance the framed
+							 * dock paints in its box title. */}
+						<For each={[compactTabBarLine()]}>{mergedLineView}</For>
+						{/* Compact terminals keep the 2-line rule form for
+							 * think/tool on the main tab. The lower zone renders
+							 * the SAME todo tree as the framed dock (no scroll
+							 * zone); only an over-budget tree degrades to one
+							 * summary line. The todo tab drops the rule lines and
+							 * paints only the tree. */}
+							<For each={activityDockTab() === "main" ? activityRuleLines(props.rows) : []}>{lineView}</For>
+							<For each={compactContent()}>{mergedLineView}</For>
 						</box>
 					}
 				>

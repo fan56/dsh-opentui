@@ -39,6 +39,9 @@ import {
 	DOCK_HEIGHT_ANIM_MS,
 	dockHeightContentLines,
 	resetTodoBriefClock,
+	activityDockTab,
+	setActivityDockTab,
+	resetActivityDockTab,
 } from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
 import { activePanel, markPanelActive, resetActivePanel } from "../src/routes/session/pane-focus"
@@ -778,11 +781,13 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			const occupied = lines.filter((l) => l.trim() !== "")
-			expect(occupied).toHaveLength(3) // 2 upper rule lines + 1 lower summary
-			expect(occupied[0]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
-			expect(occupied[1]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
-			expect(occupied[1]!.includes("bash")).toBe(true)
-			expect(occupied[2]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
+			// B2c: compact terminals now carry the tab bar as the first row.
+			expect(occupied).toHaveLength(4) // 1 tab bar + 2 upper rule lines + 1 lower summary
+			expect(occupied[0]!.trimEnd()).toBe("   1 main  2 todo") // compact tab bar (paddingLeft=3)
+			expect(occupied[1]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
+			expect(occupied[2]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
+			expect(occupied[2]!.includes("bash")).toBe(true)
+			expect(occupied[3]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
 			// No scroll indicators and no boxed title carrying N/M.
 			for (const line of occupied) {
 				expect(line.includes("▲")).toBe(false)
@@ -842,6 +847,66 @@ describe("WidgetsDock on the real renderer", () => {
 				expect(line.includes("┓")).toBe(false)
 			}
 		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("B2c: compact terminal (24 rows) mounts the tab bar and switches tabs via the module signal", async () => {
+		// Regression for the shipped-route gap: R2 wired the tab bar ONLY into
+		// the framed box title, so an 80x24/120x24 pane never saw the tabs.
+		// This test mounts the REAL WidgetsDock on the renderer at 24 rows and
+		// drives the SAME `activityDockTab` signal the global keymap commands
+		// (`session.dock.tab.main` / `...todo`, alt+1/alt+2) write to.
+		const now = Date.now()
+		const rows: SeamRow[] = [
+			{ key: "tool:live:b2c", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			{
+				key: "tool:todos:b2c",
+				kind: "tool",
+				name: "todo_write",
+				args: JSON.stringify({
+					todos: [
+						{ content: "romeo", status: "in_progress" },
+						{ content: "juliet", status: "pending" },
+					],
+				}),
+				status: "done",
+				output: "Updated todo list",
+			},
+		]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+			{ width: WIDTH, height: 24, useMouse: false },
+		)
+		try {
+			resetActivityDockTab()
+			resetMergedDockCursor()
+			await sleep(200) // latch defer + tween
+			await setup.renderOnce()
+			const paint = () => setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
+			let occupied = paint().filter((l) => l.trim() !== "")
+			// The tab bar leads the compact dock, on EVERY row tier.
+			expect(occupied[0]!.trimEnd()).toBe("   1 main  2 todo")
+			expect(activityDockTab()).toBe("main")
+			expect(occupied.some((l) => l.includes("bash"))).toBe(true) // main: rule form
+
+			// alt+2 path: the keymap command writes this same signal.
+			setActivityDockTab("todo")
+			await setup.renderOnce()
+			occupied = paint().filter((l) => l.trim() !== "")
+			expect(activityDockTab()).toBe("todo")
+			expect(occupied[0]!.trimEnd()).toBe("   1 main  2 todo") // bar survives the switch
+			expect(occupied.some((l) => l.includes("bash"))).toBe(false) // rule lines dropped
+			expect(occupied.some((l) => l.includes("├─ ● romeo"))).toBe(true) // todo tree shown
+
+			// alt+1 path: switch back to main.
+			setActivityDockTab("main")
+			await setup.renderOnce()
+			occupied = paint().filter((l) => l.trim() !== "")
+			expect(activityDockTab()).toBe("main")
+			expect(occupied.some((l) => l.includes("bash"))).toBe(true)
+		} finally {
+			resetActivityDockTab()
 			await setup.dispose()
 		}
 	})
