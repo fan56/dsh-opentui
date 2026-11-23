@@ -695,16 +695,24 @@ try {
     }
     return readProfile()
   }
-  const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+  // 2026-11-23 B1 S4-S6: host-namespace writes (session-log-deepseek.enabled)
+  // now go through the host config service, which persists into the HOST's
+  // profile patch (dsh --profile opentui-inproc, bridge-transport.ts:71,188),
+  // NOT the client's `opentui` profile. The old path read the wrong profile and
+  // made patchEntry() always empty — the two red assertions' root cause.
+  // Local-preference writes (motion) still use profileConfigPath above.
+  const HOST_PROFILE = 'opentui-inproc'
+  const patchPath = join(HOME, 'profiles', HOST_PROFILE, 'cordis.patch.yml')
   const readPatch = () => {
     try { return readFileSync(patchPath, 'utf8') } catch { return '' }
   }
   // The LAST entry for one id (a restored write may append a newer entry).
-  const patchEntry = (id) => {
-    const text = readPatch()
-    const i = text.lastIndexOf(`id: ${id}`)
+  // `text` is optional so a convergence check can test a specific snapshot.
+  const patchEntry = (id, text) => {
+    const doc = text ?? readPatch()
+    const i = doc.lastIndexOf(`id: ${id}`)
     if (i < 0) return ''
-    const rest = text.slice(i)
+    const rest = doc.slice(i)
     const end = rest.indexOf('\n- ')
     return end < 0 ? rest : rest.slice(0, end)
   }
@@ -714,6 +722,20 @@ try {
       if (pred(readPatch())) return true
       await sleep(200)
     }
+    return pred(readPatch())
+  }
+  /**
+   * Strongest persistence proof: re-run the SAME provisioner the launcher uses
+   * on every start (dsh-opentui.mjs:310) against the scratch DSH_HOME, then
+   * re-read the host patch and ask `pred` whether the runtime value survived
+   * template convergence. Pre-fix this returned false — the whole point of the
+   * B1 S4-S6 / design 05 §4.3a persistence fix. Synchronous (spawnSync); the
+   * provisioner converges idempotently and never kills the live host.
+   */
+  const repatchConverges = (pred) => {
+    const prov = join(REPO, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
+    const r = sh(process.execPath, [prov], { env: { ...process.env, DSH_HOME: HOME } })
+    if (r.status !== 0) return false
     return pred(readPatch())
   }
   const hostRowLine = (out, key) => out.split('\n').find((line) => line.includes(key)) ?? ''
@@ -840,13 +862,20 @@ try {
     saved.ok
       ? [`row shows ${afterToggle}`, `status line: ${saved.out.includes(`saved · session-log-deepseek.enabled`) ? 'saved · session-log-deepseek.enabled' : 'not observed (transient)'}`]
       : ['row value did not flip'])
+  // 2026-11-23 B1 S4-S6 + persistence fix (design 05 §4.3a): host-namespace
+  // writes go through the host config service into opentui-inproc/cordis.patch.yml
+  // (hot), NOT the client's `opentui` patch file. Strongest form: value flipped
+  // (saved.ok, [24]) + fresh describe readback (rereadRow, [27]) + host patch
+  // holds the value AND still holds it after a provisioner convergence pass.
   const wroteOff = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${afterToggle === 'on'}`))
   const closedAfterWrite = await closeSettings()
   snap('16-settings-host-write-off')
-  record(`settings writes a host row (session-log-deepseek.enabled=${afterToggle}) into cordis.patch.yml`,
-    saved.ok && wroteOff && closedAfterWrite.ok,
-    [saved.ok ? 'row toggled + saved on Enter' : 'row not saved',
-      wroteOff ? `patch entry has enabled: ${afterToggle === 'on'}` : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+  const persistedOff = repatchConverges((text) => patchEntry('session-log-deepseek', text).includes(`enabled: ${afterToggle === 'on'}`))
+  record(`settings writes a host row (session-log-deepseek.enabled=${afterToggle}) into host patch.yml, persisted across provisioning`,
+    saved.ok && wroteOff && persistedOff && closedAfterWrite.ok,
+    [saved.ok ? 'row toggled + saved on Enter (hot via config service)' : 'row not saved',
+      wroteOff ? `host patch entry has enabled: ${afterToggle === 'on'}` : `host patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+      persistedOff ? 'value survives provisioner re-convergence' : 'value lost after provisioner re-convergence',
       closedAfterWrite.ok ? '退出 confirm closed the modal' : 'modal still on screen'])
   const writeSummary = closedAfterWrite.out.split('\n').find((line) => /Settings updated:/.test(line)) ?? ''
   record('/settings saves print the exit summary', /Settings updated:/.test(writeSummary),
@@ -870,9 +899,16 @@ try {
   const wroteOn = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${valueBefore === 'on'}`))
   const restoredClose = await closeSettings()
   snap('18-settings-host-restore')
-  record(`settings restores the host row (session-log-deepseek.enabled=${valueBefore})`,
-    savedBack.ok && wroteOn && restoredClose.ok,
-    [wroteOn ? `patch entry back to enabled: ${valueBefore === 'on'}` : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+  // 2026-11-23 B1 S4-S6 + persistence fix: same migrated semantics as the
+  // write assertion — flip (savedBack.ok) + host patch value on the CORRECT
+  // path + survives provisioner convergence. (Fresh-describe readback of the
+  // flipped value is the adjacent passing [27] assertion; the restore's flip
+  // is asserted here directly.)
+  const persistedOn = repatchConverges((text) => patchEntry('session-log-deepseek', text).includes(`enabled: ${valueBefore === 'on'}`))
+  record(`settings restores the host row (session-log-deepseek.enabled=${valueBefore}) in host patch.yml, persisted across provisioning`,
+    savedBack.ok && wroteOn && persistedOn && restoredClose.ok,
+    [wroteOn ? `host patch entry back to enabled: ${valueBefore === 'on'}` : `host patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+      persistedOn ? 'value survives provisioner re-convergence' : 'value lost after provisioner re-convergence',
       restoredClose.ok ? 'modal closed after the exit confirm' : 'modal still on screen'])
 
   // ---- local preference write (motion) through the TUI 专有 section ----
