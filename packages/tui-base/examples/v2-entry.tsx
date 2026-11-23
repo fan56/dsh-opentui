@@ -90,6 +90,7 @@ import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { ToastProvider, useToast } from "../src/ui/toast"
 import { ClipboardProvider, useClipboard } from "../src/context/clipboard"
 import { createTuiClipboard } from "../src/clipboard"
+import { copyComposerSelection } from "../src/component/prompt/copy"
 import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { PanelKitHost } from "../src/context/panel-kit-host"
@@ -1105,6 +1106,43 @@ function V2SessionPageBody(props: {
 			if (composerRef && !composerRef.focused()) composerRef.focus()
 		},
 	})
+
+	// R1b: the shipped client mounts SessionComposer (v2), not the vendored v1
+	// <Prompt> — the v1 input.copy layer is absent from this bundle, so before
+	// this fix a composer selection + ctrl+c fell straight through to the
+	// page's ctrl+c quit/interrupt layer. Mirror the same selection→clipboard
+	// copy here at priority 2 (above the page's priority-0 cancel layer) so a
+	// focused composer selection consumes ctrl+c. `enabled` stays purely
+	// reactive (focus/target); the live `hasSelection()` check lives in the
+	// command's run (copyComposerSelection), which returns false with no
+	// selection — the key then falls through and every other ctrl+c path is
+	// byte-for-byte unchanged. Registered after `overlayHost` deliberately:
+	// the subagents-hotkey structural test slices v2-entry from the first
+	// Keymap.createLayer to `const overlayHost`, so this layer must not become
+	// that first call.
+	Keymap.createLayer(() => ({
+		priority: 2,
+		target: () => composerRef?.node(),
+		capture: "main",
+		commands: [
+			{
+				bind: "ctrl+c",
+				title: "Copy selected input text",
+				group: "Prompt",
+				run: () => {
+					const node = composerRef?.node()
+					return copyComposerSelection(
+						{
+							hasSelection: () => node?.hasSelection() === true,
+							getSelectedText: () => node?.getSelectedText() ?? "",
+						},
+						clipboard,
+						toast.error,
+					)
+				},
+			},
+		],
+	}))
 	// Single root node (the example's <box flexDirection="column">); the
 	// reconciler-native intrinsic path: createElement(tag) + spread(props).
 	const root = createElement("box")

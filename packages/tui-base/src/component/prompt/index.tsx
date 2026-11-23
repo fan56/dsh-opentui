@@ -977,14 +977,20 @@ export function Prompt(props: PromptProps) {
   // any layer: with a terminal selection it copies and stops propagation;
   // with none it passes through to this layer. Copy then wins over the
   // no-selection clear/exit bindings while the composer has a selection.
+  //
+  // R1b (oldfox P3): `enabled` must NOT fold in `input.hasSelection()`. That
+  // method is not a Solid signal — mixing it with `cursorVersion()` made the
+  // layer definition evaluate to a plain boolean, which keymap compiles to
+  // `ctx.activeWhen(() => false)` (permanently inactive) whenever the boolean
+  // was false at compile time. Keep `enabled` purely reactive (target/focus)
+  // and do the live selection check in `input.copy`'s `run` instead:
+  // copyComposerSelection returns false with no selection, so the key falls
+  // back to prompt.clear / empty-input exit unchanged (R1 P2 fallback).
   Keymap.createLayer(() => {
     return {
       priority: 2,
       target: inputTarget,
-      enabled: (() => {
-        cursorVersion()
-        return inputTarget() !== undefined && !disabled() && input?.hasSelection() === true
-      })(),
+      enabled: inputTarget() !== undefined && !disabled(),
       bindings: ["input.copy"],
     }
   })
