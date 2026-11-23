@@ -9,7 +9,7 @@
  * agent-lifecycle.test.ts; no host package is imported.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { apply } from "../src/index"
+import { apply, probeAgentProgressResidue } from "../src/index"
 
 const STDIO_SWITCH = "DSH_OPENTUI_BRIDGE_STDIO"
 type Frame = Record<string, any>
@@ -116,6 +116,7 @@ function makeHarness() {
 	}
 
 	return {
+		ctx,
 		send(frame: unknown) {
 			for (const fn of stdinListeners["data"] || []) fn(`${JSON.stringify(frame)}\n`)
 		},
@@ -262,6 +263,25 @@ describe("B3 agent.progress frames (live subagent progress)", () => {
 		childDelta(h, "child-b", "late")
 		await sleep(450)
 		expect(h.eventFrames("agent.progress")).toHaveLength(settledCount)
+	})
+
+	test("E3b: settle clears the child's childProgress + progressSentFp residue", async () => {
+		const h = makeHarness()
+		const parentId = await startTurn(h, 60)
+		catalogChild(h, parentId, "child-settle")
+		childDelta(h, "child-settle", "live tail")
+		await sleep(450) // trailing flush lands; both maps now carry the child
+		const before = probeAgentProgressResidue(h.ctx)
+		expect(before?.childProgress).toBe(1)
+		expect(before?.progressSentFp).toBeGreaterThanOrEqual(1)
+
+		// The child's own turn/end is the authoritative settle signal: it flushes
+		// pending progress, marks the index row settled, and must now also drop
+		// this child's coalescing state + last-sent fingerprint.
+		h.emitSessionEvent({ id: "child-settle" }, { type: "turn/end", data: {} })
+		const after = probeAgentProgressResidue(h.ctx)
+		expect(after?.childProgress).toBe(0)
+		expect(after?.progressSentFp).toBe(0)
 	})
 
 	test("unknown / foreign children never emit progress (spoof containment)", async () => {

@@ -2020,6 +2020,21 @@ export function resolveAskDeadlineMs(
   return raw
 }
 
+// ---------------------------------------------------------------------------
+// B3 (batch close) — per-bridge progress residue diagnostic. The progress maps
+// live inside apply()'s closure; this WeakMap lets a test / forensic probe read
+// their live sizes WITHOUT exposing them on the wire or mutating bridge state.
+// Registered once per apply(); no production behavior depends on it.
+// ---------------------------------------------------------------------------
+type AgentProgressResidue = { childProgress: number; progressSentFp: number }
+const agentProgressResidues = new WeakMap<BridgeContext, () => AgentProgressResidue>()
+
+/** Diagnostic: live residue counts for a bridge's B3 per-child progress maps.
+ *  Wire-neutral; returns undefined for a ctx with no active stdio bridge. */
+export function probeAgentProgressResidue(ctx: BridgeContext): AgentProgressResidue | undefined {
+  return agentProgressResidues.get(ctx)?.()
+}
+
 export function apply(ctx: BridgeContext, config: unknown): unknown {
   const logger = ctx.logger
 
@@ -2578,6 +2593,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   const progressPending = new Map<string, ChildProgressSnapshot>()
   const progressTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const progressSentFp = new Map<string, string>()
+  agentProgressResidues.set(ctx, () => ({
+    childProgress: childProgress.size,
+    progressSentFp: progressSentFp.size,
+  }))
 
   /** Stdout write for one throttled progress snapshot, de-duped by fingerprint. */
   function flushProgress(childId: string): void {
@@ -2605,6 +2624,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     flushProgress(childId)
     progressPending.delete(childId)
+  }
+
+  /** Settle cleanup: drop this child's coalescing state + last-sent fingerprint
+   *  so a settled child leaves no residue in the per-child progress maps. The
+   *  index already refuses further deltas for a settled child, so this only
+   *  reclaims memory and guarantees a fresh start if the child is re-published
+   *  as running by a later authoritative list sync. */
+  function clearChildProgress(childId: string): void {
+    childProgress.delete(childId)
+    progressSentFp.delete(childId)
   }
 
   /** Flush ALL pending progress (called before any settle terminal). */
@@ -3345,6 +3374,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // final live tail is delivered, then stop folding it (noteSettled below).
         flushProgressNow(sessionId)
         index.noteSettled(sessionId, typeof data.seq === 'number' ? data.seq : undefined)
+        clearChildProgress(sessionId)
       }
     }
 
