@@ -1913,14 +1913,13 @@ export function coreCommands(): SlashCommand[] {
 					// readable here (026 review S1 / :405-423), so never pass it off
 					// as "current". The default-marker hint spells "default, not
 					// current" out to the user. Cancel is a no-op.
-					// 2a: `headerLine` (3rd arg) is DROPPED by the real host's
-					// pickOne (examples/v2-entry.tsx never forwards it to
-					// DialogSelect), so the hint never reached the frame. Mirror
-					// it into the title — a slot pickOne DOES forward and the
-					// DialogHeader always paints — while keeping headerLine for
-					// /resume parity and the existing headerLine assertions.
+					// B2: the title is a PURE title. The hint rides the 3rd arg
+					// `headerLine`, which the shipped pickOne now forwards to
+					// DialogSelect's description slot (examples/v2-entry.tsx),
+					// so it paints below the title in both en/zh without a
+					// title hack. 98a5341's title-merge is reverted.
 					const picked = await ctx.pickOne(
-						`${t("command.permission.pickerTitle")} · ${t("command.permission.defaultMarkerHint")}`,
+						t("command.permission.pickerTitle"),
 						catalog.options.map((option) => ({
 							title: option.name ?? option.value,
 							value: option.value,

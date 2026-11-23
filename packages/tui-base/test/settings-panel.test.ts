@@ -216,7 +216,11 @@ describe("schema extraction", () => {
 		expect(preset.options).toContain(preset.value)
 		expect(preset.editable).toBe(true)
 		expect(preset.source).toContain("permissionPresets/catalog")
-		expect(preset.source).toContain("new sessions only") // B4 scope hint
+		// B3: exact full scope text (not a substring), so a truncated/empty hint
+		// cannot pass. catalogSource + ' · ' + permissionPresetScope.
+		expect(preset.source).toBe(
+			"permissionPresets/catalog · writes settings.mutate · new sessions only; switch this session with /permission <preset>",
+		)
 		// 2b: B4 left `note` undefined here and only wrote `source`. The
 		// production settings modal carries `note` (fromItem drops `source`),
 		// so the scope hint must ALSO live in `note` to be rendered at all.

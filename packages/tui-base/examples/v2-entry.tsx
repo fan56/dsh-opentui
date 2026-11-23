@@ -728,8 +728,11 @@ function V2SessionPageBody(props: {
 	// `●` marker (DialogSelectRow current) WITHOUT moving the selection to it
 	// (focusCurrent: false keeps row 0 selected — the e2e 67 bare-Enter
 	// contract). `description` rides the option mapping now: pickOne used to
-	// drop it (theme facts §5). `headerLine` stays the /resume slot (v2
-	// does not paint it — pre-existing gap, unchanged).
+	// drop it (theme facts §5). B1: `headerLine` (the /resume column header,
+	// the /permission default-marker hint) is forwarded to DialogSelect's
+	// `description` slot — an explicitly passed description renders ungated
+	// below the title (dialog-select.tsx:709-720), so ALL pickOne callers get
+	// their header painted without per-caller title hacks.
 	const pickOne = (
 		title: string,
 		options: { title: string; value: string; description?: string }[],
@@ -776,6 +779,9 @@ function V2SessionPageBody(props: {
 				() =>
 					createComponent(DialogSelect, {
 						title,
+						// B1: forward the /resume column header / /permission hint
+						// to the description slot (explicit pass renders ungated).
+						description: headerLine,
 						renderFilter: false,
 						get options() {
 							if (extras?.getOptions === undefined) {
