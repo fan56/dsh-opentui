@@ -73,6 +73,8 @@ export function rowSearchText(row: SeamRow): string {
 		case "assistant":
 		case "reasoning":
 		case "interrupted":
+		// R6: slash-command output is plain text — search it as-is.
+		case "system":
 			return row.text
 		case "tool":
 			return `${row.name}${row.args ? `(${row.args})` : ""}${row.output ? ` ${row.output}` : ""}`

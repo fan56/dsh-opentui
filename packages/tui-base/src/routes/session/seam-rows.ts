@@ -84,6 +84,15 @@ export type SeamRow =
 	  }
 	| { key: string; kind: "assistant"; text: string; final: boolean }
 	| {
+			/** R6: slash-command output (the host's `say()` feedback, projected
+			 * under messageID "cmd"). Plain text, painted by transcript.tsx as a
+			 * non-markdown info-colored line — never a streamed delta. */
+			key: string
+			kind: "system"
+			text: string
+			final: true
+	  }
+	| {
 			/** A7 scenario 2: a LOCAL "interrupted by disconnection" marker for
 			 *  a turn the journal stayed silent about. `seq:null` makes its
 			 *  provenance unmistakable — it is NOT a journal event. */
@@ -569,6 +578,24 @@ export function createSeamRows(
 			}
 			if (partType !== "text" && partType !== "reasoning") return
 			const text = typeof part.text === "string" ? part.text : ""
+			// R6: slash-command output. The slash hosts' `say()` injects these
+			// text parts under messageID "cmd" with NO sessionID stamp, so the
+			// settle-supersede path below never sees them (same law as the
+			// page-injected-feedback note in the header). They are SYSTEM rows:
+			// command feedback is final the moment it is printed, and the view
+			// paints it as plain text (never markdown).
+			if (messageID === "cmd") {
+				const key = `system:${messageID}:${partID}`
+				const existing = rows.find((row) => row.key === key)
+				if (!existing && !text.trim()) return
+				upsert({
+					key,
+					kind: "system",
+					text: existing && existing.kind === "system" ? existing.text + text : text,
+					final: true,
+				})
+				return
+			}
 			// Empty deltas are dropped like the vendored `event.data.delta.trim()` guard.
 			const kind = partType === "text" ? "assistant" : "reasoning"
 			// SETTLE SUPERSEDE: a wire-journal assistant body arriving while no

@@ -361,7 +361,37 @@ describe("seam rows projection", () => {
 			details: { messageID: "cmd", part: { type: "text", id: "cmd-1", text: "model switched feedback" } },
 		})
 		expect(projection.rows.slice(0, before.length).map((r) => [r.key, r.text])).toEqual(before)
-		expect(projection.rows.at(-1)).toMatchObject({ kind: "assistant", text: "model switched feedback" })
+		// R6: cmd feedback now projects as a SYSTEM row (info-colored plain
+		// text in the view), not an assistant markdown row. The no-sessionID
+		// non-supersede law above is unchanged — only the row's kind/color.
+		expect(projection.rows.at(-1)).toEqual({
+			key: "system:cmd:cmd-1",
+			kind: "system",
+			text: "model switched feedback",
+			final: true,
+		})
+		dispose()
+	})
+
+	test("R6: cmd text parts upsert as final system rows; notice relay stays assistant", () => {
+		const seam = new FakeSeam()
+		const { projection, dispose } = setup(seam)
+		const cmd = (id: string, text: string) => ({
+			type: "message.part.updated" as const,
+			details: { messageID: "cmd", part: { type: "text", id, text } },
+		})
+		projection.apply(cmd("cmd-1", "# header\n* bullet"))
+		expect(projection.rows).toEqual([
+			{ key: "system:cmd:cmd-1", kind: "system", text: "# header\n* bullet", final: true },
+		])
+		// Same part id re-delivered: upsert patches in place, no duplicate row.
+		projection.apply(cmd("cmd-1", "!"))
+		expect(projection.rows).toEqual([
+			{ key: "system:cmd:cmd-1", kind: "system", text: "# header\n* bullet!", final: true },
+		])
+		// Notice relay (role:"notice") is untouched — still assistant/markdown.
+		projection.apply({ type: "message.updated", details: { id: "n1", role: "notice", text: "**done**", sessionID: "s1" } })
+		expect(projection.rows.at(-1)).toEqual({ key: "notice:n1", kind: "assistant", text: "**done**", final: true })
 		dispose()
 	})
 

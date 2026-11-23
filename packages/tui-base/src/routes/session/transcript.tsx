@@ -304,6 +304,9 @@ export function Transcript(props: TranscriptProps) {
 		// variant — the red emphasis reads as one block, not a red wall.
 		failedMuted: () => theme?.text.feedback.error.muted ?? "#8a4b5c",
 		loading: () => theme?.text.feedback.info.base ?? "#565f89",
+		// R6: slash-command output rides the info hue too. Both solarized and
+		// nord define text.feedback.info.base, so no theme JSON changes.
+		system: () => theme?.text.feedback.info.base ?? "#565f89",
 		background: () => theme?.background.base ?? "black",
 		// Busy-submit delivery lines: queue waits are low-saturation (muted +
 		// italic); steer receipts use the brand/action tier.
@@ -376,6 +379,8 @@ export function Transcript(props: TranscriptProps) {
 	// them there) but never paint in the flow — the visible feed is the
 	// tui-pi chat-clean set. Batch D2: the subagent tree moved to the
 	// lastRequest dock below the editor — never painted in the flow.
+	// R6: the exclusion list below is a blacklist — system rows pass through
+	// and paint in the flow (see rowView).
 	const visibleRows = createMemo(
 		() =>
 			projection.rows.filter((row) => row.kind !== "tool" && row.kind !== "reasoning" && row.kind !== "subagents") as readonly SeamRow[],
@@ -415,6 +420,10 @@ export function Transcript(props: TranscriptProps) {
 				)
 			case "assistant":
 				return assistantRow(row)
+			case "system":
+				// R6: plain text, not markdown — a command's `#` / `*` must
+				// stay literal. row.text carries newlines verbatim.
+				return <text fg={color.system()}>{row.text}</text>
 			case "ask":
 				return askRow(row)
 			default:
