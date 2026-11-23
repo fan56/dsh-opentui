@@ -2514,6 +2514,162 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     writeFrame({ type, payload })
   }
 
+  // ---- B3 — live subagent progress (additive `agent.progress` frames) --------
+  //
+  // The host's `cb.onSubagentUpdate` snapshot (installed host package
+  // @aiwayds/dsh-opentui dist-host/index.js:1784-1798; rounds/lastLine/elapsed)
+  // is a PLAIN JS CALLBACK on the `cb` object handed to the host TUI session's
+  // `turn(userText, cb)` — NOT a cordis event. The bridge never receives that
+  // `cb` object (it drives turns via agent.followup/steer and observes the
+  // firehose), so `ctx.on('onSubagentUpdate')` does not exist and is NOT faked.
+  // What IS on the cordis firehose the bridge already owns are the very events
+  // that FEED that snapshot: a child session's `assistant/message` (rounds+1,
+  // last-line) on `session/event`, and child `agent/assistant-stream` text-delta
+  // chunks (lastLine append). We fold those here, keyed by the catalog-driven
+  // SubagentIndex (childId -> parentSessionId), and forward one additive
+  // `agent.progress` frame. This is the live-event root fix — not journal polling.
+  //
+  // Child text-deltas are HOT (one event per chunk), so forwarding is throttled
+  // PER CHILD with a leading + trailing window: the first update emits at once,
+  // updates inside the window coalesce to their last value, and the window close
+  // ALWAYS flushes that last value. `agent.settle` is never throttled and is the
+  // authoritative terminal; before any settle we flush pending progress so no
+  // progress frame can land after the terminal.
+  const PROGRESS_THROTTLE_MS = 400 // 合法区间 300–500ms；leading 即时 + trailing 尾值必发
+  interface ChildProgressState {
+    rounds: number
+    lastLine: string
+    /** host child wall clock (epoch ms); 0 when the catalog carried no clock. */
+    startedAt: number
+    /** fallback anchor when startedAt is unknown, set on first observation. */
+    anchor: number
+  }
+  interface ChildProgressSnapshot {
+    childId: string
+    sessionId: string
+    turnId: string
+    rounds: number
+    lastLine: string
+    elapsedSec: number
+  }
+  const childProgress = new Map<string, ChildProgressState>()
+  const progressPending = new Map<string, ChildProgressSnapshot>()
+  const progressTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const progressSentFp = new Map<string, string>()
+
+  /** Stdout write for one throttled progress snapshot, de-duped by fingerprint. */
+  function flushProgress(childId: string): void {
+    const snap = progressPending.get(childId)
+    if (snap === undefined) return
+    const fp = `${snap.rounds}|${snap.lastLine}|${snap.elapsedSec}`
+    if (progressSentFp.get(childId) === fp) return
+    progressSentFp.set(childId, fp)
+    emitEvent('agent.progress', {
+      turnId: snap.turnId,
+      sessionId: snap.sessionId,
+      childId: snap.childId,
+      rounds: snap.rounds,
+      lastLine: snap.lastLine,
+      elapsedSec: snap.elapsedSec,
+    })
+  }
+
+  /** Cancel a child's throttle window and flush its last value immediately. */
+  function flushProgressNow(childId: string): void {
+    const timer = progressTimers.get(childId)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      progressTimers.delete(childId)
+    }
+    flushProgress(childId)
+    progressPending.delete(childId)
+  }
+
+  /** Flush ALL pending progress (called before any settle terminal). */
+  function flushAllProgress(): void {
+    for (const childId of [...progressTimers.keys()]) flushProgressNow(childId)
+    for (const childId of [...progressPending.keys()]) flushProgressNow(childId)
+  }
+
+  /** Drop all progress state on binding teardown / subscription clear. */
+  function clearProgressState(): void {
+    for (const timer of progressTimers.values()) clearTimeout(timer)
+    progressTimers.clear()
+    progressPending.clear()
+    progressSentFp.clear()
+    childProgress.clear()
+  }
+
+  /** Observe one host live fact for a running child of the bound session and
+   *  feed its coalesced progress snapshot into the per-child throttle. */
+  function noteChildProgress(childId: string, roundsDelta: number, textDelta: string, lastLineOverride?: string): void {
+    if (binding === undefined || childId === '' || childId === binding.sessionId) return
+    const row = getSubagentIndex(ctx).get(childId)
+    if (row === undefined || row.parentSessionId !== binding.sessionId || row.status === 'settled') return
+    const now = Date.now()
+    let st = childProgress.get(childId)
+    if (st === undefined) {
+      st = { rounds: 0, lastLine: '', startedAt: row.startedAt, anchor: now }
+      childProgress.set(childId, st)
+    }
+    st.rounds = Math.max(0, st.rounds + roundsDelta)
+    if (lastLineOverride !== undefined && lastLineOverride !== '') {
+      // assistant/message carries the completed turn's last content line (the
+      // host only writes lastLine when that text is non-empty — don't wipe a
+      // streamed tail with an empty message).
+      st.lastLine = lastLineOverride
+    } else if (textDelta !== '') {
+      // text-delta streams append to the running tail (host clamps to 240 chars).
+      const combined = st.lastLine + textDelta
+      st.lastLine = combined.length > 240 ? combined.slice(-240) : combined
+    }
+    const start = st.startedAt > 0 ? st.startedAt : st.anchor
+    const snapshot: ChildProgressSnapshot = {
+      childId,
+      sessionId: binding.sessionId,
+      turnId: inFlightTurnId ?? '',
+      rounds: st.rounds,
+      lastLine: st.lastLine,
+      elapsedSec: Math.max(0, Math.round(((now - start) / 1000) * 10) / 10),
+    }
+    const prev = progressPending.get(childId)
+    progressPending.set(childId, prev === undefined
+      ? snapshot
+      : { ...snapshot, rounds: Math.max(prev.rounds, snapshot.rounds) })
+    if (progressTimers.has(childId)) return // window open — trailing will flush the last value
+    flushProgress(childId) // leading edge: first update is immediate
+    const timer = setTimeout(() => {
+      progressTimers.delete(childId)
+      flushProgress(childId) // trailing edge: last value in the window is always sent
+      progressPending.delete(childId)
+    }, PROGRESS_THROTTLE_MS)
+    progressTimers.set(childId, timer)
+  }
+
+  /** Extract the last content line from an `assistant/message` event payload,
+   *  mirroring the host's blocksText(...).split('\n').pop().slice(0,80). */
+  function assistantMessageLastLine(data: Record<string, unknown>): string {
+    const message = data.message !== null && typeof data.message === 'object'
+      ? (data.message as Record<string, unknown>)
+      : undefined
+    const content = (message?.content ?? data.content ?? message?.text ?? data.text)
+    let text = ''
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) {
+      const parts: string[] = []
+      for (const block of content) {
+        if (block !== null && typeof block === 'object') {
+          const b = block as Record<string, unknown>
+          if (typeof b.text === 'string') parts.push(b.text)
+        }
+      }
+      text = parts.join('')
+    }
+    if (text === '') return ''
+    const last = text.split('\n').pop() ?? ''
+    return last.slice(0, 80)
+  }
+
   // ---- ADR-0011 T3/T4 — ask registry + answerer bridges ---------------------
   // Connection-scoped registry. Its sink is ALWAYS `emitEvent`, so ask.cancel /
   // ask.settled / ask.request (T4) travel the same `event{type,payload}` write
@@ -3132,6 +3288,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           seq: typeof data.seq === 'number' ? data.seq : -1,
         })
       } else {
+        // B3: settle is the authoritative terminal — flush any pending progress
+        // FIRST so no throttled progress frame can land after the terminal.
+        flushAllProgress()
         emitEvent('agent.settle', {
           turnId,
           sessionId: boundId,
@@ -3143,6 +3302,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return
     }
 
+    // B3: a running CHILD's `assistant/message` rides the same root-scope
+    // firehose but is dropped by the turn gate below (child != bound session).
+    // It is exactly the fact that feeds the host's onSubagentUpdate rounds+1 and
+    // last-line; observe it BEFORE the gate. The SubagentIndex confirms the child
+    // belongs to the bound session (spoof-safe), and noteChildProgress is a no-op
+    // for unknown / foreign / settled children.
+    if (type === 'assistant/message' && binding !== undefined && sessionId !== binding.sessionId) {
+      noteChildProgress(sessionId, 1, '', assistantMessageLastLine(data))
+    }
+
     // L1 incremental settle: a child's OWN `turn/end` rides the same root-scope
     // firehose but is dropped by the turn gate below (child != bound session).
     // Observe it BEFORE that gate and flip the indexed child to settled, so
@@ -3150,6 +3319,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     if (type === 'turn/end') {
       const index = getSubagentIndex(ctx)
       if (index.has(sessionId)) {
+        // B3: flush this child's pending progress before its terminal so the
+        // final live tail is delivered, then stop folding it (noteSettled below).
+        flushProgressNow(sessionId)
         index.noteSettled(sessionId, typeof data.seq === 'number' ? data.seq : undefined)
       }
     }
@@ -3224,12 +3396,25 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  these by `String(agent.id)`, which equals the session id (verified by its
    *  onStreamFrame gate); that is the session filter here too. */
   function onAssistantStream(payload: unknown): void {
-    const state = activeTurn
-    if (state === undefined || state.ended) return
     const p = payload as { agent?: unknown; frame?: unknown }
     const agent = p?.agent as { id?: unknown } | undefined
-    if (idString(agent?.id) !== state.sessionId) return
+    const agentId = idString(agent?.id)
     const frame = p?.frame !== null && typeof p?.frame === 'object' ? (p.frame as Record<string, unknown>) : {}
+
+    // B3: observe a CHILD agent's text-delta BEFORE the parent-turn gate below
+    // drops it. This is the same live event that feeds the host's
+    // onSubagentUpdate lastLine append; the SubagentIndex confines folding to a
+    // running child of the bound session. No effect on the parent's own deltas.
+    if (frame.type === 'chunk' && binding !== undefined && agentId !== '' && agentId !== binding.sessionId) {
+      const chunk = frame.chunk !== null && typeof frame.chunk === 'object' ? (frame.chunk as Record<string, unknown>) : {}
+      if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
+        noteChildProgress(agentId, 0, chunk.text)
+      }
+    }
+
+    const state = activeTurn
+    if (state === undefined || state.ended) return
+    if (agentId !== state.sessionId) return
     if (frame.type === 'start') {
       if (typeof frame.turn === 'number') state.numericTurn = frame.turn
       return
@@ -3471,6 +3656,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     try { unsubStream?.() } catch { /* already disposed */ }
     unsubSessionEvent = undefined
     unsubStream = undefined
+    // B3: no host listener may outlive its binding — drop every progress timer
+    // so a trailing flush cannot write to stdout after teardown.
+    clearProgressState()
     if (activeTurn !== undefined && activeTurn.batchTimer !== undefined) {
       clearTimeout(activeTurn.batchTimer)
     }

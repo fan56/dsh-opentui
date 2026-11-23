@@ -1969,6 +1969,19 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #subagentRunSeq = new Map<string, string>()
 	readonly #subagentLiveStarts = new Set<string>()
 	readonly #subagentListeners = new Set<(views: SeamSubagentView[]) => void>()
+	/**
+	 * B3 — latest host-driven live progress per running child, from additive
+	 * `agent.progress` frames. This is RUNTIME data layered on top of the
+	 * spawn-time journal baseline (#subagentJournalMeta): the journal snapshot
+	 * stays the initial baseline (one-time guard unchanged), progress frames
+	 * carry rounds/lastLine/elapsed forward while the child is running. Keyed by
+	 * childId (a new run on revive clears it at settle), never synthesizes a row.
+	 */
+	readonly #subagentProgress = new Map<string, {
+		rounds: number
+		lastLine?: string
+		elapsedSec?: number
+	}>()
 	/** The session the current subagent map belongs to; reset on binding change. */
 	#subagentSessionId: string | undefined
 	/**
@@ -3492,17 +3505,35 @@ export class BridgeSessionSeam implements SessionSeam {
 			const exactMeta = this.#subagentJournalMeta.get(key)
 			const meta = exactMeta
 				?? (key === `${view.id}@` ? this.#priorRunMeta(view.id) : undefined)
-			if (meta !== undefined) {
+			// B3 — LIVE PROGRESS (②b): a RUNNING child's rounds/tail come from
+			// `agent.progress` frames, which are RUNTIME updates layered on top of
+			// the spawn-time journal baseline. Re-apply them AFTER the meta restore
+			// above so a later fold cannot freeze them back to rounds=0 / no tail
+			// (the exact defect B3 fixes). Settled rows have NO progress entry (the
+			// terminal journal read is authoritative), so this never touches终态.
+			const progress = view.status === "running" ? this.#subagentProgress.get(view.id) : undefined
+			if (meta !== undefined || progress !== undefined) {
 				const restored: SeamSubagentView = {
 					...view,
-					rounds: meta.rounds,
-					...(meta.lastLine !== undefined ? { lastLine: meta.lastLine } : {}),
-					...(meta.model !== undefined ? { model: meta.model } : {}),
+					rounds: progress !== undefined
+						? Math.max(view.rounds, progress.rounds)
+						: (meta?.rounds ?? view.rounds),
+					...(progress?.lastLine !== undefined
+						? { lastLine: progress.lastLine }
+						: meta?.lastLine !== undefined ? { lastLine: meta.lastLine } : {}),
+					...(meta?.model !== undefined ? { model: meta.model } : {}),
+					...(progress?.elapsedSec !== undefined ? { elapsedSec: progress.elapsedSec } : {}),
 				}
-				if (restored.rounds !== view.rounds || restored.lastLine !== view.lastLine || restored.model !== view.model) {
+				if (restored.rounds !== view.rounds || restored.lastLine !== view.lastLine
+					|| restored.model !== view.model || restored.elapsedSec !== view.elapsedSec) {
 					this.#subagentViews.set(view.id, restored)
 					changed = true
 				}
+			}
+			// A settled / non-running child carries no live progress — drop any
+			// stale entry so a catalog revive (new run) starts from a clean slate.
+			if (view.status !== "running" && this.#subagentProgress.has(view.id)) {
+				this.#subagentProgress.delete(view.id)
 			}
 			// Schedule the terminal read EVEN when a borrowed prior-run meta covers
 			// the gap — the fallback is only a bridge, never a substitute for the
@@ -3597,6 +3628,44 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * B3 — fold an additive `agent.progress` frame (host live rounds/tail).
+	 * RUNTIME update only: never mints a row, never touches a settled child,
+	 * keyed by childId. The `#subagentJournalLoaded` one-time guard is untouched —
+	 * the journal snapshot stays the initial baseline and progress carries the
+	 * values forward while the child runs. Stored in `#subagentProgress` and laid
+	 * on top of the journal baseline by `#syncSubagentMeta` on every fold so a
+	 * later replay fold cannot freeze rounds/tail back to the spawn-time zero.
+	 */
+	#foldAgentProgress(frame: BridgeEventFrame): void {
+		const payload = asRecord(frame.payload)
+		// Same stale-binding backstop as #foldAgentFrame.
+		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
+		if (this.#subagentSessionId !== undefined && frameSession !== "" && frameSession !== this.#subagentSessionId) return
+		const childId = typeof payload.childId === "string" ? payload.childId : ""
+		const rounds = typeof payload.rounds === "number" && Number.isFinite(payload.rounds)
+			? Math.max(0, Math.floor(payload.rounds))
+			: undefined
+		if (childId === "" || rounds === undefined) return
+		const view = this.#subagentViews.get(childId)
+		// No ghost rows; settle terminal is authoritative — progress never writes
+		// to a settled (or unknown) child.
+		if (view === undefined || view.status !== "running") return
+		const lastLine = typeof payload.lastLine === "string" ? payload.lastLine : undefined
+		const elapsedSec = typeof payload.elapsedSec === "number" && Number.isFinite(payload.elapsedSec)
+			? payload.elapsedSec
+			: undefined
+		const prev = this.#subagentProgress.get(childId)
+		this.#subagentProgress.set(childId, {
+			rounds: Math.max(prev?.rounds ?? 0, rounds),
+			...(lastLine !== undefined ? { lastLine } : prev?.lastLine !== undefined ? { lastLine: prev.lastLine } : {}),
+			...(elapsedSec !== undefined ? { elapsedSec } : prev?.elapsedSec !== undefined ? { elapsedSec: prev.elapsedSec } : {}),
+		})
+		// Restore first, emit once — no transient rounds=0 (P2b).
+		this.#syncSubagentMeta(false)
+		this.#emitSubagentViews()
+	}
+
+	/**
 	 * Derive subagent rows from durable journal rows (replay / recovery / the
 	 * sessionInfo incremental drain), for the SAME session only. A binding change
 	 * clears the old session's map so a /new or a different replay target cannot
@@ -3612,6 +3681,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentViews.clear()
 			this.#subagentRunSeq.clear()
 			this.#subagentLiveStarts.clear()
+			this.#subagentProgress.clear() // B3: live progress belongs to the old binding
 			this.#subagentJournalLoaded.clear()
 			this.#subagentJournalMeta.clear()
 			this.#subagentTranscripts.clear() // 025-w1b D: transcripts belong to the old binding
@@ -3946,6 +4016,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#subagentViews.clear()
 		this.#subagentRunSeq.clear()
 		this.#subagentLiveStarts.clear()
+		this.#subagentProgress.clear()
 		this.#subagentJournalLoaded.clear()
 		this.#subagentJournalMeta.clear()
 		this.#sweepSettledRuns.clear()
@@ -4486,10 +4557,15 @@ export class BridgeSessionSeam implements SessionSeam {
 		// S3: push frames own their own face; never projected as transcript rows.
 		if (this.#onCapPushEvent(frame)) return
 
-		// Additive subagent lifecycle frames (row 33 inproc): feed the onSubagentViews
-		// face, never the transcript/status pipeline. An unknown frame is a no-op.
+		// Additive subagent lifecycle frames (row 33 inproc) + B3 live progress:
+		// feed the onSubagentViews face, never the transcript/status pipeline.
+		// An unknown frame is a no-op.
 		if (frame.type === "agent.spawn" || frame.type === "agent.settle") {
 			this.#foldAgentFrame(frame)
+			return
+		}
+		if (frame.type === "agent.progress") {
+			this.#foldAgentProgress(frame)
 			return
 		}
 
