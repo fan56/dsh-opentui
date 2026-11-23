@@ -497,9 +497,7 @@ export function Prompt(props: PromptProps) {
         name: "input.copy",
         category: "Prompt",
         palette: undefined,
-        run: () => {
-          copyComposerSelection(input, clipboard, toast.error)
-        },
+        run: () => copyComposerSelection(input, clipboard, toast.error),
       },
       {
         title: "View image attachments",
@@ -963,9 +961,10 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  // Copy wins over the no-selection clear/exit bindings while text is selected.
-  // The binding keeps keymap's default preventDefault, so the event is consumed
-  // here and never reaches the app-level terminal-selection interceptor.
+  // The app-level terminal-selection interceptor (priority 101) runs before
+  // any layer: with a terminal selection it copies and stops propagation;
+  // with none it passes through to this layer. Copy then wins over the
+  // no-selection clear/exit bindings while the composer has a selection.
   Keymap.createLayer(() => {
     return {
       priority: 2,
