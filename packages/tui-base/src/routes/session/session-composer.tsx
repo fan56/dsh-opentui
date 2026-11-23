@@ -85,6 +85,7 @@ import {
 	surfaceBorder,
 	warningColor,
 } from "../../skin/semantic"
+import { keyTrace, type ComposerSetSource } from "../../util/key-trace"
 
 export type SessionComposerRef = {
 	/** The textarea's live focused flag (OpenTUI renderable state, not a
@@ -195,6 +196,10 @@ export type SessionComposerProps = {
 
 export function SessionComposer(props: SessionComposerProps) {
 	const FOOTER_HEIGHT = props.footerHint === false ? 0 : 1
+	// B2 followup: label every programmatic textarea write for the opt-in
+	// forensic trace. The optional call short-circuits the whole call (arguments
+	// included) when the env var is unset — no allocation, no IO, no branch.
+	const traceSet = (from: ComposerSetSource, text: string) => keyTrace?.composerSet(from, text.length)
 	const renderer = useRenderer()
 	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
@@ -321,8 +326,14 @@ export function SessionComposer(props: SessionComposerProps) {
 		// reaches the send/steer controller. `apply` is the skill fall-through
 		// rewrite (abbreviation → canonical `/name `); it mutates only the
 		// editor text, and the normal send path below reads it back.
-		if (props.interceptSubmit?.(editor.plainText, (text) => editor.setText(text))) {
+		if (
+			props.interceptSubmit?.(editor.plainText, (text) => {
+				editor.setText(text)
+				traceSet("other", text)
+			})
+		) {
 			editor.setText("")
+			traceSet("other", "")
 			syncHeight()
 			return
 		}
@@ -337,13 +348,20 @@ export function SessionComposer(props: SessionComposerProps) {
 				// Only clear the buffer that was submitted: a programmatic edit
 				// while the dialog was open must survive.
 				if (editor.plainText !== buffer) return
+				// Chooser path: steer/queue clears carry their own source; the
+				// "sent" fallback (turn settled while the dialog was open) is a
+				// plain submit-clear. ignored/cancelled returned above (Esc keeps the text).
 				editor.setText("")
+				traceSet(result === "sent" ? "submit-clear" : "steer-queue", "")
 				syncHeight()
 			})
 			return
 		}
 		const result = controller.submit(buffer)
-		if (result !== "ignored") editor.setText("")
+		if (result !== "ignored") {
+			editor.setText("")
+			traceSet("submit-clear", "")
+		}
 	}
 
 	/**
@@ -376,6 +394,7 @@ export function SessionComposer(props: SessionComposerProps) {
 			const step = controller.history.move(-1, input, textarea.cursorOffset)
 			if (step === undefined) return false
 			textarea.setText(step.text)
+			traceSet("history", step.text)
 			textarea.cursorOffset = step.cursor ?? 0
 			return true
 		}
@@ -394,6 +413,7 @@ export function SessionComposer(props: SessionComposerProps) {
 		const step = controller.history.move(1, input, textarea.cursorOffset)
 		if (step === undefined) return false
 		textarea.setText(step.text)
+		traceSet("history", step.text)
 		// Draft restore brings its own cursor back (pi restores the whole
 		// state); a committed entry lands at the end.
 		textarea.cursorOffset = step.cursor ?? measure(step.text)
@@ -438,6 +458,7 @@ export function SessionComposer(props: SessionComposerProps) {
 		if (result === undefined) return false
 		if (result.text !== buffer) {
 			textarea.setText(result.text)
+			traceSet("other", result.text)
 			// The setter takes a display offset; result.cursor is a code-unit
 			// index, so measure the prefix it points at.
 			textarea.cursorOffset = measure(result.text.slice(0, result.cursor))
@@ -586,6 +607,12 @@ export function SessionComposer(props: SessionComposerProps) {
 					recall(event)
 				}}
 				onContentChange={() => {
+					// B2 followup: same user-edit funnel as the v1 Prompt — the
+					// shipped v2 composer's text changes were invisible before.
+					if (textarea && !textarea.isDestroyed) {
+						const value = textarea.plainText
+						keyTrace?.contentChange(value.length, value)
+					}
 					composerInteraction()
 					syncHeight()
 					if (textarea && !textarea.isDestroyed) props.slashSync?.(textarea.plainText)

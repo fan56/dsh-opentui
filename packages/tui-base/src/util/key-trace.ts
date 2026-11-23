@@ -16,12 +16,19 @@ import { appendFileSync } from "node:fs"
 const ENV_NAME = "DSH_OPENTUI_KEY_TRACE"
 const HEAD_CHARS = 32
 
-/** Programmatic composer assignments we distinguish in the forensic log. */
+/** Programmatic composer assignments we distinguish in the forensic log.
+ *
+ * B2 followup (v2 composer port): `steer-queue` is added for the shipped
+ * SessionComposer's busy-submit chooser path — after the user picks steer or
+ * queue the buffer is cleared, which has no counterpart in the v1 vocabulary
+ * (`submit-clear` covers only the idle send). The other sources stay for v1
+ * Prompt compatibility. */
 export type ComposerSetSource =
   | "draft-restored"
   | "failure-refill"
   | "history"
   | "submit-clear"
+  | "steer-queue"
   | "paste"
   | "reset"
   | "other"
