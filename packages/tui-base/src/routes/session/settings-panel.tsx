@@ -393,6 +393,14 @@ export function buildHostItems(
 			if (info.min !== undefined) item.min = info.min
 			if (info.max !== undefined) item.max = info.max
 		}
+		if (permissionRow) {
+			// defaultPreset is a host DEFAULT: it only seeds NEW sessions. The
+			// current session switches via /permission, so say so on the row —
+			// otherwise the host-zone "live" wording misleads (B4).
+			const scope = t("settings.note.permissionPresetScope")
+			if (item.note !== undefined) item.note = `${item.note} · ${scope}`
+			else item.source = item.source === "" ? scope : `${item.source} · ${scope}`
+		}
 		return item
 	})
 }

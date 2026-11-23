@@ -190,7 +190,9 @@ describe("schema extraction", () => {
 		)
 		const preset = items.find((item) => item.id === "permission.defaultPreset")!
 		expect(preset.options).toBeUndefined()
-		expect(preset.note).toBe("no preset catalog (permissionPresets/catalog unavailable) — read-only, shows the effective value")
+		expect(preset.note).toContain("no preset catalog (permissionPresets/catalog unavailable) — read-only, shows the effective value")
+		// B4: the session-vs-new-session hint is appended even on the read-only row.
+		expect(preset.note).toContain("new sessions only")
 		expect(preset.editable).toBe(false)
 	})
 
@@ -214,6 +216,7 @@ describe("schema extraction", () => {
 		expect(preset.options).toContain(preset.value)
 		expect(preset.editable).toBe(true)
 		expect(preset.source).toContain("permissionPresets/catalog")
+		expect(preset.source).toContain("new sessions only") // B4 scope hint
 		expect(preset.note).toBeUndefined()
 	})
 
@@ -242,7 +245,8 @@ describe("schema extraction", () => {
 		const preset = items.find((item) => item.id === "permission.defaultPreset")!
 		expect(preset.options).toBeUndefined()
 		expect(preset.editable).toBe(false)
-		expect(preset.note).toBe("catalog declares no options — read-only, shows the effective value")
+		expect(preset.note).toContain("catalog declares no options — read-only, shows the effective value")
+		expect(preset.note).toContain("new sessions only") // B4 scope hint
 		expect(preset.value).toBe("workspace-write") // still shows the effective value
 	})
 

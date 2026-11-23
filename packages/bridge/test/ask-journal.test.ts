@@ -345,4 +345,46 @@ describe('ADR-0011 D7 — always-grant reconstruction from the durable journal (
       fresh.dispose()
     }
   })
+
+  test('production session answer journals one grant row per gate tool and rebuilds all four on respawn', () => {
+    const { registry, journal } = makeRegistry()
+    const asked = registry.create('t1', {
+      sessionId: 's1', kind: 'approval', toolName: 'write', escalation: true,
+    })
+    expect(registry.answer('s1', {
+      eventId: asked.eventId, kind: 'approval', verdict: 'allowed-once',
+      behavior: 'session', escalation: true,
+    }).ok).toBe(true)
+
+    // One (session,tool) grant row per gate tool (marker behavior:'always'),
+    // plus the real "session" settlement row recording the user's choice.
+    const grantRows = journal.filter(
+      (e) => e.kind === ASK_JOURNAL_KINDS.RESPONDED && e.behavior === 'always' && e.outcome === 'approved',
+    )
+    expect(grantRows).toHaveLength(4)
+    expect([...grantRows.map((e) => e.toolName)].sort()).toEqual(['apply_patch', 'bash', 'edit', 'write'])
+    for (const row of grantRows) {
+      expect(row).toMatchObject({ sessionId: 's1', verdict: 'allowed-once', source: 'answer' })
+    }
+    const settleRow = journal.find(
+      (e) => e.kind === ASK_JOURNAL_KINDS.RESPONDED && e.behavior === 'session',
+    )!
+    expect(settleRow).toMatchObject({ verdict: 'allowed-once', outcome: 'approved', toolName: 'write' })
+
+    // Respawn: the durable rows rebuild the full session grant set, idempotently.
+    const rows = journal.map((payload) => ({ type: ASK_GRANT_JOURNAL_TYPE, payload }))
+    const restored = alwaysGrantToolsFromJournal('s1', rows)
+    expect([...restored].sort()).toEqual(['apply_patch', 'bash', 'edit', 'write'])
+    expect(alwaysGrantToolsFromJournal('s1', rows)).toEqual(restored)
+
+    const fresh = new AskRegistry({ journal: () => {} })
+    try {
+      fresh.restoreSessionGrants('s1', restored)
+      for (const tool of ['bash', 'write', 'edit', 'apply_patch']) {
+        expect(fresh.hasGrant('s1', tool)).toBe(true)
+      }
+    } finally {
+      fresh.dispose()
+    }
+  })
 })

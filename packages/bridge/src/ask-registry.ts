@@ -38,6 +38,7 @@ import {
   type AskJournalSink,
   type AskJournalSource,
 } from './ask-journal'
+import { WRITE_TOOL_POLICY } from './approval-gate'
 
 type TimerHandle = ReturnType<typeof setTimeout>
 
@@ -461,6 +462,38 @@ export class AskRegistry {
     // derived from journal events, so compaction cannot clear the effect (A4).
     if (params.behavior === 'always') {
       this.#summary.grant(sessionId, entry.request.toolName ?? params.eventId)
+    }
+
+    // B4: 'session' = allow ALL gated write tools for this session (the `s` key
+    // on the approval card). Reuse the SAME session-scoped summary as 'always',
+    // so registered subagents inherit the grant (ADR-0011:142-147) and
+    // clearSessionGrants still scopes it (I1/A5). NOT setApprovalPolicy — that
+    // would be blanket "never ask", which the user did not choose.
+    // One (session,tool) journal row per gate tool so a respawn's
+    // alwaysGrantToolsFromJournal() reconstructs the full grant set: the row
+    // marker is `behavior:'always'` because that is the durable grant-rebuild
+    // signal; a session grant confers the identical in-process, session-scoped
+    // tool grant. The settlement row below still records the real behavior
+    // ('session') and the host still sees verdict:'allowed-once' (ADR-0011:52).
+    if (params.behavior === 'session') {
+      const sourceSession = redactIdentifier(sessionId) ?? sessionId
+      const sourceTurn = redactIdentifier(entry.turnId) ?? entry.turnId
+      for (const tool of Object.keys(WRITE_TOOL_POLICY)) {
+        this.#summary.grant(sessionId, tool)
+        this.#writeJournal({
+          eventId: entry.request.eventId,
+          kind: ASK_JOURNAL_KINDS.RESPONDED,
+          askKind: entry.request.kind,
+          sessionId: sourceSession,
+          turnId: sourceTurn,
+          toolName: tool,
+          verdict: 'allowed-once',
+          outcome: 'approved',
+          behavior: 'always',
+          source: 'answer',
+          at: this.#now(),
+        })
+      }
     }
 
     const settlement = this.#settle(entry, outcome, {

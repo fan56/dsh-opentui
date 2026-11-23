@@ -229,6 +229,26 @@ describe('AskRegistry: turn/session teardown and error routing', () => {
     if (!bad.ok) expect(bad.code).toBe(ASK_ERROR_CODES.INVALID_RESPONSE)
     expect(registry.pendingCount()).toBe(1) // rejected response did not settle
   })
+
+  test('behavior:"session" grants all four gated write tools; always keeps its single-tool grant', () => {
+    const { registry, frames } = makeRegistry()
+    // always: unchanged — only the ask's own tool is granted.
+    const alwaysAsk = addAsk(registry, 't1', 's1', 'approval', { escalation: true, toolName: 'bash' })
+    expect(registry.answer('s1', { ...approval(alwaysAsk.eventId), behavior: 'always', escalation: true }).ok).toBe(true)
+    expect([...registry.sessionGrants('s1')].sort()).toEqual(['bash'])
+
+    // session: all four gate tools granted, no fifth.
+    registry.clearSessionGrants('s1')
+    const sessionAsk = addAsk(registry, 't2', 's1', 'approval', { escalation: true, toolName: 'write' })
+    const ok = registry.answer('s1', { ...approval(sessionAsk.eventId), behavior: 'session', escalation: true })
+    expect(ok.ok).toBe(true)
+    expect([...registry.sessionGrants('s1')].sort()).toEqual(['apply_patch', 'bash', 'edit', 'write'])
+
+    // Host verdict / settlement semantics unchanged (ADR-0011:52 folding).
+    expect(ok.ok && ok.settlement.outcome).toBe('approved')
+    const settled = frames.filter((f) => f.type === 'ask.settled').at(-1)
+    expect(settled).toMatchObject({ payload: { outcome: 'approved' } })
+  })
 })
 
 describe('AskRegistry: timer release / no leak', () => {
