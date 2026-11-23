@@ -2,8 +2,10 @@
  * Dock think/tool visibility timing (user directive, 2026-11-10).
  *
  * A finished activity block is NOT cleared the moment its stream/settle
- * stops. It lingers fully visible for `DOCK_LINGER_MS` (2s), then fades out
- * over `DOCK_FADE_OUT_MS` (300ms). During the linger a new burst of the SAME
+ * stops. It lingers fully visible for `DOCK_LINGER_MS` (2s), then (when the
+ * sweep is enabled) fades out over `DOCK_FADE_OUT_MS` (original 300ms). Since
+ * 2026-11-23 the sweep is disabled (0ms) so the line goes straight to hidden
+ * at the 2s edge. During the linger a new burst of the SAME
  * kind replaces the old block (see dockLines / seam-rows: the store drops the
  * old think summary, and a starting tool flags the previous settled tool
  * lines as cleared).
@@ -13,9 +15,10 @@
  * `live | lingering | fading | hidden` plus the fade progress. The view layer
  * reads it from the renderer's shared animation clock (onAnimationTick), so
  * there is no new setInterval/setTimeout anywhere. The seam store keeps a
- * settled row for `DOCK_LINE_RETENTION_MS` (2s + 300ms) under the decorated
- * (full) tier — exactly long enough for the view to finish the sweep, so the
- * store's drop is only the backstop. The non-decorated tiers (reduced/off)
+ * settled row for `DOCK_LINE_RETENTION_MS` (2s + 0ms while the sweep is
+ * disabled; originally 2s + 300ms) under the decorated (full) tier — exactly
+ * long enough for the view to finish the sweep, so the store's drop is only
+ * the backstop. The non-decorated tiers (reduced/off)
  * paint no sweep: the view itself turns the line `hidden` at the 2s linger
  * edge and the store's drop coincides with that edge (`dockRemovalMs(false)`
  * → `DOCK_LINGER_MS`). For `off` — whose clock is paused, so no view repaint
@@ -25,16 +28,17 @@
 export const DOCK_LINGER_MS = 2000
 
 /** Fade sweep after the hold — the same 300ms the skin exit fade used. */
-export const DOCK_FADE_OUT_MS = 300
+// 原 300；2026-11-23 用户指示暂时关闭渐隐（残影/不消失问题），恢复改回 300
+export const DOCK_FADE_OUT_MS = 0
 
 /** How long a settled row must stay in the store so the view can finish the
  * fade: the linger plus the sweep. The seam-rows fade timers use this. */
 export const DOCK_LINE_RETENTION_MS = DOCK_LINGER_MS + DOCK_FADE_OUT_MS
 
 /** The store's retention delay for the active motion tier: decorated (full)
- * keeps the row through the 300ms sweep; reduced/off have no gradient, so
- * the row is dropped at the 2s linger edge (removal moment == what the
- * docs promise, and `off`'s paused clock can rely on the drop). */
+ * keeps the row through the sweep (300ms when enabled; 0ms now, so both tiers
+ * drop at the 2s linger edge); reduced/off have no gradient. Removal moment ==
+ * what the docs promise, and `off`'s paused clock can rely on the drop. */
 export function dockRemovalMs(decorated: boolean): number {
 	return decorated ? DOCK_LINE_RETENTION_MS : DOCK_LINGER_MS
 }
@@ -64,8 +68,9 @@ export interface DockLineVisibility {
  *   - `decorated` false (motion reduced/off) → `hidden` at the 2s deadline
  *     with NO gradient (degradation contract: the tier that forbids fades
  *     drops straight to gone);
- *   - elapsed ≥ 2s + 300ms → `hidden`;
- *   - otherwise `fading`, progress 0→1 over the 300ms sweep.
+ *   - elapsed ≥ 2s + DOCK_FADE_OUT_MS → `hidden`;
+ *   - otherwise `fading`, progress 0→1 over the sweep. With the sweep disabled
+ *     (0ms) this branch is unreachable — `fading` is never returned.
  */
 export function dockLineVisibility(
 	stopAt: number | undefined,

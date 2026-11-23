@@ -349,28 +349,29 @@ describe("dockLines (batch D5 widget fade; todos live in their own table)", () =
 // lifetime activity frame, the code-block forms, and the reminder pulse.
 // ---------------------------------------------------------------------------
 
-describe("skin exit fade timing (2s linger → 300ms sweep)", () => {
-	test("hold 2000ms → sweep 300ms → done at 2300ms", () => {
+describe("skin exit fade timing (2s linger → no sweep; disabled 2026-11-23)", () => {
+	test("hold 2000ms → sweep disabled (0ms) → done at 2000ms", () => {
 		expect(DOCK_LINGER_MS).toBe(2000)
-		expect(DOCK_FADE_OUT_MS).toBe(300)
-		expect(DOCK_LINE_RETENTION_MS).toBe(2300)
+		expect(DOCK_FADE_OUT_MS).toBe(0)
+		expect(DOCK_LINE_RETENTION_MS).toBe(2000)
 		expect(SKIN_HOLD_MS).toBe(DOCK_LINGER_MS)
 		expect(SKIN_FADE_OUT_MS).toBe(DOCK_FADE_OUT_MS)
 		expect(SKIN_HOLD_MS + SKIN_FADE_OUT_MS).toBe(DOCK_LINE_RETENTION_MS)
 		expect(skinFadeOutProgress(0)).toBe(0)
 		expect(skinFadeOutProgress(1999)).toBe(0)
 		expect(skinFadeOutProgress(SKIN_HOLD_MS)).toBe(0)
-		const mid = skinFadeOutProgress(SKIN_HOLD_MS + SKIN_FADE_OUT_MS / 2)
-		expect(mid).toBeGreaterThan(0.4)
-		expect(mid).toBeLessThan(0.6)
-		expect(skinFadeOutProgress(DOCK_LINE_RETENTION_MS)).toBe(1)
+		// No intermediate frame: progress snaps 0 → 1 at the 2s edge.
+		expect(skinFadeOutProgress(SKIN_HOLD_MS + 1)).toBe(1)
+		expect(skinFadeOutProgress(DOCK_LINE_RETENTION_MS + 1)).toBe(1)
 		expect(skinFadeOutProgress(5000)).toBe(1)
 	})
-	test("fade color: full target during the hold, half-mixed at the sweep midpoint", () => {
+	test("fade color: full target during the hold, background past the edge (no sweep)", () => {
 		const full = skinFadeOutColor("#ff0000", "#000000", 0)
 		expect(full).toBe("#ff0000")
-		const mid = skinFadeOutColor("#ff0000", "#000000", SKIN_HOLD_MS + SKIN_FADE_OUT_MS / 2)
-		expect(mid).toBe("#800000")
+		const atEdge = skinFadeOutColor("#ff0000", "#000000", SKIN_HOLD_MS)
+		expect(atEdge).toBe("#ff0000")
+		const pastEdge = skinFadeOutColor("#ff0000", "#000000", SKIN_HOLD_MS + 1)
+		expect(pastEdge).toBe("#000000")
 	})
 	test("stop anchor from startedAt + elapsedSec (view-side math, store untouched)", () => {
 		expect(skinStopAt({ startedAt: 1000, elapsedSec: 2.5 })).toBe(3500)
@@ -977,23 +978,35 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		expect(compact.tool[0]!.text).toContain("edit")
 	})
 
-	test("timeline: full 2s linger, then a 300ms sweep, then gone (fake clock)", () => {
+	test("timeline: full 2s linger, then straight to hidden (sweep disabled; fake clock)", () => {
 		const settled = doneTool("bash")
 		const stopAt = NOW // startedAt NOW-1000 + elapsedSec 1s
 		expect(skinStopAt(settled)).toBe(stopAt)
 		expect(dockLineVisibility(stopAt, NOW + 1999, true)).toEqual({ phase: "lingering", progress: 0 })
-		expect(dockLineVisibility(stopAt, NOW + 2000, true)).toEqual({ phase: "fading", progress: 0 })
-		expect(dockLineVisibility(stopAt, NOW + 2150, true).phase).toBe("fading")
-		expect(dockLineVisibility(stopAt, NOW + 2150, true).progress).toBeCloseTo(0.5)
-		expect(dockLineVisibility(stopAt, NOW + 2299, true).phase).toBe("fading")
+		expect(dockLineVisibility(stopAt, NOW + 2000, true)).toEqual({ phase: "hidden", progress: 1 })
+		expect(dockLineVisibility(stopAt, NOW + 2150, true)).toEqual({ phase: "hidden", progress: 1 })
+		expect(dockLineVisibility(stopAt, NOW + 2299, true)).toEqual({ phase: "hidden", progress: 1 })
 		expect(dockLineVisibility(stopAt, NOW + 2300, true)).toEqual({ phase: "hidden", progress: 1 })
-		// The line is painted through the whole linger AND the sweep…
+		// The line is painted through the linger only — no intermediate sweep…
 		expect(dockLines([settled], { now: NOW + 1999, decorated: true })).toHaveLength(1)
-		expect(dockLines([settled], { now: NOW + 2150, decorated: true })).toHaveLength(1)
-		// …and gone at the retention edge.
+		expect(dockLines([settled], { now: NOW + 2000, decorated: true })).toHaveLength(0)
+		// …and stays gone past the former retention edge.
 		expect(dockLines([settled], { now: NOW + 2300, decorated: true })).toHaveLength(0)
-		// Fade progress drives the color (half-mixed at the sweep midpoint).
-		expect(skinFadeOutProgress(DOCK_LINGER_MS + DOCK_FADE_OUT_MS / 2)).toBeCloseTo(0.5)
+		// No midpoint: the exit color snaps to background at the 2s edge.
+		expect(skinFadeOutProgress(DOCK_LINGER_MS + 1)).toBe(1)
+	})
+
+	test("R3: DOCK_FADE_OUT_MS=0 → dockLineVisibility never returns fading", () => {
+		expect(DOCK_FADE_OUT_MS).toBe(0)
+		expect(dockLineVisibility(undefined, NOW, true).phase).toBe("live")
+		const phases = new Set<string>()
+		for (const decorated of [true, false]) {
+			for (let elapsed = 0; elapsed <= 3000; elapsed += 25) {
+				phases.add(dockLineVisibility(NOW, NOW + elapsed, decorated).phase)
+			}
+		}
+		expect(phases.has("fading")).toBe(false)
+		expect([...phases].sort()).toEqual(["hidden", "lingering"])
 	})
 
 	test("think uses its own anchor: a collapsed thought lingers 2s after collapse", () => {
@@ -1046,14 +1059,14 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		expect(dockLineVisibility(stopAt, NOW + 1999, false)).toEqual({ phase: "lingering", progress: 0 })
 		expect(dockLineVisibility(stopAt, NOW + 2000, false)).toEqual({ phase: "hidden", progress: 1 })
 		expect(dockLines([settled], { now: NOW + 2000, decorated: false })).toHaveLength(0)
-		// full: still painted at the deadline, fading.
-		expect(dockLines([settled], { now: NOW + 2000, decorated: true })).toHaveLength(1)
+		// full: sweep disabled (0ms) — hidden at the same 2s deadline.
+		expect(dockLines([settled], { now: NOW + 2000, decorated: true })).toHaveLength(0)
 	})
 
 	test("C2: the store's removal delay matches the documented tier behaviour", () => {
-		// full: the row survives through the 300ms sweep; reduced/off: no
-		// gradient, so the drop IS the 2.0s removal moment (off's paused clock
-		// can only be removed by this drop — never 2.3s as the old doc implied).
+		// full: with the sweep disabled (0ms) retention equals the 2s linger;
+		// reduced/off: no gradient. Both tiers drop at the 2.0s removal moment
+		// (off's paused clock can only be removed by this drop — never 2.3s).
 		expect(dockRemovalMs(true)).toBe(DOCK_LINE_RETENTION_MS)
 		expect(dockRemovalMs(false)).toBe(DOCK_LINGER_MS)
 		expect(dockRemovalMs(false)).toBe(2000)

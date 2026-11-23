@@ -14,10 +14,10 @@
  * fade/marquee chapter). Adaptation: bun:test has no jest fake timers we can
  * safely drive the renderer clock with, so we advance the SHARED animation
  * tick (the exported setDockSpin signal — exactly what the dock's
- * onAnimationTick callback flips) against the real fade window and assert
- * TWO distinct intermediate frames (full-color linger + mid-sweep mix), not
- * just the terminal state. Color needs the span capture — a char frame
- * cannot see the gradient.
+ * onAnimationTick callback flips). Since 2026-11-23 the fade sweep is off
+ * (DOCK_FADE_OUT_MS=0): the full-color linger frame and the terminal drop
+ * frame are asserted, and the visibility state machine is checked never to
+ * enter `fading` (the old mid-sweep mix frame no longer exists).
  *
  * ── Incident 3: border-box row count always 0, hint fallback masked it ───
  * Counting rows inside a bordered widget box always answered 0 and a hint
@@ -33,11 +33,11 @@
  * only — no sustained streaming turn (upstream diff-paint corruption).
  */
 import { describe, expect, test } from "bun:test"
-import type { RGBA } from "@opentui/core"
 import { createShellRenderFixture } from "./shell-render-fixture.tsx"
 import { setMotionTier } from "../../tui-base/src/skin/motion"
 import { latestTodos, skinDockLineFg, todosTableLines } from "../../tui-base/src/routes/session/widgets-dock"
 import { setDockSpin } from "../../tui-base/src/routes/session/widgets-dock"
+import { DOCK_FADE_OUT_MS, DOCK_LINGER_MS, dockLineVisibility } from "../../tui-base/src/routes/session/dock-visibility"
 import type { SeamRow } from "../../tui-base/src/routes/session/seam-rows"
 import { stringWidth } from "../../tui-base/src/util/string-width"
 
@@ -48,29 +48,13 @@ async function sleepUntil(at: number): Promise<void> {
 	if (rest > 0) await sleep(rest)
 }
 
-/** First span fg whose text carries `needle` (the fade gradient lives in
- * span colors — captureCharFrame is color-blind). */
-function spanFg(fixture: Awaited<ReturnType<typeof createShellRenderFixture>>, needle: string): RGBA {
-	const captured = fixture.captureSpans()
-	for (const line of captured.lines) {
-		for (const span of line.spans) {
-			if (span.text.includes(needle)) return span.fg
-		}
-	}
-	throw new Error(`spanFg: no span containing ${JSON.stringify(needle)} in the captured frame`)
-}
-
-function colorDistance(a: RGBA, b: RGBA): number {
-	return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b)
-}
-
 describe("incident regressions: paint continuity (real renderer, canned events)", () => {
 	// -------------------------------------------------------------------
 	// Incident 2 — fade frames (positive case): a pure-think turn (no tool)
 	// must paint intermediate fade frames, not jump to the terminal state.
 	// -------------------------------------------------------------------
-	test("pure-think fade window paints intermediate frames (linger + mid-sweep) before the row drops", async () => {
-		// Decorated tier: 2s linger → 300ms sweep → hidden (dock-visibility).
+	test("pure-think dock holds full color for 2s then drops directly (sweep disabled)", async () => {
+		// Decorated tier: 2s linger → hidden, no sweep (DOCK_FADE_OUT_MS=0).
 		setMotionTier("full")
 		try {
 			await using fixture = await createShellRenderFixture({
@@ -95,46 +79,16 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 			await tick()
 			const lingerFrame = fixture.captureFrame()
 			expect(lingerFrame).toContain("💭 thought")
-			const lingerFg = spanFg(fixture, "💭 thought")
 
-			// Intermediate state 2 — inside the 300ms sweep (2000–2300ms past
-			// the row's fadeOutAt): the line is STILL on screen and its color
-			// has started mixing toward the background. This frame is the one
-			// the incident never painted.
-			//
-			// Sampling window (flaky-mitigation): settleAt is taken BEFORE
-			// `await pending` resolves, so the row's real fadeOutAt sits one
-			// projection-convergence beat LATER than settleAt — a CI process
-			// pause during that await shifts the whole fade window right and
-			// the old narrow sample range [2150, 2270] could miss it. Start
-			// before the nominal sweep edge and end past it: [2015, 2290].
-			// Acceptance inside the loop still requires a MIXED color (the
-			// capture must have moved off the linger color), so an early tick
-			// that lands while the row is still lingering cannot be mistaken
-			// for a mid-sweep frame.
-			await sleepUntil(settleAt + 2015)
-			let sweepFrame: string | undefined
-			let sweepFg: RGBA | undefined
-			// Poll inside the sweep window: catch one painted mid-sweep frame.
-			while (Date.now() < settleAt + 2290) {
-				await tick()
-				const frame = fixture.captureFrame()
-				if (frame.includes("💭 thought")) {
-					const fg = spanFg(fixture, "💭 thought")
-					if (colorDistance(fg, lingerFg) > 0.02) {
-						sweepFrame = frame
-						sweepFg = fg
-						break
-					}
-				}
-				await sleep(20)
+			// 2026-11-23 用户指示关闭渐隐（DOCK_FADE_OUT_MS 300→0）：行 2 秒停留
+			// 后直接消失，原「300ms sweep 中间帧」不再存在。渐隐窗口用例的前提
+			// 已不成立，改为断言状态机全程不进入 fading；终态帧断言保留。
+			expect(DOCK_FADE_OUT_MS).toBe(0)
+			for (let elapsed = DOCK_LINGER_MS; elapsed <= DOCK_LINGER_MS + 300; elapsed += 25) {
+				expect(dockLineVisibility(settleAt, settleAt + elapsed, true).phase).not.toBe("fading")
 			}
-			expect(sweepFrame).toBeDefined()
-			expect(sweepFg).toBeDefined()
-			// The gradient really moved between the two intermediate frames.
-			expect(colorDistance(sweepFg!, lingerFg)).toBeGreaterThan(0.02)
 
-			// Terminal state: past the retention edge (2300ms) the row is gone.
+			// Terminal state: past the retention edge (2000ms, no sweep) the row is gone.
 			await sleepUntil(settleAt + 2480)
 			await tick()
 			expect(fixture.captureFrame()).not.toContain("💭 thought")
@@ -152,7 +106,8 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 		expect(fixture.captureFrame()).not.toContain("💭 thought")
 
 		// Pure degradation contract (dock-visibility + skinDockLineFg):
-		// mid-sweep moment, decorated mixes, reduced stays at the target.
+		// past the 2s edge with no sweep, decorated resolves to background,
+		// reduced stays at the target.
 		const target = "#9ece6a"
 		const background = "#000000"
 		const midSweep = { id: "dock:think", fadeOutAt: Date.now() - 2150 }

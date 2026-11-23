@@ -91,7 +91,11 @@ afterEach(() => {
 })
 
 describe("WidgetsDock on the real renderer", () => {
-	test("M1: collapsed think-only dock paints an intermediate fade frame inside 2.0-2.3s", async () => {
+	// 2026-11-23 用户指示关闭渐隐（DOCK_FADE_OUT_MS 300→0）：行 2 秒后直接
+	// 消失，中间帧不再存在，本用例的「窗内必须采到 mixed 色帧」前提已不成立。
+	// 渐隐关闭后的纯函数断言见 widgets-dock.test.ts（dockLineVisibility 不含
+	// fading）；恢复渐隐时把 300 改回即可解除跳过。
+	test.skip("M1: collapsed think-only dock paints an intermediate fade frame inside 2.0-2.3s", async () => {
 		setMotionTier("full") // decorations on: fades/colors enabled
 		const t0 = Date.now()
 		// stopAt = startedAt + elapsedSec*1000 = t0 (stopped just now).
@@ -810,10 +814,10 @@ describe("WidgetsDock on the real renderer", () => {
 		}
 	})
 
-	test("D3/D14: think-row retention filter hides a settled row when tier drops decorations mid-linger", async () => {
-		// Pure law at the tier-switch boundary (the only changed input is
-		// `decorated`): same row + same clock, kept under full (fading), dropped
-		// under reduced/off (hidden at the 2.0s linger edge).
+	test("D3/D14: think-row retention filter drops a settled row at the 2s edge on every tier", async () => {
+		// 2026-11-23 关闭渐隐后，不再存在「full 仍保留、reduced/off 已丢弃」的
+		// 中间窗口——两档都在 2.0s 边缘直接 hidden。停留窗内保留，边缘后两档
+		// 同时丢弃。
 		const stoppedAt = 2500
 		const row: Extract<SeamRow, { kind: "reasoning" }> = {
 			key: "reasoning:tier",
@@ -824,12 +828,14 @@ describe("WidgetsDock on the real renderer", () => {
 			startedAt: 1000,
 			elapsedSec: 1.5, // stop = 1000 + 1.5s = 2500
 		}
-		const now = stoppedAt + 2100 // inside 2.0-2.3s window
-		expect(mergedThinkRows([row], now, true)).toHaveLength(1)
-		expect(mergedThinkRows([row], now, false)).toHaveLength(0)
+		const withinLinger = stoppedAt + 1999
+		const atEdge = stoppedAt + 2000
+		expect(mergedThinkRows([row], withinLinger, true)).toHaveLength(1)
+		expect(mergedThinkRows([row], atEdge, true)).toHaveLength(0)
+		expect(mergedThinkRows([row], atEdge, false)).toHaveLength(0)
 		// A live streaming burst is never filtered, even with a stale stop anchor.
 		const live: SeamRow = { ...row, streaming: true }
-		expect(mergedThinkRows([live], now, false)).toHaveLength(1)
+		expect(mergedThinkRows([live], atEdge, false)).toHaveLength(1)
 	})
 })
 
