@@ -76,12 +76,13 @@
 import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
 import { useTerminalSize } from "./terminal-size"
-import { parseColor, TextAttributes, type MouseEvent, type RGBA } from "@opentui/core"
+import { MouseButton, parseColor, TextAttributes, type MouseEvent, type Renderable, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import type { SeamSubagentView } from "../../seams/session"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
 import { parseTodos, type Todo } from "../../util/todo"
 import { stringWidth } from "../../util/string-width"
+import { takeWidth } from "../../util/locale"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
@@ -490,6 +491,33 @@ export function resetMergedDockCursor(): void {
 	setMergedDockCursor(0)
 }
 
+/** R2 activity tab selection. MODULE-level for the SAME reason as
+ * `mergedDockCursor` (CLOSURE LAW, :55-62): the dock is a per-app singleton, so
+ * a component-scope signal would drop the choice on every remount. `main` is
+ * the existing merged view (rendered unchanged); `todo` is the todo tree. */
+export type ActivityDockTab = "main" | "todo"
+export const [activityDockTab, setActivityDockTab] = createSignal<ActivityDockTab>("main")
+
+/** The ONE selector used by BOTH the mouse handler and the global keymap
+ * layer — no divergent switch logic between the two channels. */
+export function selectActivityDockTab(tab: ActivityDockTab): void {
+	setActivityDockTab(tab)
+}
+
+/** Unmount/session-switch reset, mirroring `resetMergedDockCursor`. */
+export function resetActivityDockTab(): void {
+	setActivityDockTab("main")
+}
+
+/** Explicit mouse channel: the app sets `autoFocus:false` (app.tsx:258), so a
+ * click does NOT transfer focus and MUST carry its own left-button guard.
+ * Called from the framed box's onMouseUp after `dockTabAtPosition` resolves
+ * which title-region tab was hit. */
+export function onDockTabMouseUp(tab: ActivityDockTab, event: MouseEvent): void {
+	if (event.button !== MouseButton.LEFT) return
+	selectActivityDockTab(tab)
+}
+
 /** The todo array inside one todo-tool args/output value, or undefined when it
  * carries none. Two payload shapes: a bare array (the opencode output brief)
  * or `{ todos: [...] }` (the dsh host's todo_write call ARGUMENTS — its
@@ -630,6 +658,66 @@ export function todoTreeLines(todos: readonly Todo[]): MergedDockLine[] {
 		lines.push({ kind: "todo", segments: [{ text: `${branch}${glyph} ${todo.content}`, tone: "running", accent: "todo" }] })
 	})
 	return lines
+}
+
+/** R2 tab2 line builder. Routes `latestTodos(rows)` through `mergedDockLines`
+ * (scene C calls `todoTreeLines` internally) so the SAME `fitAll`/`fitLine`/
+ * `takeWidth` width law from `merged-dock.ts:255` applies to every tab line —
+ * no `clipToWidth` re-crop and NO change to the data layer. Empty/cleared todo
+ * lists inherit `todoTreeLines`' clear-when-done law and yield zero lines. */
+export function todoTabLines(rows: readonly SeamRow[], innerWidth: number, cursor = 0): MergedDockLine[] {
+	const data: MergedDockData = { tools: [], think: [], todos: latestTodos(rows), agents: [] }
+	return mergedDockLines(data, { innerWidth, totalLines: MERGED_DOCK_TOTAL_LINES, cursor })
+}
+
+/** R2 tab1 parity accessor: the main tab IS the existing merged view, exposed
+ * as a pure function so a test can assert "switch back == unchanged render". */
+export function mainTabLines(data: MergedDockData, options: MergedDockOptions): MergedDockLine[] {
+	return mergedDockLines(data, options)
+}
+
+/** The tab bar is ONE display-column-exact header line. Every width comes
+ * from `takeWidth`/`stringWidth` (grapheme-safe) — never `clipToWidth`, which
+ * historically short-cropped the right border. The returned parts concatenate
+ * to exactly `innerWidth` columns. */
+export interface DockTabBarLayout {
+	mainLabel: string
+	todoLabel: string
+	between: string
+	tailGap: string
+	tail: string
+}
+export function dockTabBarLayout(innerWidth: number, mainLabel: string, todoLabel: string, tailText: string): DockTabBarLayout {
+	const width = Math.max(0, Math.floor(innerWidth))
+	const between = "  "
+	const main = takeWidth(mainLabel, Math.max(0, width - stringWidth(between)))
+	const todo = takeWidth(todoLabel, Math.max(0, width - stringWidth(main) - stringWidth(between)))
+	const tail = takeWidth(tailText, Math.max(0, width - stringWidth(main) - stringWidth(between) - stringWidth(todo)))
+	const tailGap = " ".repeat(Math.max(0, width - stringWidth(main) - stringWidth(between) - stringWidth(todo) - stringWidth(tail)))
+	return { mainLabel: main, todoLabel: todo, between, tailGap, tail }
+}
+
+/** Which tab does a screen-cell click hit? `screenX/screenY` are the framed
+ * box's absolute origin; the box title starts at +2 columns (┏ then the
+ * mandatory ━). The hit zone is each tab LABEL's full display width and TWO
+ * rows tall (top border + the first content row) so a click is forgiving.
+ * Returns undefined outside the two label regions. Pure for unit tests. */
+export function dockTabAtPosition(
+	x: number,
+	y: number,
+	screenX: number,
+	screenY: number,
+	layout: DockTabBarLayout,
+): ActivityDockTab | undefined {
+	const relX = x - screenX - 2
+	const relY = y - screenY
+	if (relY < 0 || relY > 1) return undefined
+	const mainEnd = stringWidth(layout.mainLabel)
+	const todoStart = mainEnd + stringWidth(layout.between)
+	const todoEnd = todoStart + stringWidth(layout.todoLabel)
+	if (relX >= 0 && relX < mainEnd) return "main"
+	if (relX >= todoStart && relX < todoEnd) return "todo"
+	return undefined
 }
 
 // ------------------------------------------- scene-A todo brief timing (指令4)
@@ -1652,25 +1740,37 @@ export function WidgetsDock(props: {
 	// count is unchanged, so there is no feedback loop. While the latch is off
 	// the FlatDock is mounted and owns the shared tween feed (see FlatDock) —
 	// guarding here keeps ONE feed site for the two mutually-exclusive views.
+	// R2: the painted content depends on the active tab. `main` is the EXISTING
+	// `frameLines()` (unchanged); `todo` is the pure `todoTabLines` tree. Both
+	// share the one height tween and the one width law (fitLine/takeWidth).
+	const tabContentLines = (): MergedDockLine[] => {
+		void dockSpin()
+		return activityDockTab() === "main" ? frameLines() : todoTabLines(props.rows, width(), mergedDockCursor())
+	}
 	createEffect(() => {
 		if (!activityFrameLatch.shown()) return
-		setDockHeightTarget(mergedFrame().lines.length)
+		setDockHeightTarget(tabContentLines().length)
 	})
 	onCleanup(() => {
 		resetDockHeight()
 		// Session switch / unmount: no task-text signature may survive into the
-		// next session's brief clock.
+		// next session's brief clock, and the tab choice does not leak either.
 		resetTodoBriefClock()
+		resetActivityDockTab()
 	})
 	// The box reserves 4 of the W columns for title chrome: ┏ (col 0), the
 	// leading ━ it always draws before a left-aligned title (col 1), the trailing
 	// ━ it always draws after the title (col W-2), and ┓ (col W-1). The title
-	// SLOT is therefore exactly W-4 columns. Derived empirically via render
-	// capture (widgets-dock-render.test.ts): padding to W-4 fills the slot with
-	// the suffix immediately before the single mandatory trailing ━ (`1/14━┓`);
-	// padding to W-3 makes the title wider than the slot and opentui drops it
-	// entirely (no title painted), so suffix-adjacent-to-┓ is not achievable.
+	// SLOT is therefore exactly W-4 columns (render-capture verified).
 	const titleSlotWidth = () => dimensions().width - 4
+	// R2: the tab bar is MERGED into the title string (no extra frame row —
+	// the framed dock's height/content law stays byte-identical). The bar is
+	// width-fitted with takeWidth/stringWidth; the box title slot is W-4 wide,
+	// exactly `width()`. Click handling is on the box below (the box title
+	// itself is not a renderable, so autoFocus:false requires an explicit
+	// onMouseUp with a coordinate hit test).
+	const tabBar = () =>
+		dockTabBarLayout(titleSlotWidth(), t("overlay.widgets.tab.main"), t("overlay.widgets.tab.todo"), "")
 	const mergedTitleText = () => {
 		const { lines, info } = mergedFrame()
 		const base = mergedTitle({
@@ -1679,15 +1779,19 @@ export function WidgetsDock(props: {
 			subagent: mergedRunningAgents(props.rows).length > 0,
 		})
 		const suffix = mergedPositionSuffix(info)
-		if (suffix === null) return base
-		// D8: N/M on the title's RIGHT side. `titleAlignment="left"` lays the
-		// string out from the left border, so pad with spaces measured by the
-		// runtime `stringWidth` (D13 — never a character count) to push the
-		// suffix block's right edge onto the slot's right edge (the box then adds
-		// its single mandatory trailing ━ before ┓).
-		const gap = titleSlotWidth() - stringWidth(base) - stringWidth(suffix)
-		if (gap < 1) return `${base} · ${suffix}` // degenerate narrow title: append
-		return base + " ".repeat(gap) + suffix
+		const bar = tabBar()
+		const head = `${bar.mainLabel}${bar.between}${bar.todoLabel} `
+		const title = takeWidth(head + base, titleSlotWidth())
+		if (suffix === null) return title
+		const gap = titleSlotWidth() - stringWidth(title) - stringWidth(suffix)
+		if (gap < 1) return `${title} · ${suffix}`
+		return title + " ".repeat(gap) + suffix
+	}
+	let dockBox: Renderable | undefined
+	const onDockTitleMouseUp = (event: MouseEvent) => {
+		if (dockBox === undefined) return
+		const tab = dockTabAtPosition(event.x, event.y, dockBox.screenX, dockBox.screenY, tabBar())
+		if (tab !== undefined) onDockTabMouseUp(tab, event)
 	}
 	// D9 wheel — the PRIMARY scroll channel. Step the module cursor only while
 	// the lower zone overflows. `event.scroll` = `{ direction, delta }`
@@ -1743,6 +1847,29 @@ export function WidgetsDock(props: {
 			],
 			bindings: ["session.dock.scroll.up", "session.dock.scroll.down"],
 		}))
+		// R2 tab switch — same global-mode registration pattern as the dock
+		// scroll layer above. Gated ONLY by page ownership (not by overflow):
+		// the tabs must stay reachable even when the todo view is empty or the
+		// main lower zone fits, so the user can always switch back.
+		Keymap.createLayer(() => ({
+			mode: "global",
+			enabled: pageOwns(),
+			commands: [
+				{
+					id: "session.dock.tab.main",
+					title: "Show activity main panel",
+					group: "Session",
+					run: () => selectActivityDockTab("main"),
+				},
+				{
+					id: "session.dock.tab.todo",
+					title: "Show activity todo details",
+					group: "Session",
+					run: () => selectActivityDockTab("todo"),
+				},
+			],
+			bindings: ["session.dock.tab.main", "session.dock.tab.todo"],
+		}))
 	}
 	// The painted lines follow the tweened count: during a resize only the
 	// first `count` lines render, so the box's explicit height and its content
@@ -1766,7 +1893,9 @@ export function WidgetsDock(props: {
 		const count = !animating || tweened >= target ? target : Math.min(target, tweened)
 		return lines.slice(0, count)
 	}
-	const frameHeight = () => 2 + frameLines().length
+	// 2 border rows + the active tab's tweened content rows (the tab bar rides
+	// the top border as the title, so it costs no extra frame row).
+	const frameHeight = () => 2 + tabContentLines().length
 	// Compact lower zone: the same todo tree as the framed dock (with a narrow
 	// fallback for an over-budget tree). No scroll zone in the compact form.
 	const compactLower = () => mergedCompactLowerLines(props.rows)
@@ -1830,8 +1959,12 @@ export function WidgetsDock(props: {
 				>
 					{/* Explicit border (the borderColor-only trap opens four sides
 					 * implicitly — contract §2.4). Height = 2 border rows + the
-					 * merged content rows (cap-bounded, title rides the top border). */}
+					 * active tab's content rows; the tab bar rides the top border
+					 * as the box title (no extra frame row). */}
 					<box
+						ref={(el) => {
+							dockBox = el
+						}}
 						flexShrink={0}
 						flexDirection="column"
 						width="100%"
@@ -1842,8 +1975,9 @@ export function WidgetsDock(props: {
 						title={mergedTitleText()}
 						titleAlignment="left"
 						onMouseScroll={onMergedWheel}
+						onMouseUp={onDockTitleMouseUp}
 					>
-						<For each={frameLines()}>{mergedLineView}</For>
+						<For each={tabContentLines()}>{mergedLineView}</For>
 					</box>
 				</Show>
 			</Show>

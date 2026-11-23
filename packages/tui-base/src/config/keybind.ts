@@ -199,6 +199,11 @@ export const Definitions = {
   // overflow and page ownership; no pageup/pagedown/home/end binding here).
   "session.dock.scroll.up": keybind("ctrl+alt+up", "Scroll the activity lower zone up"),
   "session.dock.scroll.down": keybind("ctrl+alt+down", "Scroll the activity lower zone down"),
+  // R2 activity tab switch. alt+1/alt+2 are free legs (the session-tab select
+  // bindings use <leader>N / ctrl+N); registered on a global keymap layer in
+  // widgets-dock.tsx so they work while any page owns the keyboard.
+  "session.dock.tab.main": keybind("alt+1", "Show activity main panel"),
+  "session.dock.tab.todo": keybind("alt+2", "Show activity todo details"),
   // ctrl+g moved to session.subagents; ctrl+home is a free leg with the same
   // "first" semantics (home/alt+home stay for the old muscle memory).
   "session.first": keybind("ctrl+home,home,alt+home", "Navigate to first message"),
