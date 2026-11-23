@@ -437,9 +437,14 @@ export class AskRegistry {
       return { ok: false, code: ASK_ERROR_CODES.INVALID_RESPONSE, message: 'questions response requires answers' }
     }
     // PENDING-CONFIRMATION (Q3): escalation must have been granted on the
-    // request, otherwise behavior:'always' is rejected.
+    // request, otherwise behavior:'always' is rejected. B4-3 (oldfox): the
+    // 'session' verdict grants ALL gated write tools, so it needs the same
+    // escalation gate — never widen a non-escalated ask into a session grant.
     if (params.behavior === 'always' && entry.request.escalation !== true) {
       return { ok: false, code: ASK_ERROR_CODES.INVALID_RESPONSE, message: 'behavior:"always" needs a granted escalation' }
+    }
+    if (params.behavior === 'session' && entry.request.escalation !== true) {
+      return { ok: false, code: ASK_ERROR_CODES.INVALID_RESPONSE, message: 'behavior:"session" needs a granted escalation' }
     }
 
     let outcome: AskOutcome

@@ -249,6 +249,20 @@ describe('AskRegistry: turn/session teardown and error routing', () => {
     const settled = frames.filter((f) => f.type === 'ask.settled').at(-1)
     expect(settled).toMatchObject({ payload: { outcome: 'approved' } })
   })
+
+  test('behavior:"session" requires escalation — non-escalated ask is rejected with no grant (B4-3)', () => {
+    const { registry } = makeRegistry()
+    const notGranted = addAsk(registry, 't1', 's1', 'approval', { escalation: false, toolName: 'write' })
+    const bad = registry.answer('s1', { ...approval(notGranted.eventId), behavior: 'session', escalation: true })
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) {
+      expect(bad.code).toBe(ASK_ERROR_CODES.INVALID_RESPONSE)
+      expect(bad.message).toBe('behavior:"session" needs a granted escalation')
+    }
+    // Same refusal path as 'always': no session grant and the ask stays pending.
+    expect([...registry.sessionGrants('s1')]).toEqual([])
+    expect(registry.pendingCount()).toBe(1)
+  })
 })
 
 describe('AskRegistry: timer release / no leak', () => {
