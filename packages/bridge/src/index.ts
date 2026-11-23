@@ -3429,7 +3429,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // running child of the bound session. No effect on the parent's own deltas.
     if (frame.type === 'chunk' && binding !== undefined && agentId !== '' && agentId !== binding.sessionId) {
       const chunk = frame.chunk !== null && typeof frame.chunk === 'object' ? (frame.chunk as Record<string, unknown>) : {}
-      if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
+      // B3: reasoning-delta folds into the live tail too — the host's
+      // remote-subagents.ts folds BOTH text-delta and reasoning-delta into a
+      // child's lastLine (tui-pi session.ts:onStreamFrame parity); a tool name
+      // never does. Missing reasoning here froze a thinking child's tail.
+      if (
+        (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') &&
+        typeof chunk.text === 'string' &&
+        chunk.text !== ''
+      ) {
         noteChildProgress(agentId, 0, chunk.text)
       }
     }

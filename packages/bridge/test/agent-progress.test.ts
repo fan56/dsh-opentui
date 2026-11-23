@@ -154,6 +154,15 @@ function childDelta(h: ReturnType<typeof makeHarness>, childId: string, text: st
 	h.emitStream({ agent: { id: childId }, frame: { type: "chunk", chunk: { type: "text-delta", text } } })
 }
 
+function childDeltaOfType(
+	h: ReturnType<typeof makeHarness>,
+	childId: string,
+	type: "text-delta" | "reasoning-delta",
+	text: string,
+): void {
+	h.emitStream({ agent: { id: childId }, frame: { type: "chunk", chunk: { type, text } } })
+}
+
 describe("B3 agent.progress frames (live subagent progress)", () => {
 	test("E1: child assistant/message + text-delta emit agent.progress with the full field set", async () => {
 		const h = makeHarness()
@@ -192,6 +201,20 @@ describe("B3 agent.progress frames (live subagent progress)", () => {
 		expect(rounds[rounds.length - 1]).toBe(3)
 		for (let i = 1; i < rounds.length; i++) expect(rounds[i]!).toBeGreaterThanOrEqual(rounds[i - 1]!)
 		expect(progress[progress.length - 1]!.payload.lastLine).toBe("line3")
+	})
+
+	test("E2b: child reasoning-delta folds into lastLine (host remote-subagents parity)", async () => {
+		const h = makeHarness()
+		const parentId = await startTurn(h, 50)
+		catalogChild(h, parentId, "child-r")
+		childDeltaOfType(h, "child-r", "reasoning-delta", "thinking ")
+		childDeltaOfType(h, "child-r", "text-delta", "then answering")
+		await sleep(450) // trailing flush carries the combined tail
+		const progress = h.eventFrames("agent.progress")
+		expect(progress.length).toBeGreaterThanOrEqual(1)
+		// Both delta kinds scroll the child's live tail, mirroring the host's
+		// remote-subagents.ts:529 (lastLine is not frozen while the child thinks).
+		expect(progress[progress.length - 1]!.payload.lastLine).toBe("thinking then answering")
 	})
 
 	test("E3: throttle coalesces hot deltas inside the window and always flushes the tail", async () => {
