@@ -2,6 +2,12 @@
 
 These four raw host-stdout frame dumps were removed from the repo on 2026-11-23 because they tripped the `secret-value-field` pattern of `scripts/scan-stdio-secrets.mjs` (855 hits: schema-describe `value` fields, 14 of 52 distinct values are public defaults already present in `capir/capir.json`; zero credential-shaped matches). Per the credential discipline (values never land in the repo) they are replaced by this sha registry. Regenerate with `.proof/batch-gate/n1-probe.mjs` against a scratch home.
 
+The original evidence stays verifiable from git history — it is no longer at the tree tip, but it was not destroyed:
+
+```sh
+git show b420d87^:.proof/batch-gate/step6-n1/n1-host-1.stdout.frames | shasum -a 256
+```
+
 | file | sha256 |
 |---|---|
 | `.proof/batch-gate/step6-n1/n1-host-1.stdout.frames` | `01825a75ed9373ba935c82b1ddce27e6f7b1a39623008dcdaca0c7725de486a6` |
