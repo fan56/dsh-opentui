@@ -9,26 +9,29 @@
  *   Think  `💭 thinking · Xs · <tail>`    — up to DOCK_WIDGET_MAX_LINES (3)
  *          lines of the reasoning tail (live AND collapsed — the same tail,
  *          so collapsing never jumps the block back to the head);
- *          a finished round lingers 2s, then fades 0.3s (dock-visibility.ts)
+ *          a finished round lingers 2s, then disappears outright (no fade;
+ *          2026-11-23 user decision, dock-visibility.ts)
  *   Tool   `⚙ name(subject) · Xs · <tail>` — up to 3 tool lines, newest
- *          last; settled lines freeze ✔/✘ + elapsed, then linger 2s and fade
+ *          last; settled lines freeze ✔/✘ + elapsed, then linger 2s and vanish
  *
  * Data law: the dock is a pure VIEW over the seam-rows store — the phase
  * machine (onThinkingDelta / onToolRun / collapse / fade) is untouched.
  *
- * Visibility law (2026-11-10, exit timing UNCHANGED): a finished think/tool
- * block is NOT dropped when its stream/settle stops. It stays fully visible
- * for 2s (`DOCK_LINGER_MS`), then fades out over 300ms (`DOCK_FADE_OUT_MS`);
- * after that the line is `hidden`. New content of the same kind inside the
- * window replaces the old block (think: the store drops the old summary on
- * the next burst; tool: a starting tool flags the previous settled rows
- * `faded`). The timeline is a pure function of the row's stop anchor and the
+ * Visibility law (2026-11-10; exit timing revised 2026-11-23): a finished
+ * think/tool block is NOT dropped when its stream/settle stops. It stays fully
+ * visible for 2s (`DOCK_LINGER_MS`), then goes straight to `hidden` — there is
+ * NO exit fade: 2026-11-23 user decision covers BOTH think lines and panel
+ * exit, `DOCK_FADE_OUT_MS` is 0 (no constant split), and the former 300ms sweep
+ * plus its intermediate frames are gone. New content of the same kind inside
+ * the window replaces the old block (think: the store drops the old summary on
+ * the next burst; tool: a starting tool flags the previous settled tool
+ * lines as cleared). The timeline is a pure function of the row's stop anchor and the
  * wall clock; the view re-renders on the renderer's shared animation clock, so
- * no timers are added here. `reduced` hides at the 2s deadline without a
- * sweep and, together with `off`, the store's retention drop is the SAME
- * 2.0s (`dockRemovalMs(false)` → DOCK_LINGER_MS): the non-decorated tiers
- * have no sweep, so 2.0s is the hard removal moment. `off` never ticks, and
- * that 2.0s drop is what actually removes the line.
+ * no timers are added here. Every tier now hides at the same 2.0s edge: the
+ * store retention drop coincides with it (`dockRemovalMs` → 2000 for both
+ * decorated and non-decorated), and for `off` — whose clock is paused, so no
+ * view repaint can land at 2.0s — that drop IS the removal moment; 2.0s.
+
  *
  * 2026-11-19 user directive — SCENE TABLE (this SUPERSEDES the former "Think
  * and tool carry INDEPENDENT anchors — one never hides the other" law, REMOVED;
@@ -42,15 +45,15 @@
  *      lines under the existing ▲/▼ scroll clipping. Think/tool shrink to one
  *      line here regardless of gear or terminal height. A subagent with only
  *      HISTORICAL (non-running) rows is NOT "active": it does not open scene A.
- *   B. no running subagent + VISIBLE think (live burst OR the 2s exit hold;
- *      a decorated tier's 300ms fade tail is still "visible") → think = gear
+ *   B. no running subagent + VISIBLE think (live burst OR the 2s exit hold —
+ *      no fade tail since 2026-11-23) → think = gear
  *      lines (1/5/7/10, `all`=10); tool AND todo are HIDDEN; no subagent list.
  *   C. no running subagent + no visible think → think absent; tool = up to
  *      DOCK_WIDGET_MAX_LINES (3, fixed — NEVER the gear); todo = ONE line in
  *      the current full summary format (`todos [✓]d/n · <active>`).
  *
  * Tool/todo resume the instant scene C holds. D5 (no content → whole dock
- * hidden) and the 2s/300ms exit timing themselves are untouched.
+ * hidden) and the 2s exit timing (no fade tail since 2026-11-23) are untouched.
  *
  * CLOSURE LAW (D1 on-device finding): the component body declares NO
  * reactive state that the JSX props close over — every render getter calls
@@ -119,14 +122,19 @@ import { useIsPageOwner } from "../../context/input-ownership"
 // Pure so the fades/pulses are unit-testable; the VIEW layer derives progress
 // from timestamps — the seam-rows phase machine (stop → clear at 1s) is
 // untouched, per H5: the fade completes INSIDE the existing window.
+// 2026-11-23: user decision killed the EXIT fade (think lines and panel exit
+// alike); entrance fade / notice fade / reminder pulse are unchanged.
 // ---------------------------------------------------------------------------
 
 /** Dock line entrance fade: text color faint → target, 0.4s. */
 export const SKIN_FADE_IN_MS = 400
-/** Exit hold: a finished think/tool block stays fully colored for 2s
+/** Exit hold: a finished think/tool block stays fully colored for 2s, then
+ * vanishes — 2026-11-23 user decision: NO exit fade for think lines or panels
  * (dock-visibility.ts, user directive). */
 export const SKIN_HOLD_MS = DOCK_LINGER_MS
-/** Exit fade sweep after the hold (2s + 300ms = the row's retention edge). */
+/** Exit fade sweep after the hold — DISABLED (0ms), so the 2s hold IS the
+ * row's retention edge; kept as the DOCK_FADE_OUT_MS alias for the shared code
+ * path. Restoring the sweep means restoring that constant to 300. */
 export const SKIN_FADE_OUT_MS = DOCK_FADE_OUT_MS
 /** Notice fade-out inside the LAST 500ms of the 8s TTL (remove moment unchanged). */
 export const SKIN_NOTICE_FADE_MS = 500
@@ -160,13 +168,16 @@ export function skinFadeInColor(target: string | RGBA, background: string | RGBA
 }
 
 /** Exit fade progress within the dock retention window: 0 during the 2s
- * linger, 0→1 across the 300ms sweep, 1 after (the row is hidden then). */
+ * hold; the sweep is disabled (0ms) since 2026-11-23, so progress snaps to 1
+ * past the edge (the row is hidden then). The 0→1 sweep form applies only if
+ * DOCK_FADE_OUT_MS is restored to 300. */
 export function skinFadeOutProgress(elapsedSinceStopMs: number): number {
 	if (elapsedSinceStopMs <= SKIN_HOLD_MS) return 0
 	return Math.max(0, Math.min(1, (elapsedSinceStopMs - SKIN_HOLD_MS) / SKIN_FADE_OUT_MS))
 }
 
-/** Exit fade color: target during the hold, → background across the sweep. */
+/** Exit fade color: target during the hold, background past the edge (no
+ * sweep since 2026-11-23). */
 export function skinFadeOutColor(target: string | RGBA, background: string | RGBA, elapsedSinceStopMs: number): string {
 	return mixSkinColor(target, background, skinFadeOutProgress(elapsedSinceStopMs))
 }
@@ -451,11 +462,11 @@ export function resetSkinLineFades(): void {
 	lineFirstSeen.clear()
 }
 
-/** Component-side line color (shared by the docks, batch δ): the 2s-linger →
- * 300ms-sweep exit fade wins, then the entrance fade, else the plain target
- * color. `decorated: false` (reduced/off tier) jumps straight to the final
- * color — contract §1 动效档位; the line itself is hidden at the 2s deadline
- * by `dockLines`, so no gradient is ever painted. */
+/** Component-side line color (shared by the docks, batch δ): the 2s hold →
+ * straight-to-hidden exit wins (no sweep since 2026-11-23), then the entrance
+ * fade, else the plain target color. `decorated: false` (reduced/off tier)
+ * jumps straight to the final color — contract §1 动效档位; the line itself is
+ * hidden at the 2s deadline by `dockLines`, so no gradient is ever painted. */
 export type SkinFgContext = { decorated: boolean; background: string | RGBA }
 export function skinDockLineFg(ctx: SkinFgContext, target: string | RGBA, line: { id?: string; fadeOutAt?: number }): string | RGBA {
 	if (!ctx.decorated) return target
@@ -956,9 +967,9 @@ export function activityScene(hasRunningSubagent: boolean, hasVisibleThink: bool
 }
 
 /** Whether a think row is "VISIBLE" in the scene-table sense: a live streaming
- * burst, OR a settled row that has not reached its retention edge (the 2s hold
- * plus, on decorated tiers, the 300ms fade tail — `dockLineVisibility` knows
- * the tier boundary). `undefined` row → false. */
+ * burst, OR a settled row that has not reached its retention edge (the 2s
+ * hold; no fade tail since 2026-11-23 — `dockLineVisibility` ends visibility
+ * at the same edge on every tier). `undefined` row → false. */
 export function thinkRowVisible(
 	row: Extract<SeamRow, { kind: "reasoning" }> | undefined,
 	now: number = Date.now(),
@@ -1026,7 +1037,8 @@ export type DockViewOptions = {
  *
  * Tool: live tool rows, chronological order, up to `maxLines` (the newest
  * `maxLines` survive the slice). A settled row is painted for 2s and then
- * fades (dock-visibility); a starting tool has already flagged the previous
+ * hidden outright (dock-visibility, no fade since 2026-11-23); a starting tool
+ * has already flagged the previous
  * settled rows `faded` in the store (clear old, show new). Running rows
  * always show. 2026-11-19 scene table: scene A (a running subagent) shrinks
  * both think and tool to ONE line; scene B (no running subagent + visible
@@ -1038,9 +1050,10 @@ export type DockViewOptions = {
  * UNCONDITIONALLY. A collapsed/lingering/fading think block no longer reads
  * the spinner (the streaming branch is the only one that did), so without
  * this read the tick bumped a signal nobody tracked and a think-ONLY dock
- * painted no intermediate fade frames — it sat at full color until the
- * store dropped the row at 2.3s. The read makes every tick re-run the
- * builders, and the view re-derives `skinDockLineFg` from the new clock.
+ * sat at full color until the store dropped the row (2.3s at the time of the
+ * incident; 2.0s now that the exit sweep is disabled). The read still matters
+ * for the entrance fade and the exact 2s edge: every tick re-runs the builders,
+ * and the view re-derives `skinDockLineFg` from the new clock.
  *
  * `tone` keys the status-color family (resolved at render). `id` is the
  * STABLE entrance-fade key (spinner glyphs churn the text — the id must
@@ -1447,7 +1460,8 @@ export function dockAccentColor(theme: ComponentTheme | undefined, accent: DockA
 }
 
 /** Whether the dock needs the shared animation clock right now (pure):
- * any visible line (entrance fades / exit sweep) or a live child tree in
+ * any visible line (entrance fades / the 2s exit edge — no sweep since
+ * 2026-11-23) or a live child tree in
  * the lastRequest dock (which reads this module's dockSpin). The line read
  * is UNTRACKED: `dockBlocks` consumes `dockSpin` unconditionally (M1), and
  * the fps accessor that calls this is a reactive effect — tracking the tick
@@ -1564,9 +1578,10 @@ export function mergedToolRows(rows: readonly SeamRow[], now: number, decorated:
 /** Visible think rows, with the SAME store-visibility law as `mergedToolRows`
  * (D3/D14): a live streaming burst always shows; a collapsed summary hides
  * once `dockLineVisibility` reaches `hidden`. The store's retention timer is
- * only a backstop — it kept the row 2.3s under `full`, so a mid-linger switch
- * to `reduced`/`off` (decorations off → hidden at the 2.0s edge) must be
- * enforced here too, else the row stays fully colored through 2.0-2.3s. */
+ * only a backstop — with no exit sweep since 2026-11-23 it keeps the row 2.0s
+ * on every tier, so a mid-linger switch to `reduced`/`off` (decorations off →
+ * hidden at the 2.0s edge) must be enforced here too, else the row stays fully
+ * colored past its visibility edge. */
 export function mergedThinkRows(rows: readonly SeamRow[], now: number, decorated: boolean): MergedThinkRow[] {
 	return rows
 		.filter((row): row is MergedThinkRow => row.kind === "reasoning")
@@ -1633,9 +1648,9 @@ export function mergedCompactLowerLines(rows: readonly SeamRow[]): MergedDockLin
  * up to the geometry's line cap (dockLineCap: 1 at ≤ 40 rows, 2 at 41-50,
  * 3 above; short terminals ≤ COMPOSER_COMPACT_TERMINAL_ROWS also drop the
  * box for a left rule with the title in the first line (H2)). Line entrance
- * fade 0.4s and the 2s-linger → 300ms-sweep exit fade both ride the shared
- * motion clock — no timers are added (contract §2.2; reduced/off have no
- * gradient, and their hard removal coincides with the 2.0s linger edge). */
+ * entrance fade 0.4s rides the shared motion clock — no timers are added;
+ * the exit has NO sweep since 2026-11-23, so every tier's removal is the 2.0s
+ * linger edge (contract §2.2). */
 export function WidgetsDock(props: {
 	/** The shared seam-rows store (getter-prop law: the page passes
 	 * `{ get rows() { return projection.rows } }` — the STORE ARRAY itself,
@@ -1687,11 +1702,11 @@ export function WidgetsDock(props: {
 	// D10: the lower zone must survive turn end while an in_progress todo or a
 	// running subagent is still present, so the latch target is "turn active
 	// OR lower zone has content". `dockTurnActive` itself is untouched.
-	// Think/tool exit linger: a settled line stays visible for ~2.3s after the
-	// turn (2s hold + 300ms sweep, `dockLineVisibility`). Keep the frame up for
-	// that whole window so the fade paints INSIDE the framed activity board
-	// instead of the bare FlatDock — the board now withdraws only once the last
-	// line is hidden (the user-visible "board waits for the fade" behavior).
+	// Think/tool exit linger: a settled line stays visible for 2s after the
+	// turn (2s hold, no exit sweep since 2026-11-23, `dockLineVisibility`).
+	// Keep the frame up for that whole window so the line lives INSIDE the
+	// framed activity board instead of the bare FlatDock — the board withdraws
+	// once the last line is hidden.
 	// Same `Date.now()` / `motionDecorationsEnabled()` args as `mergedSource`.
 	createEffect(() =>
 		activityFrameLatch.push(

@@ -30,6 +30,20 @@ export const DOCK_LINGER_MS = 2000
 /** Fade sweep after the hold — the same 300ms the skin exit fade used. */
 // 原 300；2026-11-23 用户指示暂时关闭渐隐（残影/不消失问题），恢复改回 300
 export const DOCK_FADE_OUT_MS = 0
+//
+// 恢复清单（2026-11-23 用户已拍板不恢复则无需执行，清单仅供将来反悔用）：
+//   1. 本常量改回 300 → DOCK_LINE_RETENTION_MS 自动回到 2300，fading 分支重新可达。
+//   2. packages/tui-base/test/widgets-dock-render.test.ts:98 取消 M1 用例的 test.skip。
+//   3. packages/tui-base/test/widgets-dock.test.ts 三条改回原期望：
+//      a. 计时：「hold 2000ms → sweep 300ms → done at 2300ms」（300 / 2300 / mid≈0.5）
+//      b. 颜色：「fade color … half-mixed at the sweep midpoint」（中点 #800000）
+//      c. timeline：「full 2s linger, then a 300ms sweep, then gone」（2000 fading / 2150 mid / 2300 hidden）
+//      并删除 R3 新增的「DOCK_FADE_OUT_MS=0 → dockLineVisibility never returns fading」用例。
+//   4. packages/tui-base/test/widgets-dock-render.test.ts:817 D3/D14 用例改回
+//      「full 保留到 2.3s、reduced/off 在 2.0s 丢弃」的 tier 边界断言。
+//   5. packages/shell/test/shell-render-incident-motion-ft.test.tsx:56 shell motion
+//      用例改回「窗内采到 mid-sweep 混合帧」的断言。
+//   6. widgets-dock.tsx 注释段中标注「2026-11-23 / no fade / no sweep」的退场描述同步还原。
 
 /** How long a settled row must stay in the store so the view can finish the
  * fade: the linger plus the sweep. The seam-rows fade timers use this. */
