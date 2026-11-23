@@ -245,7 +245,7 @@ card — **Enter** allows once, **Esc** declines (fail-closed); read-only tools
 such as read_file pass straight through. `esc` ×2 + confirm stops a running
 turn. Ctrl+C twice quits. Commands (see `/help` inside the TUI for the full
 list): `/help` `/model [provider/id]` `/model discover` `/btw` `/plugins`
-`/goals` `/login` `/logout` `/account` `/settings` `/agents` `/skills`
+`/goal` `/login` `/logout` `/account` `/settings` `/agents` `/skills`
 `/search` `/history` `/subagents` `/session` `/export` `/think` `/preset`
 `/theme` `/language` `/motion` `/hints` `/hotkeys` `/stop` `/resume` `/new`
 `/clear` `/flush` `/quit`.
@@ -299,7 +299,7 @@ Command faces backed by real host data (0.24–0.25):
 - **`/plugins`** — a plugin-manager panel with list + detail and install /
   uninstall / enable / disable behind a confirmation modal; install progress
   is polled with a bounded wait and can be cancelled.
-- **`/goals`** — goal data with 7 operations: status, create, edit, pause,
+- **`/goal`** — goal data with 7 operations: status, create, edit, pause,
   resume, complete, clear; writes confirm first.
 - **`/model discover`** — query the current provider for its model list. The
   positive path is environment-dependent and was NOT RUN in the scratch gate
@@ -417,7 +417,7 @@ verify70 gate went green; 28 methods were hand-wired and `@manual` reached 0.
 tables plus a generic dispatch arm (ADR-0012) and a per-id allowlist take the
 wired set to 58/257 while `check-capcontract` stays green at 22/22 assertions.
 New command faces ride real host data — `/btw` side sessions, a `/plugins`
-manager panel with confirm-gated writes and bounded install progress, `/goals`
+manager panel with confirm-gated writes and bounded install progress, `/goal`
 with 7 operations, `/model discover`, separate `/login` and `/account` domains,
 and real `/search`, `/history` and `/subagents` data. The legacy podman
 `e2e/scenarios/` container layer was retired (ADR-0013), verify70 closed at

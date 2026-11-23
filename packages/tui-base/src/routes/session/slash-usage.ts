@@ -60,10 +60,13 @@ export function normalizeCommandUsage(value: unknown): Record<string, number> {
  * Commands renamed after counts were already persisted: new name → old name.
  * `/sessions` became `/resume` (the dsh-tui-pi name; no alias kept), so a
  * profile written by an older build carries its executions under a key the
- * palette no longer asks about.
+ * palette no longer asks about. `/goals` -> `/goal` is the same shape: the
+ * user-visible command name was aligned with the host/web catalog, with no
+ * runtime alias and a one-time usage-count fold.
  */
 export const RENAMED_COMMANDS: Readonly<Record<string, string>> = {
 	"/resume": "/sessions",
+	"/goal": "/goals",
 }
 
 /**

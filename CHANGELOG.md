@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.4] - 2026-11-23
+
+### Changed
+
+- **`/goals` is renamed to `/goal`** to match the host/web command name. There
+  is no runtime alias: typing the old `/goals` now yields `unknown command`.
+  The seven operations (status, create, edit, pause, resume, complete, clear),
+  the bare-command read-only status, and the write-confirmation flow are
+  unchanged; saved usage counts carry over once through the renamed-command
+  migration.
+- **The inproc profile pins the host subagent `maxDepth` to 1.** Depth is
+  absolute (lead 0, direct child 1): direct children are allowed, grandchildren
+  (depth 2) are rejected, closing the depth-≥2 delegation-gate silent-pass
+  window and surviving host default drift. `0` is never used — it would refuse
+  every delegation. The pin is the initial default of a volatile setting, so a
+  runtime change by the host is still possible.
+
+## [0.26.3] - 2026-11-22
+
+### Changed
+
+- Full-access delegation now inherits the parent's approval policy across live
+  and resumed children (parent policy events, bind/reconcile re-sync and child
+  turn-start re-pin), so returning to `ask` no longer leaves a child on `never`
+  and silently bypasses the write-approval gate.
+
 ## [0.25.0] - 2026-11-22
 
 ### Added

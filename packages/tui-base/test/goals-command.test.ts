@@ -1,5 +1,5 @@
 /**
- * 025 W2-5b — /goals command tests: pure helpers + command flows against a
+ * 025 W2-5b — /goal command tests: pure helpers + command flows against a
  * recording face. Status is the zero-side-effect default; writes require an
  * explicit yes/no confirm (no silent change); service absence / no active
  * session degrade to an honest notice (never a fake-empty goal). en-literal
@@ -93,16 +93,25 @@ function makeCtx(face: Face | undefined, pickAnswer?: string) {
 }
 
 async function runGoals(ctx: SlashCommandContext, argText = "") {
-	const command = coreCommands().find((c) => c.name === "/goals")!
+	const command = coreCommands().find((c) => c.name === "/goal")!
 	await command.run(ctx, argText)
 }
 
-describe("/goals command — status / degrade / explicit confirm", () => {
+describe("/goal command — status / degrade / explicit confirm", () => {
 	test("command is registered", () => {
-		expect(coreCommands().some((c) => c.name === "/goals")).toBe(true)
+		expect(coreCommands().some((c) => c.name === "/goal")).toBe(true)
 	})
 
-	test("bare /goals shows the answer-bearing status rows (read, no writes)", async () => {
+	// Pure rename to align with the host/web command name; the registry has no
+	// alias mechanism, so the legacy name must not linger (the /sessions ->
+	// /resume precedent). Guards against a stray /goals row shadowing dispatch.
+	test("legacy /goals is gone — only /goal is registered", () => {
+		const names = coreCommands().map((c) => c.name)
+		expect(names).toContain("/goal")
+		expect(names).not.toContain("/goals")
+	})
+
+	test("bare /goal shows the answer-bearing status rows (read, no writes)", async () => {
 		let writes = 0
 		const face: Face = {
 			status: async () => VIEW,
@@ -124,7 +133,7 @@ describe("/goals command — status / degrade / explicit confirm", () => {
 		const { ctx, lines } = makeCtx(undefined)
 		await runGoals(ctx, "destory")
 		const out = lines.join("\n")
-		expect(out).toContain("unknown /goals subcommand")
+		expect(out).toContain("unknown /goal subcommand")
 		expect(out).toContain("destory")
 		// status fallback preserved (parseGoalsArgs contract unchanged)
 		expect(out).toContain("Reach 100% green")
