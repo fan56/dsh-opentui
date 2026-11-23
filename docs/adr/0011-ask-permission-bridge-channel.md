@@ -197,3 +197,14 @@ T9 是 D2 的落地点，已按 §6 的前提落地（commit `feat(profile): def
 5. **I1–I6 编号与语义**：草案把既有不变量重排成 A1–A5 并替换语义；源码 I1–I6 含义固定（`docs/adr/0010-session-seam-lifecycle-contract.md:12-19`）。已恢复 I1–I6 原文语义，ask 通道不变量另编为 A1–A5，并逐条标注对 I3/I6/I1 的从属关系（§4）。
 6. **profile 默认行号**：草案/工单引用 `provision-inproc-profile.mjs:462-475`，当前 HEAD 实际为 `:480-493`（`defaultPreset` 在 `:493`，`danger-full-access` 在 `:490-492`）。本文全部引用按当前 HEAD 改写（§1、§6）。
 7. **seam degrade 行号**：工单引用 `bridge-session-seam.ts:488-492/593-596`，当前 HEAD 核对为 `:488-492` 与 `:593-595`（`registerAskProvider` 方法体到 `:596`），本文按实际行号引用（§1、§6、§8）。
+
+## Session verdict 的 journal 折叠（2026-11-23 批次）
+
+本批次的 `s` 键（审批卡上的 session verdict：`behavior:'session'`，见 §3.2 / F1-A1-C2）在 append-only journal 上采用刻意的行折叠编码，记录于此以免被误判为审计数据错误。
+
+- **一次按键、五条已应答行**：一次 session verdict 结算写出 5 条 `kind:'ask.responded'` 行，共用同一个 `eventId`（`${turnId}:ask-${seq}`，§3.1）：
+  - 4 条 grant 行，各自 `behavior:'always'`、`verdict:'allowed-once'`、`outcome:'approved'`、`source:'answer'`，`toolName` 覆盖四个写类门控工具 `bash` / `write` / `edit` / `apply_patch`（即 §6 的 gate 工具集）；
+  - 1 条真实结算行，`behavior:'session'`，记录用户实际选择（`outcome:'approved'`、`verdict:'allowed-once'`、原 ask 的 `toolName`）。
+- **marker 复用原因**：grant 行的 `behavior` 标记故意复用 `'always'` 而非 `'session'`，因为仓库内唯一的 grant 重建消费方 `alwaysGrantToolsFromJournal`（`packages/bridge/src/ask-journal.ts:150-160`）只认 `behavior === 'always' && outcome === 'approved'` 的行；session grant 与 always grant 在本进程内共享同一份会话级权限摘要（A4/D7，F1-A1-C2），折叠成同一标记可让重建语义保持一致，无需新增重建分支。
+- **审计面的表现**：任何按 `eventId` 做 join 的审计消费方，会对同一次 ask 看到 5 条 RESPONDED 行（4 条 always + 1 条 session）。这是 append-only 审计面的刻意折中——用多行换取「重启后完整恢复四个工具的会话级授权」，每行仍是 redact 后的标量字段，无自由文本、无副作用；不是重复结算，也不是数据错误（A2 的 first-wins 仍只结算一次）。
+- **消费方语义核对**：仓库内唯一重建消费方 `alwaysGrantToolsFromJournal` 的行为正确——按 `sessionId` 过滤（A5 会话隔离），只收 `behavior:'always'` + `outcome:'approved'` 的行，对 `toolName` 再做 redact，返回 Set 并天然幂等；`session` 结算行不会被它误读为 grant，但会保留在 journal 中供审计还原用户意图。实现见 `packages/bridge/src/ask-registry.ts:465-507`，固定此形状的回归断言见 `packages/bridge/test/ask-journal.test.ts:346-380`（`production session answer journals one grant row per gate tool and rebuilds all four on respawn`）。
