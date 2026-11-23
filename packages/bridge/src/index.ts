@@ -60,6 +60,10 @@ import {
 // index module owns the Map shape and its build/incremental/reconcile rules;
 // index.ts only wires it to the host firehose and the dispatcher.
 import { getSubagentIndex } from './subagent-index'
+// B1 S1/S2 — inproc host settings adapter. Controller-absent fallback only:
+// resolveSettingsSurface() prefers the real settingsController, then adapts
+// ctx.settings (dsh-settings SettingsForms) via a pure projection module.
+import { adaptSettingsForms } from './settings-adapter'
 // 024 base task 4 — startup capability handshake. A lifecycle observer only:
 // it is started from apply() but adds NO `req.method ===` dispatch branch, so
 // the @manual wired surface (and its ledger registry) is unchanged.
@@ -1260,7 +1264,7 @@ export function createCapHostInvoke(
     // document view / namespace view through verbatim — no frame payload is
     // copied into logs and no credential VALUE is ever echoed.
     if (methodId.startsWith('@deepseek-ai/dsh-api-settings-controller#settings/')) {
-      const settingsSvc = resolveSettingsController(ctx)
+      const settingsSvc = resolveSettingsSurface(ctx)
       if (settingsSvc === undefined) {
         throw new Error(`NOT_WIRED: settingsController unavailable for ${methodId}`)
       }
@@ -1751,6 +1755,24 @@ function resolveSettingsController(ctx: BridgeContext): SettingsControllerLike |
     svc = undefined
   }
   return svc !== undefined && typeof svc === 'object' ? (svc as SettingsControllerLike) : undefined
+}
+
+/** B1 S1/S2 — resolve the settings surface: real controller first (unchanged),
+ *  then the inproc `ctx.settings` (dsh-settings SettingsForms) adapter as a
+ *  controller-absent fallback. The `settings` lookup uses the same contained
+ *  ctx.get seam as the other services so an absent/throwing host degrades to
+ *  the arm's existing NOT_WIRED path rather than crashing. */
+function resolveSettingsSurface(ctx: BridgeContext): SettingsControllerLike | undefined {
+  const controller = resolveSettingsController(ctx)
+  if (controller !== undefined) return controller
+  let forms: unknown
+  try {
+    forms = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
+    if (forms === undefined) forms = (ctx as unknown as { settings?: unknown }).settings
+  } catch {
+    forms = undefined
+  }
+  return adaptSettingsForms(forms) as SettingsControllerLike | undefined
 }
 
 /** Decidable shape check for AccountClientMetadata (version/locale/offset). */
