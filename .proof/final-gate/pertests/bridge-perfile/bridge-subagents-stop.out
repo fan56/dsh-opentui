@@ -1,0 +1,23 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/subagents-stop.test.ts:
+(pass) handshake capabilities (additive) > bridge.hello advertises both stop capabilities [2.42ms]
+(pass) handshake capabilities (additive) > bridge.ping advertises the same capabilities [1.35ms]
+(pass) subagents.stopChildren — normal > cancels only RUNNING children of the bound parent, with the host cancel cause [2.41ms]
+(pass) subagents.stopChildren — normal > never enumerates a child of a different parent (no global stop) [2.46ms]
+(pass) subagents.stopChildren — normal > an empty index yields an empty children list (no error, no cancel) [2.40ms]
+(pass) subagents.interrupt — normal > a running child -> cancel-issued with exactly one cancel [2.47ms]
+(pass) subagents.interrupt — normal > a settled child -> already-settled, zero cancels [2.41ms]
+(pass) ownership — zero enumeration, zero cancel on mismatch > stopChildren with a non-bound parent -> OWNERSHIP_MISMATCH, no list call, no cancel [2.40ms]
+(pass) ownership — zero enumeration, zero cancel on mismatch > interrupt with a non-bound parent -> OWNERSHIP_MISMATCH, no list call, no cancel [2.43ms]
+(pass) ownership — zero enumeration, zero cancel on mismatch > a stop with no session open -> NO_SESSION, no list call, no cancel [1.27ms]
+(pass) ownership — zero enumeration, zero cancel on mismatch > row-level gate: interrupt of a child belonging to another parent -> OWNERSHIP_MISMATCH, zero cancel [2.40ms]
+(pass) single-child failure isolation > stopChildren: a failing child is 'failed' but the batch continues [2.51ms]
+(pass) single-child failure isolation > interrupt: a missing agent in the registry -> failed with detail [2.54ms]
+(pass) incremental index feeds the stop window > a catalog-born child not yet in session.list can still be stopped [2.74ms]
+(pass) incremental index feeds the stop window > a child turn/end flips it to settled -> interrupt answers already-settled [2.53ms]
+
+ 15 pass
+ 0 fail
+ 70 expect() calls
+Ran 15 tests across 1 file. [113.00ms]

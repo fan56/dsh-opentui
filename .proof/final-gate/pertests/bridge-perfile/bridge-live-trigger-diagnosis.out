@@ -1,0 +1,11 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/live-trigger-diagnosis.test.ts:
+(pass) H1/H2 — real dsh-session publishes approval/policy with intact shape > all four types publish; delivered event.data matches log, id matches [2.80ms]
+(pass) H3 — real approval policy reads work on store.get() sessions > overrideOf/effectivePolicy on sessions.get(childId) reflect a live append [0.48ms]
+(pass) H4 — append on a DETACHED session lands in its log but publishes nothing > detached setApprovalPolicy grows log with no session/event and no warn [0.42ms]
+
+ 3 pass
+ 0 fail
+ 10 expect() calls
+Ran 3 tests across 1 file. [95.00ms]

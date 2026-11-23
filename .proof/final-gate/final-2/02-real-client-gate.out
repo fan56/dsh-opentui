@@ -1,0 +1,107 @@
+=== env precheck 2026-11-23T07:22:57Z ===
+env self-check 2026-11-23T07:22:57Z
+--- protected PID: none configured (PROTECTED_PID unset; pattern exclusion active) ---
+--- dsh-jev-mcp (excluded, untouched; pattern-based) ---
+EXCLUDED 1118 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+EXCLUDED 85245 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+EXCLUDED 99956 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+--- orphan dsh --profile opentui --no-open (PID-verified, self-filtered) ---
+none
+--- orphan mock-llm.mjs (PID-verified, self-filtered) ---
+none
+--- named tmux sessions (rc-gate-* / agents-mount-*) ---
+none
+PASS  env precheck: no orphan dsh/mock-llm/named-tmux (PID list in .proof/final-gate/real-client-gate-2/env-precheck.log)
+=== real-client-gate start 2026-11-23T07:22:57Z ===
+PASS  preflight: dsh on PATH
+PASS  preflight: node on PATH
+PASS  preflight: bun on PATH
+PASS  preflight: tmux on PATH
+PASS  preflight: /private/tmp/uibatch-verify-wt/dsh-opentui
+PASS  preflight: /private/tmp/uibatch-verify-wt/packages/shell/scripts/provision-inproc-profile.mjs
+PASS  preflight: /private/tmp/uibatch-verify-wt/packages/shell/dist/bridge/index.js
+PASS  preflight: /private/tmp/uibatch-verify-wt/packages/shell/dist/bridge/bundle-fingerprint.json
+scratch home: /var/folders/1t/2l4974yn3_968cs18bqp2sf40000gn/T//rc-gate-home-eQr0bU
+PASS  provision: inproc host provisioned (--repair)
+PASS  provision: bridge materialized as real dir (sha256 match, no symlink)
+PASS  handshake: bridge.hello replied in framed JSON
+PASS  composer input box painted in 7s (.ans readiness)
+  frame sk-08-basic:    12756 ansi bytes
+  basic: composer-input=yes
+  frame sk-06-modal:    13196 ansi bytes
+  modal: dialog-frame=yes
+  frame sk-07-pgup-pgdn:    13574 ansi bytes
+  paging: panel-frame=yes
+  frame sk-06-esc:     6600 ansi bytes
+  esc: turn-busy-marker=no (full arm->confirm needs live session)
+  frame s1-model:    10387 ansi bytes
+  s1-model: picker=yes rows=yes
+  frame s2-account:    13248 ansi bytes
+  s2-account: section=yes
+running verify70: node verify/agents-mount-repro.mjs
+FAIL  verify70: exit 1 (see .proof/final-gate/real-client-gate-2/verify70.log)
+PASS  frame basic composer: non-empty + real-data marker  bytes=2769 marker=true
+PASS  frame quit confirm modal: non-empty + real-data marker  bytes=3337 marker=true
+PASS  frame /agents paging panel: non-empty + real-data marker  bytes=3336 marker=true
+PASS  frame /model picker: non-empty + real-data marker  bytes=4104 marker=true
+PASS  frame /settings account section: non-empty + real-data marker  bytes=3997 marker=true
+PASS  frame basic composer: no credential/SENTINEL leak
+PASS  frame quit confirm modal: no credential/SENTINEL leak
+PASS  frame /agents paging panel: no credential/SENTINEL leak
+PASS  frame /model picker: no credential/SENTINEL leak
+PASS  frame /settings account section: no credential/SENTINEL leak
+
+TOTAL 10/10 PASS
+PASS  frames: answer-bearing assert exit 0 (see frame-assert.log)
+=== env postcheck 2026-11-23T07:25:42Z ===
+post-check 2026-11-23T07:25:42Z
+--- protected PID: none configured (PROTECTED_PID unset; pattern exclusion active) ---
+--- dsh-jev-mcp (excluded, untouched; pattern-based) ---
+EXCLUDED 1118 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+EXCLUDED 85245 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+EXCLUDED 99956 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+--- orphan dsh --profile opentui --no-open (PID-verified, self-filtered) ---
+none
+--- orphan mock-llm.mjs (PID-verified, self-filtered) ---
+none
+--- named tmux sessions (rc-gate-* / agents-mount-*) ---
+none
+PASS  env postcheck: no orphan dsh/mock-llm/named-tmux (PID-verified list in .proof/final-gate/real-client-gate-2/env-postcheck.log)
+=== verdict: FAIL=1 ===
+----- diagnostics -----
+env: DSH_HOME=/var/folders/1t/2l4974yn3_968cs18bqp2sf40000gn/T//rc-gate-home-eQr0bU REAL_HOME=/Users/qingguee/.dsh OUT=.proof/final-gate/real-client-gate-2
+dsh=0.2.2-rc.5 node=v26.8.1 bun=1.4.4 tmux=tmux 3.7c
+--- last pane (plain) ---
+--- last pane (numeric .ans tail) ---
+--- client stderr ---
+[connection] connection lost, retry #1
+[connection] connection lost, retry #2
+[connection] connection lost, retry #3
+[bridge-seam] onSessionEvent degraded: only turn.* lifecycle/error events project; permission.asked / bridge.shutdown absent
+Native scene shutdown failed: 1249 |   }
+1250 |   return value
+1251 | }
+1252 | 
+1253 | function nativeResult(operation: string, status: NativeStatus): void {
+1254 |   if (status !== NativeStatus.Ok) throw new NativeError(operation, status)
+                                               ^
+NativeError: ot_session_post_stdout failed: OutputFailed
+ operation: "ot_session_post_stdout",
+    status: -15,
+
+      at nativeResult (/private/tmp/uibatch-verify-wt/node_modules/.pnpm/@opentui+core@0.8.1_typescript@5.9.3_web-tree-sitter@0.25.10/node_modules/@opentui/src/zig.ts:1254:41)
+      at sessionPostStdout (/private/tmp/uibatch-verify-wt/node_modules/.pnpm/@opentui+core@0.8.1_typescript@5.9.3_web-tree-sitter@0.25.10/node_modules/@opentui/src/zig.ts:7151:5)
+      at postStdout (/private/tmp/uibatch-verify-wt/node_modules/.pnpm/@opentui+core@0.8.1_typescript@5.9.3_web-tree-sitter@0.25.10/node_modules/@opentui/src/NativeSession.ts:884:44)
+      at turn (/private/tmp/uibatch-verify-wt/node_modules/.pnpm/@opentui+core@0.8.1_typescript@5.9.3_web-tree-sitter@0.25.10/node_modules/@opentui/src/NativeSession.ts:778:33)
+      at <anonymous> (/private/tmp/uibatch-verify-wt/node_modules/.pnpm/@opentui+core@0.8.1_typescript@5.9.3_web-tree-sitter@0.25.10/node_modules/@opentui/src/NativeSession.ts:754:21)
+      at <anonymous> (/private/tmp/uibatch-verify-wt/node_modules/.pnpm/@opentui+core@0.8.1_typescript@5.9.3_web-tree-sitter@0.25.10/node_modules/@opentui/src/NativeSession.ts:158:16)
+
+--- host probe stderr ---
+--- bridge symlink state ---
+total 0
+drwxr-xr-x@ 5 qingguee  staff  160 Nov 23 15:23 .
+drwxr-xr-x@ 6 qingguee  staff  192 Nov 23 15:23 ..
+drwxr-xr-x@ 7 qingguee  staff  224 Nov 23 15:22 dsh-opentui-bridge
+drwxr-xr-x@ 4 qingguee  staff  128 Nov 23 15:23 dsh-opentui-session-shim
+lrwxr-xr-x@ 1 qingguee  staff   90 Nov 23 15:23 dsh-subagent-registry -> ../.pnpm/@aiwayds+dsh-subagent-registry@0.21.0/node_modules/@aiwayds/dsh-subagent-registry
+----- end diagnostics -----

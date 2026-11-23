@@ -1,0 +1,15 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/append-section.test.ts:
+(pass) M3-02: registerAppendSection > registers a section with the pinned arg shape (name/order/text/interpolate) [0.12ms]
+(pass) M3-02: registerAppendSection > text provider is injectable (M3-03 seam) [0.02ms]
+(pass) M3-02: registerAppendSection > holds the disposer via ctx.effect and the returned cleanup disposes (idempotent) [0.05ms]
+(pass) M3-02: registerAppendSection > falls back to the direct ctx.systemPrompt property when ctx.get is absent [0.03ms]
+(pass) M3-02: registerAppendSection > degrades when systemPrompt is missing: no throw, logger warns, no-op cleanup [0.03ms]
+(pass) M3-02: registerAppendSection > degrades when ctx.get throws (undeclared cordis inject): plugin stays live [0.03ms]
+(pass) M3-02: registerAppendSection > index.ts armAppendSection assembly helper delegates to the registration [0.02ms]
+
+ 7 pass
+ 0 fail
+ 30 expect() calls
+Ran 7 tests across 1 file. [87.00ms]

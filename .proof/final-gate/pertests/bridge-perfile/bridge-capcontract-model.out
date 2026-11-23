@@ -1,0 +1,15 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/capcontract-model.test.ts:
+(pass) S1 /model — createCapHostInvoke model arms > CAP_HOST_WIRED_IDS = 28 (S1 4 + S2 15 + S3 3 + S5 2 + w1b 4), no duplicates [0.11ms]
+(pass) S1 /model — createCapHostInvoke model arms > modelCatalog returns the host catalog verbatim [0.39ms]
+(pass) S1 /model — createCapHostInvoke model arms > selectModel forwards a validated request and returns the host selection [0.06ms]
+(pass) S1 /model — createCapHostInvoke model arms > selectModel rejects BAD_PARAMS for a missing/empty field (no host call) [0.09ms]
+(pass) S1 /model — createCapHostInvoke model arms > initializeDefaultModel resolves void through the host service [0.03ms]
+(pass) S1 /model — createCapHostInvoke model arms > wired model id with no sessionController -> NOT_WIRED (no false success) [0.04ms]
+(pass) S1 /model — createCapHostInvoke model arms > non-wired CapIR id stays NOT_WIRED (膨胀期望面 negative) [0.04ms]
+
+ 7 pass
+ 0 fail
+ 14 expect() calls
+Ran 7 tests across 1 file. [96.00ms]

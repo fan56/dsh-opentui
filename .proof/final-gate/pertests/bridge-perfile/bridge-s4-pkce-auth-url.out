@@ -1,0 +1,23 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/s4-pkce-auth-url.test.ts:
+(pass) S4 / E1 — PKCE/auth id registry + one-hand service seam > all six PKCE/auth ids stay wired; registry count stays 28 [0.03ms]
+(pass) S4 / E1 — PKCE/auth id registry + one-hand service seam > host adapter reads the verified `deepseekAccount` ctx.get key [0.34ms]
+(pass) S4 / E2 — PKCE projection + pre/post leak control > PRE-CHANGE: raw host view leaks the authorize URL (negative baseline) [0.03ms]
+(pass) S4 / E2 — PKCE projection + pre/post leak control > POST-CHANGE: projection is a fixed bounded shape with zero auth-value hits [0.04ms]
+(pass) S4 / E2 — PKCE projection + pre/post leak control > PKCE stages: start -> project -> cancel -> project, no URL at any stage [0.07ms]
+(pass) S4 / E3 — four-layer auth-URL ban > WIRE layer: writeFrame's central guard strips auth keys even from a raw result [0.06ms]
+(pass) S4 / E3 — four-layer auth-URL ban > EMIT layer: relay cap.event payloads are a fixed four-field whitelist, zero auth hits [1.45ms]
+(pass) S4 / E3 — four-layer auth-URL ban > LOG layer: classifyPushErrorCode degrades to a bounded enum, never an error body [0.03ms]
+(pass) S4 / E4 — stream four-piece-set > (a) owned controller released on return; caller signal never aborted by us [0.18ms]
+(pass) S4 / E4 — stream four-piece-set > (b) BAD_KIND for stream id via unary; NOT_WIRED for missing host method [0.04ms]
+(pass) S4 / E4 — stream four-piece-set > (c) cap.end carries only a bounded code; (d) each subscription seq starts at 1 [1.29ms]
+(pass) S4 / E4 — stream four-piece-set > explicit stop releases both subscriptions; re-start is idempotent and resets seq [1.31ms]
+(pass) S4 / E6 — negative controls > BAD_PARAMS never reaches the host for malformed startSignIn client/origin [0.12ms]
+(pass) S4 / E6 — negative controls > NOT_WIRED for absent account service and for an unwired CapIR id [0.06ms]
+(pass) S4 / E6 — negative controls > bad signal param -> BAD_PARAMS (never reaches host stream) [0.02ms]
+
+ 15 pass
+ 0 fail
+ 59 expect() calls
+Ran 15 tests across 1 file. [83.00ms]

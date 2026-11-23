@@ -1,0 +1,55 @@
+{
+  "results": [
+    {
+      "family": "handshake",
+      "id": "positive",
+      "ok": true,
+      "detail": "bridge.hello framed reply (ok=true, protocolVersion=1)"
+    },
+    {
+      "family": "session",
+      "id": "list",
+      "ok": true,
+      "detail": "session.list ok=true sessions=0"
+    },
+    {
+      "family": "session",
+      "id": "sessionId-isolation",
+      "ok": true,
+      "detail": "sequential opens A=23e5f8c1-ca80-4e1f-b6cc-6bc910b14a64 B=8debbcf9-2505-4872-b187-489da49affca (distinct=true); list stable=true distinct=true ids=[8debbcf9-2505-4872-b187-489da49affca,23e5f8c1-ca80-4e1f-b6cc-6bc910b14a64]"
+    },
+    {
+      "family": "session",
+      "id": "open-isolation-guard",
+      "ok": true,
+      "detail": "concurrent second open -> ok=false error={\"code\":\"ALREADY_OPEN\",\"message\":\"a session is already open; call session.close before opening another\",\"detail\":{\"openS"
+    },
+    {
+      "family": "push",
+      "id": "event-sequence",
+      "ok": true,
+      "detail": "cap.event frames with sessionId+seq=8 (types=[ready,snapshot,event])"
+    },
+    {
+      "family": "model",
+      "id": "currentSelection",
+      "ok": true,
+      "detail": "model.currentSelection framed reply ok=true result={\"provider\":\"opencode-go\",\"model\":\"deepseek-v4.1-flash\",\"reasoningEffort\":\"high\"}"
+    },
+    {
+      "family": "handshake",
+      "id": "negative-degrade",
+      "ok": true,
+      "detail": "inflated CapIR id -> ok=false error={\"code\":\"UNSUPPORTED\",\"message\":\"unsupported method: session/definitelyNotAWiredCapability\"}"
+    },
+    {
+      "family": "handshake",
+      "id": "alive-after-degrade",
+      "ok": true,
+      "detail": "bridge.ping after negative -> ok=true"
+    }
+  ],
+  "childExitCode": 0,
+  "eventCount": 8,
+  "stderrTail": "[llm-deepseek-api-key] model listing from https://api.deepseek.com/models failed (LlmError: https://api.deepseek.com/models answered HTTP 401); using the bundled catalog"
+}

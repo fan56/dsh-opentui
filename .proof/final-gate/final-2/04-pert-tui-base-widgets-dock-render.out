@@ -1,0 +1,29 @@
+bun test v1.4.4 (38afee6c8)
+
+test/widgets-dock-render.test.ts:
+(skip) WidgetsDock on the real renderer > M1: collapsed think-only dock paints an intermediate fade frame inside 2.0-2.3s
+(pass) WidgetsDock on the real renderer > M2: think→tool→think keeps the resumed burst at full accent (no stale anchor) [522.49ms]
+(pass) WidgetsDock on the real renderer > P2-4: captured growth frames start at `from`, never exceed target (real renderer) [716.67ms]
+(pass) WidgetsDock on the real renderer > P2-4: interrupted shrink retarget paints continuously (real renderer) [633.38ms]
+(pass) WidgetsDock on the real renderer > scene A: the 10-line frame is gear-inert; scene B: the gear drives think lines [817.23ms]
+(pass) WidgetsDock on the real renderer > scene A: `all` is a legacy 10-line spelling, never a growth rule [307.79ms]
+(pass) WidgetsDock on the real renderer > title shows N/M only on lower-zone overflow, right-aligned (D8/D13) [312.27ms]
+(pass) WidgetsDock on the real renderer > wheel steps the lower-zone cursor only while it overflows (D9) [314.77ms]
+(pass) WidgetsDock on the real renderer > D10: lower zone survives turn end (turnActive false, no FlatDock fallback) [314.27ms]
+(pass) WidgetsDock on the real renderer > latch: think linger holds the frame after turn end; store drop withdraws it [2355.55ms]
+(pass) WidgetsDock on the real renderer > FlatDock height follows the shared tween law (growth + terminal snap) [0.08ms]
+(pass) WidgetsDock on the real renderer > D11: compact terminal keeps 2-line rule form + 1 summary line, no scroll/N-M [125.83ms]
+(pass) WidgetsDock on the real renderer > compact rule mode (≤30 rows): turn-end in_progress todo paints the TODO TREE, not the old summary [305.44ms]
+(pass) WidgetsDock on the real renderer > B2c: compact terminal (24 rows) mounts the tab bar and switches tabs via the module signal [206.85ms]
+(pass) WidgetsDock on the real renderer > D3/D14: think-row retention filter drops a settled row at the 2s edge on every tier [0.06ms]
+(pass) WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down) > overflow + key advances N/M, one line per notch [316.94ms]
+(pass) WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down) > no overflow + key is a no-op: cursor stays at 0 and no N/M [305.39ms]
+(pass) WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down) > overlay open + key is a real no-op (page-owner guard) [307.14ms]
+(pass) R5-2 — dock cleanup resets the cross-session active panel > dispose() fires onCleanup: activity-active returns to composer [0.98ms]
+(pass) R5-2 — dock cleanup resets the cross-session active panel > B2c-3: turn-end latch hide returns a stale activity focus to composer [2356.86ms]
+
+ 19 pass
+ 1 skip
+ 0 fail
+ 173 expect() calls
+Ran 20 tests across 1 file. [10.49s]

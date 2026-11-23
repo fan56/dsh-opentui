@@ -1,0 +1,19 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/turn-abort.test.ts:
+(pass) turn.abort — turnId validation > missing turnId -> BAD_PARAMS [2.40ms]
+(pass) turn.abort — turnId validation > empty turnId -> BAD_PARAMS [1.31ms]
+(pass) turn.abort — turnId validation > non-string turnId -> BAD_PARAMS [1.26ms]
+(pass) turn.abort — turnId validation > missing turnId while a turn is in flight -> BAD_PARAMS, no cancel, turn STILL RUNNING [4.65ms]
+(pass) turn.abort — unknown ids > unknown turnId while in flight -> TURN_NOT_FOUND with ADR detail shape [3.67ms]
+(pass) turn.abort — unknown ids > unknown turnId with no in-flight turn -> TURN_NOT_FOUND, activeTurnId null [5.01ms]
+(pass) turn.abort — idempotency and terminal frame > repeat abort before terminal -> noop, cancel issued once [4.86ms]
+(pass) turn.abort — idempotency and terminal frame > re-abort a terminal turn after another turn ran -> noop, live turn untouched [7.08ms]
+(pass) turn.abort — idempotency and terminal frame > normal abort -> aborted:true, correct cancel args, exactly one terminal frame [5.24ms]
+(pass) turn.abort — cancel error resets abortRequested (P1-1) > cancel() throwing INTERNAL resets the guard so a retry reissues cancel [4.76ms]
+(pass) turn.abort — bounded terminal-id FIFO (64) > 65 finalized turns evict the oldest: first -> TURN_NOT_FOUND, last -> noop [157.78ms]
+
+ 11 pass
+ 0 fail
+ 145 expect() calls
+Ran 11 tests across 1 file. [274.00ms]

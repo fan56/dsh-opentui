@@ -1,0 +1,20 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/append-text.test.ts:
+(pass) M3-03: createAppendTextProvider > copied preset id matches the canonical shell constant (detection key) [0.20ms]
+(pass) M3-03: createAppendTextProvider > missing file -> empty string, no warning [0.14ms]
+(pass) M3-03: createAppendTextProvider > empty file -> empty string, no warning [0.19ms]
+(pass) M3-03: createAppendTextProvider > normal content -> returned verbatim (incl. multibyte) [0.39ms]
+(pass) M3-03: createAppendTextProvider > >64 KiB with a multibyte char straddling the cut -> UTF-8-boundary truncate + one log-only warn [0.36ms]
+(pass) M3-03: createAppendTextProvider > content changes with mtime pinned -> stale cached value (cache key is mtime only) [0.24ms]
+(pass) M3-03: createAppendTextProvider > mtime bump -> re-reads the new content [0.22ms]
+(pass) M3-03: createAppendTextProvider > transient read failure after a cached read -> previous cache, no warn (P2-2) [0.28ms]
+(pass) M3-03: createAppendTextProvider > transient read failure before any cached read -> empty string, no warn (P2-2) [0.20ms]
+(pass) M3-03: createAppendTextProvider > section text is unconditional: no session metadata can suppress APPEND_SYSTEM.md [0.17ms]
+(pass) M3-03: registerAppendSection default wiring > with no injected text it uses the real provider (temp home injected) [0.23ms]
+(pass) M3-03: registerAppendSection default wiring > an explicit text still overrides the default provider [0.16ms]
+
+ 12 pass
+ 0 fail
+ 26 expect() calls
+Ran 12 tests across 1 file. [84.00ms]

@@ -1,0 +1,20 @@
+bun test v1.4.4 (38afee6c8)
+
+test/patch-runtime-merge.test.ts:
+(pass) B1 S3 E1 — subagent.maxActiveSubagents merge preserves runtime value and line order > runtime 5 is carried over; maxDepth and every other line stay byte-identical [0.67ms]
+(pass) B1 S3 E1 — subagent.maxActiveSubagents merge preserves runtime value and line order > merging the merged output is idempotent (no repeated backup on next launch) [0.03ms]
+(pass) B1 S3 E1 — subagent.maxActiveSubagents merge preserves runtime value and line order > invalid scalar is refused with a WARN (no YAML injection) [0.02ms]
+(pass) B1 S3 E1 — subagent.maxActiveSubagents merge preserves runtime value and line order > duplicate runtime lines are refused with a WARN [0.02ms]
+(pass) B1 S3 E2 — permission.defaultPreset !!js guard semantics > unchanged !!js escape hatch is preserved verbatim (no merge, no note) [0.02ms]
+(pass) B1 S3 E2 — permission.defaultPreset !!js guard semantics > plain scalar override is merged with an escape-hatch WARN [0.03ms]
+(pass) B1 S3 E2 — permission.defaultPreset !!js guard semantics > template !!js line for the approval gate is never touched [0.01ms]
+(pass) batch-gate — session-log-deepseek.enabled survives provisioner re-run (design 05 §4.3a) > runtime false is carried over; the !!js approval enabled line is untouched [0.29ms]
+(pass) batch-gate — session-log-deepseek.enabled survives provisioner re-run (design 05 §4.3a) > mutate false → re-run provisioner → still false (merge is idempotent) [0.02ms]
+(pass) batch-gate — session-log-deepseek.enabled survives provisioner re-run (design 05 §4.3a) > non-boolean / expression value is refused with a WARN (no !!js injection) [0.01ms]
+(pass) batch-gate — session-log-deepseek.enabled survives provisioner re-run (design 05 §4.3a) > unchanged true default needs no merge and emits no WARN [0.01ms]
+(pass) B1 S3 E3 — ledger-evidenced template line numbers do not shift > provision-inproc-profile.mjs:566-578 stays byte-for-byte anchored [0.08ms]
+
+ 12 pass
+ 0 fail
+ 37 expect() calls
+Ran 12 tests across 1 file. [74.00ms]

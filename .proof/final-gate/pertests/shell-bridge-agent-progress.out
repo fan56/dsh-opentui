@@ -1,0 +1,12 @@
+bun test v1.4.4 (38afee6c8)
+
+test/bridge-agent-progress.test.ts:
+(pass) B3 agent.progress client fold > E5: progress updates a running child's rounds/lastLine/elapsedSec and emits [1.02ms]
+(pass) B3 agent.progress client fold > E5b: repeated progress advances rounds and tail; later replay fold cannot freeze them back [1.28ms]
+(pass) B3 agent.progress client fold > E6: unknown child, wrong session, and settled child ignore progress [0.29ms]
+(pass) B3 agent.progress client fold > E7: settle terminal journal re-read overrides progress mid-state [1.25ms]
+
+ 4 pass
+ 0 fail
+ 21 expect() calls
+Ran 4 tests across 1 file. [95.00ms]

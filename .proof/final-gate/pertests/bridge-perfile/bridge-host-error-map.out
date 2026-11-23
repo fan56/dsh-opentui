@@ -1,0 +1,13 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/host-error-map.test.ts:
+(pass) mapHostError — host error name mapping (ADR-0010) > SessionPersistenceNotFoundError -> SESSION_NOT_FOUND (no detail) [2.51ms]
+(pass) mapHostError — host error name mapping (ADR-0010) > SessionPersistenceCorruptionError -> JOURNAL_CORRUPT (no detail) [1.32ms]
+(pass) mapHostError — host error name mapping (ADR-0010) > SessionFormatUnsupportedError -> VERSION_INCOMPATIBLE (no detail) [1.27ms]
+(pass) mapHostError — host error name mapping (ADR-0010) > SessionAlreadyOwnedError -> SESSION_LOCKED with detail.holder = sessionId [1.29ms]
+(pass) mapHostError — host error name mapping (ADR-0010) > unknown host error name -> INTERNAL (no detail) [1.27ms]
+
+ 5 pass
+ 0 fail
+ 20 expect() calls
+Ran 5 tests across 1 file. [84.00ms]

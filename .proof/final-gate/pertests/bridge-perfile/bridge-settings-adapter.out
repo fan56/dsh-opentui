@@ -1,0 +1,18 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/settings-adapter.test.ts:
+(pass) B1 S1 — E1 present: host settings service resolves through the arm > settings.describe calls host.describe({redactSecrets:true}) and projects the fixed field set [0.42ms]
+(pass) B1 S1 — E1 present: host settings service resolves through the arm > settings.mutate forwards ns/ops/expectedRevision to the host verbatim [0.05ms]
+(pass) B1 S1 — E1 present: host settings service resolves through the arm > host describe accepting a bare namespace array is tolerated [0.03ms]
+(pass) B1 S1 — E2 absent: existing absence path unchanged > no controller and no host settings -> existing error text, verbatim [0.04ms]
+(pass) B1 S1 — E2 absent: existing absence path unchanged > adapter source introduces no NOT_WIRED text literal (capcontract #16 text-union) [0.04ms]
+(pass) B1 S1 — E3 throw: host error propagates unchanged > describe throw surfaces the original error, not a rewritten/unavailable message [0.04ms]
+(pass) B1 S1 — E3 throw: host error propagates unchanged > mutate throw surfaces the original error (conflict/home-patch semantics preserved) [0.03ms]
+(pass) B1 S1 — E3 throw: host error propagates unchanged > host present but method missing -> descriptive HOST_UNAVAILABLE, not an unavailable text mapping [0.02ms]
+(pass) B1 S2 — resolver seam: controller keeps priority > real controller present -> it is used, host settings never touched [0.03ms]
+(pass) B1 S2 — resolver seam: controller keeps priority > throwing ctx.get falls back to the absence path (no crash) [0.02ms]
+
+ 10 pass
+ 0 fail
+ 24 expect() calls
+Ran 10 tests across 1 file. [82.00ms]

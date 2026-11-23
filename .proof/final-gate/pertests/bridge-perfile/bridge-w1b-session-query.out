@@ -1,0 +1,19 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/w1b-session-query.test.ts:
+(pass) 025-w1b session.search / session.fork hostInvoke > search: forwards {query} to the host and returns whitelisted {items} [0.34ms]
+(pass) 025-w1b session.search / session.fork hostInvoke > search: BAD_PARAMS when query is not a string [0.04ms]
+(pass) 025-w1b session.search / session.fork hostInvoke > search: NOT_WIRED when the host has no search method [0.04ms]
+(pass) 025-w1b session.search / session.fork hostInvoke > fork: forwards {sessionId,atSeq} and returns {sessionId} [0.04ms]
+(pass) 025-w1b session.search / session.fork hostInvoke > fork: BAD_PARAMS when sessionId missing [0.02ms]
+(pass) 025-w1b session.search / session.fork hostInvoke > fork: NOT_WIRED when the host has no fork method [0.01ms]
+(pass) 025-w1b D — subagents.prompt / interruptByUser hostInvoke > prompt: forwards a validated text-only request, returns {messageId} [0.08ms]
+(pass) 025-w1b D — subagents.prompt / interruptByUser hostInvoke > prompt: BAD_PARAMS for missing child/content (no host call) [0.04ms]
+(pass) 025-w1b D — subagents.prompt / interruptByUser hostInvoke > prompt: NOT_WIRED when the subagents service is absent [0.02ms]
+(pass) 025-w1b D — subagents.prompt / interruptByUser hostInvoke > interruptByUser: forwards childSessionId, returns {accepted} [0.02ms]
+(pass) 025-w1b D — subagents.prompt / interruptByUser hostInvoke > interruptByUser: BAD_PARAMS / NOT_WIRED branches [0.03ms]
+
+ 11 pass
+ 0 fail
+ 20 expect() calls
+Ran 11 tests across 1 file. [79.00ms]

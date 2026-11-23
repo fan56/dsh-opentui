@@ -1,0 +1,30 @@
+bun test v1.4.4 (38afee6c8)
+
+test/shell-render-regression-ft.test.tsx:
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > width 50: wrapped prose keeps every token and stays inside the columns [70.26ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > width 80: wrapped prose keeps every token and stays inside the columns [56.65ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > width 160: wrapped prose keeps every token and stays inside the columns [55.31ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > resize narrow→wide→narrow reflows the transcript without losing content [56.85ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > empty session renders a stable first frame with no placeholder debris [2.65ms]
+198 | 		// where the frame goes away; an unfinished todo must NOT trigger it.
+199 | 		fixture.projection.hydrate([])
+200 | 		const settled = await fixture.waitForFrame((f) => !f.includes("┏"), { timeoutMs: 8000 })
+201 | 		expect(settled).not.toContain("┏")
+202 | 		expect(settled).not.toContain("d5 active task")
+203 | 	})
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "┏"
+Received: "┌─ transcript ─────────────────────────────────────────────────────────────────┐\n│                                                                              │\n│┌────────────────────────────────────────────────────────────────────────────┐│\n││  ❯ d5 probe                                                                ││\n│└────────────────────────────────────────────────────────────────────────────┘│\n│                                                                              │\n│d5 turn answer body                                                           │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n│                                                                              │\n└──────────────────────────────────────────────────────────────────────────────┘\n┌─[1 main]  2 todo 🧩 activity─────────────────────────────────────────────────┐\n│● Todos (0/1)                                                                 │\n│└─ ● d5 active task                                                           │\n└──────────────────────────────────────────────────────────────────────────────┘"
+
+      at <anonymous> (/private/tmp/uibatch-verify-wt/packages/shell/test/shell-render-regression-ft.test.tsx:203:22)
+(fail) shell render regression battery (widths / resize / empty / dock-hide / error) > dock activity frame appears during a turn and hides after end + linger [2891.97ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > turn/end error row is visible and the stored transcript survives it [86.24ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > a live-turn onError lands as an error row next to the user line [59.55ms]
+(pass) shell render regression battery (widths / resize / empty / dock-hide / error) > replayed journal records survive the 50-column wrap [4.52ms]
+
+ 8 pass
+ 1 fail
+ 45 expect() calls
+Ran 9 tests across 1 file. [3.60s]

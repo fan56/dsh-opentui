@@ -1,0 +1,22 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/agent-lifecycle.test.ts:
+(pass) subagent lifecycle frames (inproc visibility) > agent-start → agent.settle emits agent.spawn then agent.settle with runId:seq pairing data [4.04ms]
+(pass) subagent lifecycle frames (inproc visibility) > P2-1(a): durable agent records still forward AFTER the turn ends (no activeTurn gate) [2.76ms]
+(pass) subagent lifecycle frames (inproc visibility) > P2-1(a): stale-session agent records are still dropped when idle [2.50ms]
+(pass) subagent lifecycle frames (inproc visibility) > events from a different session are dropped (no cross-session agent rows) [2.45ms]
+(pass) subagent lifecycle frames (inproc visibility) > plain subagent/catalog (the real delegation record) forwards as agent.spawn [2.63ms]
+(pass) subagent lifecycle frames (inproc visibility) > subagent/catalog without a host name forwards no name field [2.56ms]
+(pass) subagent lifecycle frames (inproc visibility) > subagent/catalog from a different session is dropped [2.51ms]
+(pass) subagent lifecycle frames (inproc visibility) > tool/call + tool/result frames carry callId so the seam can keep args [2.56ms]
+(pass) subagent lifecycle frames (inproc visibility) > P2-2①: subagent/catalog with no childId is dropped (no ghost roster row) [2.49ms]
+(pass) subagent lifecycle frames (inproc visibility) > P2-2①: an empty catalog label falls back to the host's name [2.52ms]
+(pass) subagent lifecycle frames (inproc visibility) > P2-2①: with no active turn the catalog spawn carries an inert empty turnId [2.47ms]
+(pass) subagent lifecycle frames (inproc visibility) > P1-1: tool/result turn.tool frame carries the isError mirror (both row and nested message) [2.48ms]
+(pass) subagent lifecycle frames (inproc visibility) > P3-2: catalog spawn forwards the host's childCreatedAt wall clock [2.51ms]
+(pass) subagent lifecycle frames (inproc visibility) > protocolVersion is unchanged (additive frames stay on v1) [1.28ms]
+
+ 14 pass
+ 0 fail
+ 38 expect() calls
+Ran 14 tests across 1 file. [125.00ms]

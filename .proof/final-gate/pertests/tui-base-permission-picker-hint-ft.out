@@ -1,0 +1,11 @@
+bun test v1.4.4 (38afee6c8)
+
+test/permission-picker-hint-ft.test.tsx:
+(pass) /permission 提示走 description 槽，title 为纯标题 > en 60 列：提示在 description 行、title 不含提示、title 不折行 [57.28ms]
+(pass) /permission 提示走 description 槽，title 为纯标题 > zh：同样 title 纯标题、提示走 description 一帧 [36.96ms]
+(pass) /permission 提示走 description 槽，title 为纯标题 > /resume：列头 UPDATED/DIR/SESSION 走 description 行渲染 [37.82ms]
+
+ 3 pass
+ 0 fail
+ 21 expect() calls
+Ran 3 tests across 1 file. [496.00ms]

@@ -1,0 +1,14 @@
+=== ledger run 1 2026-11-23T06:44:28Z ===
+ledger: full=257 expected=75 wired_protocol=10 wired_manual=0 iclass=6 diff_empty=true
+gen-ledger run 1 exit=0
+run1 ledger/ledger.json sha256=5fd0b0d55e987676da99110e53b9799058d94ce0a196a3f9a36ec8dbaafa33f4
+run1 ledger/ledger.md sha256=cc181613d64da21db570186ce86ee9cf108940ae1187ad26bddc40ef47db87b8
+=== ledger run 2 2026-11-23T06:44:28Z ===
+ledger: full=257 expected=75 wired_protocol=10 wired_manual=0 iclass=6 diff_empty=true
+gen-ledger run 2 exit=0
+run2 ledger/ledger.json sha256=5fd0b0d55e987676da99110e53b9799058d94ce0a196a3f9a36ec8dbaafa33f4
+run2 ledger/ledger.md sha256=cc181613d64da21db570186ce86ee9cf108940ae1187ad26bddc40ef47db87b8
+baseline ledger.json=5fd0b0d55e987676da99110e53b9799058d94ce0a196a3f9a36ec8dbaafa33f4
+baseline ledger.md  =cc181613d64da21db570186ce86ee9cf108940ae1187ad26bddc40ef47db87b8
+=== git status --porcelain ledger/ capir/ capcontract/ ===
+=== end (empty above = clean) ===

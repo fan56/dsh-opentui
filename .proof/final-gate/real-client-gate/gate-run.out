@@ -1,0 +1,18 @@
+=== env precheck 2026-11-23T06:44:56Z ===
+env self-check 2026-11-23T06:44:56Z
+--- protected PID 1963 (env-injected) ---
+PRESENT (whitelist excluded, untouched)
+--- dsh-jev-mcp (excluded, untouched; pattern-based) ---
+EXCLUDED 1118 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+EXCLUDED 85245 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+EXCLUDED 99956 /opt/homebrew/bin/node /Users/qingguee/repo/dsh-jev-mcp/server.mjs
+--- orphan dsh --profile opentui --no-open (PID-verified, self-filtered) ---
+ORPHAN 2406 node /opt/homebrew/bin/dsh --profile opentui --no-open --port 60318
+ORPHAN 6907 node /opt/homebrew/bin/dsh --profile opentui --no-open --port 60668
+ORPHAN 20307 node /opt/homebrew/bin/dsh --profile opentui --no-open --port 60316
+ORPHAN 93105 node /opt/homebrew/bin/dsh --profile opentui --no-open --port 60219
+--- orphan mock-llm.mjs (PID-verified, self-filtered) ---
+none
+--- named tmux sessions (rc-gate-* / agents-mount-*) ---
+none
+FAIL  env precheck: 4 orphan process(es) — see .proof/final-gate/real-client-gate/env-precheck.log (stop, clean, rerun; do NOT rerun to fish for green)

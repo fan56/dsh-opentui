@@ -1,0 +1,18 @@
+=== 024 unified E2E start 2026-11-23T06:47:35Z ===
+head: 733e859dbb82008bd3d040ff16f19ed2e371f5eb
+=== family: pack ===
+FAMILY pack PASS
+=== family: capdomains ===
+FAMILY capdomains PASS
+=== family: model-domain ===
+FAMILY model-domain FAIL (see /tmp/e2e-unified-20261123T064735Z/model-domain)
+=== family: account-credentials-domain ===
+FAMILY account-credentials-domain FAIL (see /tmp/e2e-unified-20261123T064735Z/account-credentials-domain)
+=== family: exit-code ===
+FAMILY exit-code PASS
+=== family: keymap-modality ===
+FAMILY keymap-modality PASS
+=== family: verify-gate (real-client-gate.sh reuse) ===
+FAMILY verify-gate FAIL (see /tmp/e2e-unified-20261123T064735Z/verify-gate)
+=== unified verdict: FAILED_FAMILIES=3 ===
+E2E UNIFIED: FAIL

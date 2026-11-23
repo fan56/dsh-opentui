@@ -1,0 +1,19 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/ask-frames.test.ts:
+(pass) ADR-0011 T1: frame names and error codes > five ask frame names, point-separated like turn.* [0.02ms]
+(pass) ADR-0011 T1: frame names and error codes > exactly the seven ADR-0011 §5 error codes, no extras [0.03ms]
+(pass) validateAskRequest > accepts the full source-verified shape [0.11ms]
+(pass) validateAskRequest > F1-A1: child-session identity fields are optional and round-trip [0.03ms]
+(pass) validateAskRequest > rejects missing eventId, bad kind, and empty options (BAD_PARAMS) [0.02ms]
+(pass) validateAskCancel / AskSettled / AskPending > cancel accepts only the four ADR reasons [0.03ms]
+(pass) validateAskCancel / AskSettled / AskPending > settled accepts only the four outcomes [0.02ms]
+(pass) validateAskCancel / AskSettled / AskPending > pending snapshot validates nested ask.request payloads [0.02ms]
+(pass) validateAskResponse > accepts verdict and answers vocabulary [0.07ms]
+(pass) validateAskResponse > rejects unknown verdict and illegal fields with ASK_INVALID_RESPONSE [0.01ms]
+(pass) validateAskResponse > validateAskEvent dispatches by type and rejects ask.response [0.01ms]
+
+ 11 pass
+ 0 fail
+ 47 expect() calls
+Ran 11 tests across 1 file. [77.00ms]

@@ -1,0 +1,12 @@
+bun test v1.4.4 (38afee6c8)
+
+test/ask-verdict-labels-ft.test.tsx:
+(pass) 审批卡：短按钮行 + 正文图例（真机布局裁决） > i18n：按钮回退短词，图例键双语就位且每行 ≤ 50 显示列 [0.41ms]
+(pass) 审批卡：短按钮行 + 正文图例（真机布局裁决） > en 80 列：always / session / Reject / Allow 四项完整同一行；图例两行在正文 [50.86ms]
+(pass) 审批卡：短按钮行 + 正文图例（真机布局裁决） > zh 80 列：always / session / 拒绝 / 允许 四项完整同一行；图例两行在正文 [37.62ms]
+(pass) 审批卡：短按钮行 + 正文图例（真机布局裁决） > no escalation: no a/s buttons and no legend lines [40.28ms]
+
+ 4 pass
+ 0 fail
+ 33 expect() calls
+Ran 4 tests across 1 file. [499.00ms]

@@ -1,0 +1,9 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/session-open-replace-guard.test.ts:
+(pass) W3 — session.open replace guard ({mode:new, replace:true} is BAD_PARAMS) > with a binding open, {mode:new, replace:true} -> BAD_PARAMS and the original binding survives [5.96ms]
+
+ 1 pass
+ 0 fail
+ 10 expect() calls
+Ran 1 test across 1 file. [82.00ms]

@@ -1,0 +1,12 @@
+bun test v1.4.4 (38afee6c8)
+
+test/approval-card-ft.test.tsx:
+(pass) approval card keys (ADR-0011 T5a) > card renders tool name + arg summary; Enter confirms, closes the card [123.46ms]
+(pass) approval card keys (ADR-0011 T5a) > Esc rejects the card but NEVER interrupts the busy turn [111.79ms]
+(pass) approval card keys (ADR-0011 T5a) > escalation actions render and their keys resolve always/session [177.69ms]
+(pass) approval card keys (ADR-0011 T5a) > a cancelled ask closes the card via the read-only snapshot poller [471.75ms]
+
+ 4 pass
+ 0 fail
+ 20 expect() calls
+Ran 4 tests across 1 file. [1231.00ms]

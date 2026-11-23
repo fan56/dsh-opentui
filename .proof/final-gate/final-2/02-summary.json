@@ -1,0 +1,496 @@
+{
+  "cols": 120,
+  "rows": 34,
+  "home": "/var/folders/1t/2l4974yn3_968cs18bqp2sf40000gn/T/dsh-agents-mount-home-KvL1HU",
+  "workspace": "/var/folders/1t/2l4974yn3_968cs18bqp2sf40000gn/T/dsh-agents-mount-ws-47lPIO",
+  "fallbackSeen": false,
+  "results": [
+    {
+      "item": "composer context: the composer top border embeds the working directory",
+      "ok": true,
+      "detail": [
+        "row: \"┏━ /private/var/folders/1t/2l4974yn3_968cs18bqp2sf40000gn/T/dsh-agents-mount-ws-47lPIO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\""
+      ]
+    },
+    {
+      "item": "composer context: no branch segment outside a git repository",
+      "ok": true,
+      "detail": [
+        "row: \"┏━ /private/var/folders/1t/2l4974yn3_968cs18bqp2sf40000gn/T/dsh-agents-mount-ws-47lPIO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\""
+      ]
+    },
+    {
+      "item": "composer context: no independent rule/label row above the border title",
+      "ok": true,
+      "detail": [
+        "row above: \"└───────────────────────────────────────────────────────────\""
+      ]
+    },
+    {
+      "item": "/agents opens the manager panel (panel-kit modal)",
+      "ok": true,
+      "detail": [
+        "table layer"
+      ]
+    },
+    {
+      "item": "/agents modal frame uses the 116-cell xlarge preset",
+      "ok": true,
+      "detail": [
+        "frame width: 116 (expected 116 at 120 cols)"
+      ]
+    },
+    {
+      "item": "/agents table paints NAME/MODEL/THINK/DEEP/LIMITS cells for every agent row",
+      "ok": true,
+      "detail": [
+        "5 rows",
+        "first: {\"name\":\"Minimal Subagent\",\"model\":\"(inherit)\",\"think\":\"—\",\"deep\":\"0\",\"limits\":\"—\"}"
+      ]
+    },
+    {
+      "item": "/agents table rows fill the THINK, DEEP and LIMITS cells",
+      "ok": true,
+      "detail": [
+        "think cells: [\"—\",\"max\",\"high\",\"max\",\"high\"]",
+        "deep cells: [\"0\",\"0\",\"1\",\"0\",\"0\"]",
+        "limits cells: [\"—\",\"rounds 48 · background\",\"—\",\"rounds 38 · background\",\"rounds 46 · background\"]"
+      ]
+    },
+    {
+      "item": "/agents Enter drills into the fields layer",
+      "ok": true,
+      "detail": [
+        "title: \"Minimal Subagent\""
+      ]
+    },
+    {
+      "item": "/agents fields layer opens the table row under the cursor",
+      "ok": true,
+      "detail": [
+        "table row 0: \"Minimal Subagent\"",
+        "fields title: \"Minimal Subagent\""
+      ]
+    },
+    {
+      "item": "/agents fields layer paints the three editable field rows (✎ model/thinking/deep)",
+      "ok": true,
+      "detail": [
+        "FIELD/VALUE list with ✎ model · ✎ thinking · ✎ deep"
+      ]
+    },
+    {
+      "item": "/agents Esc returns from the fields layer to the table",
+      "ok": true,
+      "detail": [
+        "table layer visible again"
+      ]
+    },
+    {
+      "item": "/agents l opens the limits layer",
+      "ok": true,
+      "detail": [
+        "rows: maxRounds / background / maxActiveSubagents / maxDepth"
+      ]
+    },
+    {
+      "item": "/agents limits layer paints both official subagent caps",
+      "ok": true,
+      "detail": [
+        "maxActiveSubagents: n/a",
+        "maxDepth: n/a"
+      ]
+    },
+    {
+      "item": "/agents Esc leaves the limits layer",
+      "ok": true,
+      "detail": [
+        "back on the table layer"
+      ]
+    },
+    {
+      "item": "/agents Esc closes the modal",
+      "ok": true,
+      "detail": [
+        "back to the composer"
+      ]
+    },
+    {
+      "item": "/agents close prints the exit summary",
+      "ok": true,
+      "detail": [
+        "│Agents unchanged.                                                                                                     │"
+      ]
+    },
+    {
+      "item": "/settings opens the Settings modal (section nav + instant-save band)",
+      "ok": true,
+      "detail": [
+        "nav sections: General / TUI-specific / Host / Models / Plugins / Agent presets / Account",
+        "action band: esc 返回 · changes are saved instantly"
+      ]
+    },
+    {
+      "item": "/settings modal frame uses the 116-cell xlarge preset",
+      "ok": true,
+      "detail": [
+        "frame width: 116 (expected 116 at 120 cols)"
+      ]
+    },
+    {
+      "item": "/settings all seven nav sections are reachable",
+      "ok": true,
+      "detail": [
+        "General: ok",
+        "TUI-specific: ok",
+        "Host: ok",
+        "Models: ok",
+        "Plugins: ok",
+        "Agent presets: ok",
+        "Account: ok"
+      ]
+    },
+    {
+      "item": "/settings Host section renders the four whitelisted rows from the live document",
+      "ok": true,
+      "detail": [
+        "section rows pane",
+        "all four rows visible",
+        "values: maxActiveSubagents=3 maxDepth=1 session-log-deepseek.enabled=on"
+      ]
+    },
+    {
+      "item": "/settings never lists dsh-tui (not part of the opentui profile)",
+      "ok": true,
+      "detail": [
+        "absent"
+      ]
+    },
+    {
+      "item": "/settings paged section reports its row window",
+      "ok": true,
+      "detail": [
+        "indicator: 1-14/16"
+      ]
+    },
+    {
+      "item": "/settings marks other namespaces read-only (\"本 TUI 不消费\")",
+      "ok": true,
+      "detail": [
+        "read-only note visible on a `rev N` row",
+        "│ ┃    Agent presets    1    agent-default-model rev 0                                                               ┃ │"
+      ]
+    },
+    {
+      "item": "settings selects the host row with the keyboard",
+      "ok": true,
+      "detail": [
+        "row: │ ┃    Plugins          1    ✎ session-log-deepseek.enabled on                                                       ┃ │"
+      ]
+    },
+    {
+      "item": "settings saves the host toggle on Enter (instant model)",
+      "ok": true,
+      "detail": [
+        "row shows off",
+        "status line: not observed (transient)"
+      ]
+    },
+    {
+      "item": "settings writes a host row (session-log-deepseek.enabled=off) into host patch.yml, persisted across provisioning",
+      "ok": true,
+      "detail": [
+        "row toggled + saved on Enter (hot via config service)",
+        "host patch entry has enabled: false",
+        "value survives provisioner re-convergence",
+        "退出 confirm closed the modal"
+      ]
+    },
+    {
+      "item": "/settings saves print the exit summary",
+      "ok": true,
+      "detail": [
+        "│Settings updated: session-log-deepseek.enabled                                                                        │"
+      ]
+    },
+    {
+      "item": "settings re-reads the host write through settings/describe",
+      "ok": true,
+      "detail": [
+        "row shows off after a fresh describe"
+      ]
+    },
+    {
+      "item": "settings restores the host row (session-log-deepseek.enabled=on) in host patch.yml, persisted across provisioning",
+      "ok": true,
+      "detail": [
+        "host patch entry back to enabled: true",
+        "value survives provisioner re-convergence",
+        "modal closed after the exit confirm"
+      ]
+    },
+    {
+      "item": "/settings Enter opens the motion enum editor",
+      "ok": true,
+      "detail": [
+        "title: motion — 选择值; options: auto/full/reduced/off",
+        "cursor starts on the current value: auto",
+        "▸ on current"
+      ]
+    },
+    {
+      "item": "/settings Esc discards the editor and returns to the section rows",
+      "ok": true,
+      "detail": [
+        "editor closed, section still on screen"
+      ]
+    },
+    {
+      "item": "settings saves motion=full on Enter (instant model)",
+      "ok": true,
+      "detail": [
+        "row: ✎ motion full"
+      ]
+    },
+    {
+      "item": "settings writes motion=full into the profile config.json",
+      "ok": true,
+      "detail": [
+        "motion: \"full\"",
+        "steps from auto: 1",
+        "modal closed after the exit confirm"
+      ]
+    },
+    {
+      "item": "settings writes motion back to auto",
+      "ok": true,
+      "detail": [
+        "motion: \"auto\"",
+        "steps from full: 3"
+      ]
+    },
+    {
+      "item": "/settings Esc opens the exit confirm and 退出 closes the modal",
+      "ok": true,
+      "detail": [
+        "confirm: Exit settings? (取消/退出)",
+        "back to the composer"
+      ]
+    },
+    {
+      "item": "pane-focus: transcript starts unfocused (single frame + title)",
+      "ok": true,
+      "detail": [
+        "title row: \"┌─ transcript ──────────────────────────────────\""
+      ]
+    },
+    {
+      "item": "pane-focus: F6 focuses the transcript (heavy frame)",
+      "ok": true,
+      "detail": [
+        "heavy transcript frame"
+      ]
+    },
+    {
+      "item": "pane-focus: the hint row switches to the transcript keys",
+      "ok": true,
+      "detail": [
+        "⌨ ↑↓ scroll · pgup/pgdn page · home/end top/bottom · tab/f6 composer"
+      ]
+    },
+    {
+      "item": "pane-focus: F6 returns to the composer (transcript frame single again)",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "item": "pane-focus: a click in the transcript focuses it (heavy frame)",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "item": "pane-focus: Tab returns from the transcript to the composer",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "item": "pane-focus: idle Esc returns from the transcript to the composer",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "item": "pane-focus: a click in the composer refocuses it (transcript frame single)",
+      "ok": true,
+      "detail": [
+        "clicked editor row 31"
+      ]
+    },
+    {
+      "item": "pane-focus: /help fills the transcript (scroll test scaffold)",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "item": "pane-focus: ↑ scrolls the focused transcript line by line",
+      "ok": true,
+      "detail": [
+        "body rows changed: true"
+      ]
+    },
+    {
+      "item": "pane-focus: End returns to the bottom (sticky follow restored)",
+      "ok": true,
+      "detail": [
+        "body identical to the bottom viewport"
+      ]
+    },
+    {
+      "item": "pane-focus: the mouse wheel scrolls the transcript (mouse reporting on)",
+      "ok": true,
+      "detail": [
+        "frame alive after wheel"
+      ]
+    },
+    {
+      "item": "pane-focus: after F6, ↑ is prompt history again (transcript does not scroll)",
+      "ok": true,
+      "detail": [
+        "transcript body unchanged: true"
+      ]
+    },
+    {
+      "item": "/thi + Tab completes to `/think `",
+      "ok": true,
+      "detail": [
+        "input row: \"/think\""
+      ]
+    },
+    {
+      "item": "slash palette shows a skill row (italic)",
+      "ok": true,
+      "detail": [
+        "skill: /zzzz-verify-fixture",
+        "row: \"┃   /zzzz-verify-fixture verify gate fixture skill (italic row + Tab completion)                                       ┃\"",
+        "italic SGR(3): true"
+      ]
+    },
+    {
+      "item": "skill row completes through Tab (trailing space)",
+      "ok": true,
+      "detail": [
+        "input row: \"/zzzz-verify-fixture\"",
+        "editor run: \"/zzzz-verify-fixture \"",
+        "trailing space: true",
+        "before Tab had it: false"
+      ]
+    },
+    {
+      "item": "slash palette renders more than 6 rows (default geometry)",
+      "ok": true,
+      "detail": [
+        "10 slash rows visible, hint \"… 22 more\""
+      ]
+    },
+    {
+      "item": "no crash markers in the client scrollback",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "item": "80x24: no context bar above the composer (compact has no top border)",
+      "ok": true,
+      "detail": [
+        "row above composer: \"│                                                           \""
+      ]
+    },
+    {
+      "item": "80x24: focused transcript frame adds no top row (left/right only)",
+      "ok": true,
+      "detail": [
+        "12 vertical-rule rows"
+      ]
+    },
+    {
+      "item": "80x24: slash menu does not push the input off-screen",
+      "ok": true,
+      "detail": [
+        "composer box rows 12-23",
+        "powerline row 24/25",
+        "editor row: \"/\""
+      ]
+    },
+    {
+      "item": "80x24: menu lists more than 6 rows",
+      "ok": true,
+      "detail": [
+        "10 slash rows visible, hint \"… 22 more\""
+      ]
+    },
+    {
+      "item": "80x24: PgDn scrolls the window and reports the rows above",
+      "ok": true,
+      "detail": [
+        "first row: \"/account show account sign-in state (signin/signout)\" → \"/hotkeys show keybinds\"",
+        "hint: \"… 11 more above\""
+      ]
+    },
+    {
+      "item": "80x24: End reaches the last rows and shows the skill line",
+      "ok": true,
+      "detail": [
+        "last visible row: \"/zzzz-verify-fixture verify gate fixture skill (italic row + Tab completion\"",
+        "fixture /zzzz-verify-fixture visible: true"
+      ]
+    },
+    {
+      "item": "composer context: a git workspace renders the branch segment in the top border",
+      "ok": false,
+      "detail": [
+        "expected: \" · HEAD\"",
+        "row: \"┏━ /private/tmp/uibatch-verify-wt · 13411a7 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\"",
+        "frame| │                                                                                                                      │",
+        "frame| │                                                                                                                      │",
+        "frame| │                                                                                                                      │",
+        "frame| │                                                                                                                      │",
+        "frame| │                                                                                                                      │",
+        "frame| └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
+        "frame| ┏━ /private/tmp/uibatch-verify-wt · 13411a7 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+        "frame| ┃ Type a message (enter send, alt+enter newline)                                                                       ┃",
+        "frame| ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
+        "frame|   dsh(Standard + Append)  🌐 opencode-go  🤖 deepseek-v4.1-flash ● high  🔧 0 tools                         15:24:57",
+        "frame|  ⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · ctrl+c quit",
+        "frame| "
+      ]
+    },
+    {
+      "item": "auto-resume: the seeded turn persists a session in the scratch store",
+      "ok": true,
+      "detail": [
+        "fixture echoed in the transcript",
+        "session.v4.jsonl.zstd on disk"
+      ]
+    },
+    {
+      "item": "auto-resume: default launch starts a new session (no history, no notice)",
+      "ok": true,
+      "detail": [
+        "transcript empty",
+        "no resume notice in the boot frames"
+      ]
+    },
+    {
+      "item": "auto-resume: autoResume:\"last\" restores the stored transcript",
+      "ok": true,
+      "detail": [
+        "fixture zzzzAutoresume48067 visible"
+      ]
+    },
+    {
+      "item": "auto-resume: autoResume:\"last\" paints one `resumed <title> · <time ago>` notice",
+      "ok": true,
+      "detail": [
+        "resume notice visible"
+      ]
+    }
+  ]
+}

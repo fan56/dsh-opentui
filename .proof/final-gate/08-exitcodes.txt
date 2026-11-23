@@ -1,0 +1,8 @@
+clone: 0
+pnpm-install: 0
+capcontract: 0
+build-bridge: 0
+build-client: 0
+test-tui-base: 0
+test-bridge: 0
+test-shell: 1

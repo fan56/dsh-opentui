@@ -1,0 +1,28 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/approval-gate.test.ts:
+(pass) approval gate: policy hit / pass-through > write tools hit: bash, write, edit, apply_patch each return ask [0.03ms]
+(pass) approval gate: policy hit / pass-through > read-only tools pass: read / search / view are undefined [0.01ms]
+(pass) approval gate: policy hit / pass-through > an unlisted tool passes even when it resembles a write tool
+(pass) approval gate: policy hit / pass-through > missing / non-string exec.name passes (never asks on malformed input)
+(pass) approval gate: return shape > ask decision carries kind+reason and optional displayReason only when configured [0.03ms]
+(pass) approval gate: return shape > listener returns a Promise resolving to the ask decision (never calls next on a hit) [0.04ms]
+(pass) approval gate: return shape > listener delegates to next() verbatim on a pass [0.02ms]
+(pass) approval gate: config override > patch tools override the shipped write policy table [0.02ms]
+(pass) approval gate: config override > only the literal "ask" directive triggers; other directives are ignored [0.01ms]
+(pass) approval gate: config override > enabled:false passes everything even with a populated policy
+(pass) approval gate: empty policy = all pass (explicit) > tools:{} asks for nothing, for any tool name [0.09ms]
+(pass) approval gate: empty policy = all pass (explicit) > missing config / malformed tools is fail-soft: all pass [0.03ms]
+(pass) approval gate: listener policy bypass (session effective policy) > effectivePolicy=never → next() passes the write with no ask, debug logged (not info) [0.18ms]
+(pass) approval gate: listener policy bypass (session effective policy) > effectivePolicy=ask → still emits ask (no bypass) [0.04ms]
+(pass) approval gate: listener policy bypass (session effective policy) > exec without agent.session → still emits ask [0.03ms]
+(pass) approval gate: listener policy bypass (session effective policy) > approval service missing → still emits ask [0.02ms]
+(pass) approval gate: listener policy bypass (session effective policy) > effectivePolicy throwing → still emits ask (contained) [0.03ms]
+(pass) approval gate: listener policy bypass (session effective policy) > ctx.get absent → still emits ask [0.02ms]
+(pass) approval gate: listener policy bypass (session effective policy) > ctx.get throwing → lookup contained, still emits ask [0.03ms]
+(pass) approval gate: listener policy bypass (session effective policy) > approval resolved per call: a service loaded after apply is observed [0.05ms]
+
+ 20 pass
+ 0 fail
+ 88 expect() calls
+Ran 20 tests across 1 file. [82.00ms]

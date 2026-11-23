@@ -1,0 +1,15 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/s4b-account-wire-frame.test.ts:
+(pass) S4b account stdio wire — binary frame-level (real process/stdio) > F1 account.getState reply is the fixed four-field projection; URL never crosses stdout [6.14ms]
+(pass) S4b account stdio wire — binary frame-level (real process/stdio) > F2 account.startSignIn (waiting-browser) — auth URL negative case [5.74ms]
+(pass) S4b account stdio wire — binary frame-level (real process/stdio) > F3 cancelSignIn / signOut projection carries no URL [11.47ms]
+(pass) S4b account stdio wire — binary frame-level (real process/stdio) > F4 non-view methods reply with bounded shapes (no host text/URL) [34.17ms]
+(pass) S4b account stdio wire — binary frame-level (real process/stdio) > F5 unknown method is UNSUPPORTED with no echoed value [5.89ms]
+(pass) S4b account stdio wire — binary frame-level (real process/stdio) > F6 existing model wire entry still works through the same process [5.84ms]
+(pass) S4b account stdio wire — NOT_WIRED negative (no host service) > F5b missing account service -> UNSUPPORTED/NOT_WIRED, never a value echo [5.66ms]
+
+ 7 pass
+ 0 fail
+ 31 expect() calls
+Ran 7 tests across 1 file. [752.00ms]

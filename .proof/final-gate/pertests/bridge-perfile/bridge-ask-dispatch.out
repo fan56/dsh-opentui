@@ -1,0 +1,21 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/ask-dispatch.test.ts:
+(pass) ask.response — happy path > valid answer settles once: ask.settled upstream, clean registry state [5.99ms]
+(pass) ask.response — five error codes forwarded verbatim > ASK_UNKNOWN_REQUEST for an eventId never issued [1.46ms]
+(pass) ask.response — five error codes forwarded verbatim > ASK_ALREADY_ANSWERED on a second answer, state unchanged [4.87ms]
+(pass) ask.response — five error codes forwarded verbatim > ASK_NOT_ADDRESSEE when the binding session is not the deliveredTo session [3.59ms]
+(pass) ask.response — five error codes forwarded verbatim > ASK_TURN_ENDED for a late answer after turn terminal clearing [5.12ms]
+(pass) ask.response — five error codes forwarded verbatim > ASK_INVALID_RESPONSE for a malformed response (validation before registry) [4.90ms]
+(pass) ADR-0011 T3 — lifecycle clearing > turn terminal via abort emits ask.cancel + ask.settled; late answer is TURN_ENDED [6.12ms]
+(pass) ADR-0011 T3 — lifecycle clearing > session.close clears session asks; late answer is TURN_ENDED [5.48ms]
+(pass) ADR-0011 T3 — lifecycle clearing > session.open{replace:true} clears the previous session asks [4.86ms]
+(pass) ADR-0011 T3 — lifecycle clearing > clearing is idempotent, emits one cancel/settled per ask, releases timers [2.59ms]
+(pass) ADR-0011 T3 — lifecycle clearing > connection teardown disposes the registry and releases every timer [2.50ms]
+(pass) session.open resume pushes the pendingSnapshot frame > resume open pushes ask.pending with the still-pending askId (idempotent binding) [3.71ms]
+(pass) session.open resume pushes the pendingSnapshot frame > fresh (mode:new) open pushes NO ask.pending frame [1.38ms]
+
+ 13 pass
+ 0 fail
+ 93 expect() calls
+Ran 13 tests across 1 file. [141.00ms]

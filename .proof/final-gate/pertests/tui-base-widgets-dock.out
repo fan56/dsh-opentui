@@ -1,0 +1,103 @@
+bun test v1.4.4 (38afee6c8)
+
+test/widgets-dock.test.ts:
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > boxed table: borders + `● Todos (done/total)` header + `# │ ✓ │ Task` + rows [0.40ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > window: TODO_MAX_ROWS rows, active first, global plan numbers + showing hint [0.08ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > short terminals (≤30 rows): the table collapses to ONE summary line [0.06ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > no todos / all completed → zero rows (clear-when-done) [0.01ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > multi-line content flattens onto one row [0.01ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > latestTodos: host args shape wins, opencode bare-array output works [0.03ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > exact-name match; running and failed rows never feed the table [0.02ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > latestTodos: args carrier may be the parsed object/array, not only the JSON string [0.06ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > padCell clips with the ellipsis and pads to exact display width [0.06ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > narrow box (boxWidth < 23): the Task column shrinks, rows never overflow [0.04ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > right border aligns with the composer's right border (80/120 columns) [0.07ms]
+(pass) todosTableLines (dsh-tui-pi TodosPanel parity) > narrow terminal (≤30 rows) summary is unchanged and stays inside the slot [0.02ms]
+(pass) thinkLineText > streaming: `💭 thinking · Xs · <tail line>` [0.05ms]
+(pass) thinkLineText > collapsed: `💭 thought · Xs · <last line>` frozen at elapsedSec [0.02ms]
+(pass) thinkLineText > panel-less replay rows paint nothing
+(pass) dockLines (batch D5 widget fade; todos live in their own table) > faded settled tools leave the dock; running tools stay; todos never enter dockLines [0.23ms]
+(pass) dockLines (batch D5 widget fade; todos live in their own table) > tool line: status icon marker, `name subject` (space, tui-pi style), elapsed, arg/result tail [0.12ms]
+(pass) dockLines (batch D5 widget fade; todos live in their own table) > think/tool lines carry semantic accents; the tool marker keeps its tone [0.24ms]
+(pass) skin exit fade timing (2s linger → no sweep; disabled 2026-11-23) > hold 2000ms → sweep disabled (0ms) → done at 2000ms [0.03ms]
+(pass) skin exit fade timing (2s linger → no sweep; disabled 2026-11-23) > fade color: full target during the hold, background past the edge (no sweep) [0.06ms]
+(pass) skin exit fade timing (2s linger → no sweep; disabled 2026-11-23) > stop anchor from startedAt + elapsedSec (view-side math, store untouched)
+(pass) skin exit fade timing (2s linger → no sweep; disabled 2026-11-23) > notice fade stays inside the 8s TTL (last 500ms only) [0.02ms]
+(pass) skin exit fade timing (2s linger → no sweep; disabled 2026-11-23) > color mixing + faint start [0.01ms]
+(pass) skin reminder pulse (3 dips ≈1.2s then rest) > exactly 3 cycles over ≈1.2s, then constant bright [0.04ms]
+(pass) skin reminder pulse (3 dips ≈1.2s then rest) > dims to the dim floor mid-cycle and never goes below it [0.04ms]
+(pass) skin turn-lifetime activity frame > turn activity derives from live rows (prop override wins when wired) [0.03ms]
+(pass) skin turn-lifetime activity frame > scene B hides tool while think is visible; scene C restores it (todos live in their own table) [0.04ms]
+(pass) skin turn-lifetime activity frame > multi-tool turns show up to 3 tool lines, newest last (cap 1 → newest only) [0.06ms]
+(pass) skin turn-lifetime activity frame > compact form: left rule with the activity title in the first line [0.02ms]
+(pass) skin turn-lifetime activity frame > compact form keeps the think text (rule head carries it, not a bare title) [0.06ms]
+(pass) skin turn-lifetime activity frame > frame vs rule follows the composer compact threshold (coordinated lanes) [0.01ms]
+(pass) skin code-block forms (streaming rule → final frame) > streaming → rule (no extra rows), final → frame [15.93ms]
+(pass) skin code-block forms (streaming rule → final frame) > rule label carries the language on the ┃ line [0.07ms]
+(pass) skin code-block forms (streaming rule → final frame) > applyCodeBlockSkin mutates the markdown's default renderable IN PLACE (no new nodes per increment) [0.08ms]
+(pass) deferred activity frame latch (flicker mitigation 1) > defer window is one render tick (50-100ms band)
+(pass) deferred activity frame latch (flicker mitigation 1) > pure transitions: steady states never schedule, a flip defers [0.03ms]
+(pass) deferred activity frame latch (flicker mitigation 1) > pure timer fire commits the pending op; nothing pending is a no-op [0.02ms]
+(pass) deferred activity frame latch (flicker mitigation 1) > mount and unmount each land one tick late (real one-shot timers) [62.25ms]
+(pass) deferred activity frame latch (flicker mitigation 1) > a flip inside the window cancels the pending op (no ghost either way) [93.36ms]
+(pass) activity frame active border > prefers the bright blue step (blue[200]) [0.36ms]
+(pass) activity frame active border > real dsh-blue dark picks blue[200] #8599ff at 7.5:1 [1.50ms]
+(pass) activity frame active border > real dsh-blue light picks blue[200] #24379f at 9.9:1 [1.24ms]
+(pass) activity frame active border > fallback is the bright blue hex, not a green or dark border [0.02ms]
+(pass) activity frame active border > no blue scale → action primary token; light surfaces deepen to 6:1 [0.19ms]
+(pass) activity frame active border > hue angle separates blue from cyan, green, purple and achromatic swatches [0.02ms]
+(pass) activity frame active border > a yellow categorical scale is not mistaken for the blue family [0.02ms]
+(pass) dock semantic accents (think violet / tool cyan) > dsh-blue dark: think purple[200] #9d7cd8, tool cyan[300] #449da7 [12.86ms]
+(pass) dock semantic accents (think violet / tool cyan) > dsh-blue light: think purple[200] #6d47ad, tool cyan[100] #077786 [3.40ms]
+(pass) dock semantic accents (think violet / tool cyan) > the two accents stay far apart in RGB (panel identity, not just a tint) [0.99ms]
+(pass) dock semantic accents (think violet / tool cyan) > no hue ramp → polarity-aware static fallback [0.07ms]
+(pass) dock semantic accents (think violet / tool cyan) > think falls back to accent when the theme has no purple/violet ramp [0.02ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > dsh-blue dark: todo green[200] #7fd88f, agent blue[300] #6b82fe [1.13ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > todo and agent clear the dark text floor and stay far apart [2.58ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > both row accents are clearly off the shared running amber #e0af68 [1.40ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > all four accents stay mutually distinct (panel identity) [1.88ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > no hue ramp → polarity-aware static fallback for todo/agent [0.06ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > every ramp-resolved accent clears 4.5:1 on both theme surfaces [7.83ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > every static fallback clears 4.5:1 on dark, white and #f2f2f2 surfaces [0.11ms]
+(pass) dock semantic accents — todo green / agent blue (F4 row separation) > the deepened light todo green stays far from agent/tool/think accents [0.03ms]
+(pass) contrast walk (bidirectional) > dark surface: an under-contrast fill walks toward WHITE, not black [0.04ms]
+(pass) contrast walk (bidirectional) > light surface: an under-contrast fill walks toward BLACK [0.03ms]
+(pass) contrast walk (bidirectional) > reports meetsContrast=false when neither pole can reach the floor [0.05ms]
+(pass) contrast walk (bidirectional) > a fill already clearing the floor is returned untouched
+(pass) dock display rules: 3 lines, 2s linger, replace > a long tool line clips inside the dock budget: no frame glyph, one row [0.15ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > think: 3 lines by default; live AND collapsed show the TAIL [0.08ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > tool: 3 lines by default, newest last (last 3 of the store order) [0.07ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > timeline: full 2s linger, then straight to hidden (sweep disabled; fake clock) [0.06ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > R3: DOCK_FADE_OUT_MS=0 → dockLineVisibility never returns fading [0.05ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > think uses its own anchor: a collapsed thought lingers 2s after collapse [0.02ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > M2: a resumed (streaming) think with a stale elapsedSec carries NO fadeOutAt [0.03ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > new content inside the window replaces the old block (think) [0.02ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > a starting tool clears the old settled tool lines (store flags faded) [0.01ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > motion tiers: full sweeps; reduced/off hide at the 2s deadline (no gradient) [0.01ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > C2: the store's removal delay matches the documented tier behaviour
+(pass) dock display rules: 3 lines, 2s linger, replace > compact geometry caps each widget at 1 line (80x24 footprint unchanged) [0.05ms]
+(pass) dock display rules: 3 lines, 2s linger, replace > session switch resets the entrance-fade registry (no ghost timestamps) [0.03ms]
+(pass) 2026-11-19 scene decision (rule table) > a running subagent wins over think (subagent active > think exclusive)
+(pass) 2026-11-19 scene decision (rule table) > think alone → B; neither → C
+(pass) 2026-11-19 scene decision (rule table) > thinkRowVisible: live burst always; settled until retention edge [0.02ms]
+(pass) scene-C todoTreeLines (header + ├─/└─ tree) > header reuses todosHeader with live done/total count [0.03ms]
+(pass) scene-C todoTreeLines (header + ├─/└─ tree) > child rows use ├─ for non-last and └─ for the last, with status glyphs [0.02ms]
+(pass) scene-C todoTreeLines (header + ├─/└─ tree) > no todos OR all completed → zero lines (clear-when-done)
+(pass) 2026-11-19 指令4 — scene-A todo brief > uses the existing time tracking anchor (startedAt) for the duration [0.05ms]
+(pass) 2026-11-19 指令4 — scene-A todo brief > no todos → empty (D5: no content, no line)
+(pass) 2026-11-19 指令4 — scene-A todo brief > unified clock: a NEW task text set starts at its own first-seen time [0.04ms]
+(pass) 2026-11-19 指令4 — scene-A todo brief > unified clock: status flips WITHIN a set do not reset (1/3→2/3) [0.01ms]
+(pass) 2026-11-19 指令4 — scene-A todo brief > unified clock: task text order does not reset (sorted signature)
+(pass) 2026-11-19 指令4 — scene-A todo brief > unified clock: session switch clears every first-seen anchor [0.01ms]
+(pass) 2026-11-19 指令4 — scene-A todo brief > todoSetStartedAt is the single first-seen anchor of a text set
+(pass) 2026-11-19 指令4 — scene-A todo brief > scene-C summary keeps the current full format (with active item) [0.01ms]
+(pass) 2026-11-19 指令5 — shared-clock height tween > ease is clamped and smoothstep-shaped [0.01ms]
+(pass) 2026-11-19 指令5 — shared-clock height tween > integer-line interpolation is exact at both ends (no off-by-one) [0.03ms]
+(pass) 2026-11-19 指令5 — shared-clock height tween > a missed idle tick still reports the exact terminal count on the next render [0.07ms]
+(pass) 2026-11-19 指令5 — shared-clock height tween > retarget clamps `from` to the painted shrink target (no jump on interrupt) [0.03ms]
+(pass) 2026-11-19 指令5 — shared-clock height tween > `all` gear = 10 (legacy spelling, no growth)
+
+ 95 pass
+ 0 fail
+ 678 expect() calls
+Ran 95 tests across 1 file. [493.00ms]

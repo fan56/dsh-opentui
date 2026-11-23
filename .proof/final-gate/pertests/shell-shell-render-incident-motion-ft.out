@@ -1,0 +1,12 @@
+bun test v1.4.4 (38afee6c8)
+
+test/shell-render-incident-motion-ft.test.tsx:
+(pass) incident regressions: paint continuity (real renderer, canned events) > pure-think dock holds full color for 2s then drops directly (sweep disabled) [2499.66ms]
+(pass) incident regressions: paint continuity (real renderer, canned events) > negative: silent think paints nothing; reduced tier paints no fade gradient [4.05ms]
+(pass) incident regressions: paint continuity (real renderer, canned events) > bordered todos box draws its content rows inside the border (counted off the frame) [92.03ms]
+(pass) incident regressions: paint continuity (real renderer, canned events) > negative: the bordered box clears when there is nothing to draw (zero rows) [0.37ms]
+
+ 4 pass
+ 0 fail
+ 78 expect() calls
+Ran 4 tests across 1 file. [2.94s]

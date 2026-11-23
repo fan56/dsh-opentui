@@ -1,0 +1,16 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/preset-migration.test.ts:
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > golden (a): legacy header id -> section text = APPEND_SYSTEM.md content exactly once [3.23ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > golden (b): agents.resume payload has NO preset key [1.62ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > golden (c): new session and legacy-header resume yield equal section text [3.87ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > legacy id -> one exact debug line per resume, never warn (no once-per-session Set) [6.34ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > read-only: every open is read; zero append/write calls [1.56ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > boundary: missing preset field or read failure -> clean miss, section still injects [3.81ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > boundary: ctx.get(sessionPersistence) throwing is contained -> resume still succeeds [1.48ms]
+(pass) M3-05: legacy preset id is inert metadata (post-8e0e847) > nested/array preset shape still detected -> debug line, no preset written [3.82ms]
+
+ 8 pass
+ 0 fail
+ 47 expect() calls
+Ran 8 tests across 1 file. [105.00ms]

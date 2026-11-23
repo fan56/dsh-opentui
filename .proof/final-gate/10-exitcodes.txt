@@ -1,0 +1,21 @@
+=== RUN 1 2026-11-23T06:47:35Z HEAD=733e859dbb82008bd3d040ff16f19ed2e371f5eb PROTECTED_PID=1963 ===
+run1 exit=1
+run1 autogen_out=/tmp/e2e-unified-20261123T064735Z
+run1 copied family logs to /private/tmp/uibatch-verify-wt/.proof/final-gate/e2e-run-1
+run1 FAILED_FAMILIES_LINE==== unified verdict: FAILED_FAMILIES=3 ===
+run1 UNIFIED=E2E UNIFIED: FAIL
+run1 FAMILY_FAILS=FAMILY model-domain FAIL (see /tmp/e2e-unified-20261123T064735Z/model-domain);FAMILY account-credentials-domain FAIL (see /tmp/e2e-unified-20261123T064735Z/account-credentials-domain);FAMILY verify-gate FAIL (see /tmp/e2e-unified-20261123T064735Z/verify-gate);
+=== RUN 2 2026-11-23T06:48:33Z HEAD=733e859dbb82008bd3d040ff16f19ed2e371f5eb PROTECTED_PID=1963 ===
+run2 exit=1
+run2 autogen_out=/tmp/e2e-unified-20261123T064833Z
+run2 copied family logs to /private/tmp/uibatch-verify-wt/.proof/final-gate/e2e-run-2
+run2 FAILED_FAMILIES_LINE==== unified verdict: FAILED_FAMILIES=3 ===
+run2 UNIFIED=E2E UNIFIED: FAIL
+run2 FAMILY_FAILS=FAMILY model-domain FAIL (see /tmp/e2e-unified-20261123T064833Z/model-domain);FAMILY account-credentials-domain FAIL (see /tmp/e2e-unified-20261123T064833Z/account-credentials-domain);FAMILY verify-gate FAIL (see /tmp/e2e-unified-20261123T064833Z/verify-gate);
+=== RUN 3 2026-11-23T06:49:33Z HEAD=733e859dbb82008bd3d040ff16f19ed2e371f5eb PROTECTED_PID=1963 ===
+run3 exit=1
+run3 autogen_out=/tmp/e2e-unified-20261123T064933Z
+run3 copied family logs to /private/tmp/uibatch-verify-wt/.proof/final-gate/e2e-run-3
+run3 FAILED_FAMILIES_LINE==== unified verdict: FAILED_FAMILIES=3 ===
+run3 UNIFIED=E2E UNIFIED: FAIL
+run3 FAMILY_FAILS=FAMILY model-domain FAIL (see /tmp/e2e-unified-20261123T064933Z/model-domain);FAMILY account-credentials-domain FAIL (see /tmp/e2e-unified-20261123T064933Z/account-credentials-domain);FAMILY verify-gate FAIL (see /tmp/e2e-unified-20261123T064933Z/verify-gate);

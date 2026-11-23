@@ -1,0 +1,10 @@
+bun test v1.4.4 (38afee6c8)
+
+test/m3-ride-isolation.test.ts:
+(pass) M3-07 inproc wire isolation: BridgeSessionSeam never rides append > full lifecycle (connect/newSession/create/resume/dispose) emits no agentPresets/list and no agentPreset field [1.18ms]
+(pass) M3-07 inproc wire isolation: BridgeSessionSeam never rides append > bootstrap init (createBridgeSessionSeam) issues only hello/ping — no roster probe [0.13ms]
+
+ 2 pass
+ 0 fail
+ 38 expect() calls
+Ran 2 tests across 1 file. [83.00ms]

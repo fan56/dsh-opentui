@@ -1,0 +1,19 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/bridge/test/session-list.test.ts:
+(pass) session.list — normal pass-through > returns host wire rows verbatim, calls controller once, no session side effects [2.30ms]
+(pass) session.list — normal pass-through > an empty store is a SUCCESS with empty items (not service-unavailable) [1.34ms]
+(pass) session.list — normal pass-through > a string cursor is validated and forwarded in _request [1.36ms]
+(pass) session.list — parameter validation > non-string cursor -> BAD_PARAMS, controller never called [1.30ms]
+(pass) session.list — service missing > ctx.get('sessionController') undefined -> UNSUPPORTED detail, never an empty success [1.28ms]
+(pass) session.list — service missing > a service without list() is treated as missing, not as an empty store [1.27ms]
+(pass) session.list — host errors > a controller throw maps through the host error table (default INTERNAL) [1.26ms]
+(pass) session.list — malformed host value is INTERNAL, never a flattened empty success (P1-2) > null value -> INTERNAL with a reason, distinguishable from UNSUPPORTED and from {items:[]} [1.27ms]
+(pass) session.list — malformed host value is INTERNAL, never a flattened empty success (P1-2) > object with no items -> INTERNAL with a reason, distinguishable from UNSUPPORTED and from {items:[]} [1.26ms]
+(pass) session.list — malformed host value is INTERNAL, never a flattened empty success (P1-2) > items not an array -> INTERNAL with a reason, distinguishable from UNSUPPORTED and from {items:[]} [1.24ms]
+(pass) session.list — malformed host value is INTERNAL, never a flattened empty success (P1-2) > a non-object value -> INTERNAL with a reason [1.29ms]
+
+ 11 pass
+ 0 fail
+ 55 expect() calls
+Ran 11 tests across 1 file. [100.00ms]

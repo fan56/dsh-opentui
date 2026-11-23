@@ -1,0 +1,22 @@
+bun test v1.4.4 (38afee6c8)
+
+test/r8-subagent-brief.test.ts:
+(pass) R8.1 — subagent brief text (running count only, ASCII, en/zh identical) > text has the exact `subagent *N Ns` form and running=0 yields empty [0.09ms]
+(pass) R8.1 — subagent brief text (running count only, ASCII, en/zh identical) > brief text is pure ASCII (no emoji/CJK that modal dialogs swallow) [0.02ms]
+(pass) R8.1 — subagent brief text (running count only, ASCII, en/zh identical) > en and zh locale values are identical ASCII [0.53ms]
+(pass) R8.2 — combine rule (merged / exclusive / neither) > combineBriefText exact forms [0.02ms]
+(pass) R8.2 — combine rule (merged / exclusive / neither) > framed scene A: both briefs share one row above the agent list [0.37ms]
+(pass) R8.2 — combine rule (merged / exclusive / neither) > framed scene A: subagent-only brief occupies the row alone [0.04ms]
+(pass) R8.2 — combine rule (merged / exclusive / neither) > no subagentBrief option → no new brief row beyond the existing todo brief [0.03ms]
+(pass) R8.3 — per-batch anchor semantics > 0→N records anchor; N→M keeps it; →0 clears; next 0→N restarts [0.02ms]
+(pass) R8.3 — per-batch anchor semantics > elapsed ticks from the batch anchor, not from each child's startedAt [0.03ms]
+(pass) R8.4 — compact brief + width law > compact brief only appears while a subagent runs, and shares one row with todo [0.14ms]
+(pass) R8.4 — compact brief + width law > fittedBriefLine obeys the exact-width law (takeWidth, no clipToWidth) [0.02ms]
+(pass) R8.4 — compact brief + width law > 80x24 room budget: brief + todo tree + rule/tab rows leave transcript >= 6 [0.03ms]
+(pass) R8.5 — real renderer frames (framed >=31 rows, compact 24 rows) > framed mode paints `subagent *3` above the agent rows [314.69ms]
+(pass) R8.5 — real renderer frames (framed >=31 rows, compact 24 rows) > compact mode (24 rows) paints `subagent *3` in the lower zone [306.80ms]
+
+ 14 pass
+ 0 fail
+ 42 expect() calls
+Ran 14 tests across 1 file. [934.00ms]
