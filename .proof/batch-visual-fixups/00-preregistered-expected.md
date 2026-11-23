@@ -61,3 +61,15 @@ E1–E4 全达成 ∧ scoped 测试全绿 ∧ `typecheck:entry` 退出 0 ∧ 2 c
 - 既有测试断言不静默删除：E3 若迁移 `note===undefined` 断言，须在报告逐条登记理由与新旧值。
 - 措辞强度不超证据：render fixture 绿只写「渲染级绿」，不冒充真机；width budget 只证「≤半卡宽」，不证「全行单行不折」（后者由主 agent 真机验收）。
 - 禁止 push。
+
+## 附则（真机复验打回后的裁决追加，正文断言未改）
+
+- 裁决时间：2026-11-23（真机 80 列英文帧复验后，用户/主 agent 裁决）。
+- 真机事实：短句式 a/s 标签仍使 60 列卡内 4 按钮行溢出，「Reject / Allow」被拦腰折断；
+  E1 冻结的短句文案在真机布局下不成立。U1 的「真机观察后再缩短」预案被触发并升级为布局裁决。
+- 裁决内容（覆盖 E1 的实现形态，不改 E2/E3/E4）：按钮标签回退短词 `always` / `session`
+  （en/zh 同值，恢复 B4 之前的值）；大白话语义移到审批卡正文图例两行
+  （`overlay.ask.alwaysHint` / `overlay.ask.sessionHint`），只在 escalation 授予时出现；
+  四按钮任何语言、80 列下必须完整单行；图例每行 ≤ 50 显示列（CJK 双宽）。
+- 证据：渲染帧见最终汇报（en/zh 各一帧）；scoped 383 pass / 0 fail；tui-base 全量 1610 pass / 1 skip / 0 fail；
+  `typecheck:entry` exit 0。单条 commit `fix(ask): short verdict buttons with plain-language legend in card body`。

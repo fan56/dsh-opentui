@@ -1,12 +1,13 @@
 /**
- * 真机审批卡 [a]/[s] 文案折行缺陷的渲染级回归。
+ * 审批卡按钮行 + 正文图例（真机打回后的布局裁决回归）。
  *
- * 真机帧：审批卡按钮行把「写操作」拦腰折行（卡片内宽 60 列）。本测试锁住两件事：
- *   1. i18n 四键的最终文案 + 显示宽度预算（每个标签 ≤ 半个卡宽 = 30 列）；
- *   2. 真实渲染链上两个标签整串出现、不被折成两行。
+ * 真机 80 列英文帧证明：60 列卡内 4 按钮行可用约 54 列，放不下带短句的
+ * a/s 标签，连 Reject / Allow 都被拦腰折断。裁决后：
+ *   - 按钮回退短词 always / session（键名，en/zh 同值）；
+ *   - 大白话语义移到卡片正文图例两行（只在 escalation 授予时出现）；
+ *   - 任何语言、80 列下四个按钮都必须完整落在同一行。
  *
- * 挂载的是生产 ApprovalCard（→ DialogConfirm 的 legacy footer），不是镜像：
- * 文案走 t() 的已装载 registry，按钮走 dialog.replace，帧走 captureCharFrame。
+ * 挂载生产 ApprovalCard（→ DialogConfirm legacy footer），帧走 captureCharFrame。
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
@@ -18,7 +19,7 @@ import { ThemeProvider, createThemeSource } from "../src/context/theme"
 import { Keymap } from "../src/context/keymap"
 import { ClipboardProvider, type ClipboardService } from "../src/context/clipboard"
 import { ToastProvider } from "../src/ui/toast"
-import { DialogProvider, dialogWidth, useDialog } from "../src/ui/dialog"
+import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { ApprovalCard } from "../src/routes/session/turn-overlays"
 import { stringWidth } from "../src/util/string-width"
 
@@ -35,12 +36,12 @@ const clipboard: ClipboardService = { read: async () => undefined, write: async 
 const locale = (id: "en" | "zh-CN"): Record<string, string> =>
 	JSON.parse(readFileSync(new URL(`../../i18n/locales/${id}.json`, import.meta.url), "utf8"))
 
-const ZH_ALWAYS = "此工具本会话免问"
-const ZH_SESSION = "写操作本会话全放行"
-const EN_ALWAYS = "this tool, this session"
-const EN_SESSION = "all write tools, this session"
+const ZH_HINT_A = "[a] 此工具本会话不再问"
+const ZH_HINT_S = "[s] 本会话放行全部写操作"
+const EN_HINT_A = "[a] this tool: no more asks this session"
+const EN_HINT_S = "[s] all write tools: no more asks this session"
 
-function ApprovalProbe() {
+function ApprovalProbe(props: { escalation?: boolean }) {
 	const dialog = useDialog()
 	onMount(() => {
 		dialog.replace(
@@ -48,7 +49,7 @@ function ApprovalProbe() {
 				<ApprovalCard
 					name="bash"
 					args={{ command: "git status" }}
-					escalation
+					escalation={props.escalation}
 					onVerdict={() => {}}
 				/>
 			),
@@ -58,7 +59,7 @@ function ApprovalProbe() {
 	return <text>base</text>
 }
 
-async function mountCard() {
+async function mountCard(escalation = true) {
 	const setup = await testRender(
 		() => (
 			<ConfigProvider config={resolve({}, { terminalSuspend: true })}>
@@ -67,7 +68,7 @@ async function mountCard() {
 						<ClipboardProvider value={clipboard}>
 							<ToastProvider>
 								<DialogProvider>
-									<ApprovalProbe />
+									<ApprovalProbe escalation={escalation} />
 								</DialogProvider>
 							</ToastProvider>
 						</ClipboardProvider>
@@ -75,8 +76,7 @@ async function mountCard() {
 				</ThemeProvider>
 			</ConfigProvider>
 		),
-		// 80-col terminal → the medium dialog renders at its full 60 columns
-		// (maxWidth = terminal-2 would clip it if the terminal were only 60).
+		// 真机 80 列：medium dialog 满宽 60 列（maxWidth = terminal-2）。
 		{ width: 80, height: 24, exitOnCtrlC: false },
 	)
 	for (let index = 0; index < 6; index += 1) {
@@ -86,56 +86,79 @@ async function mountCard() {
 	return setup
 }
 
-describe("审批卡 verdict 文案：值、宽度预算、渲染整串", () => {
-	test("i18n 四键是最终短文案，且每个标签显示宽度 ≤ 半个卡宽", () => {
+/** The single legacy-footer row that carries all four buttons. */
+function buttonLine(frame: string): string {
+	const line = frame.split("\n").find((row) => row.includes("always [a]"))
+	expect(line).toBeDefined()
+	return line!
+}
+
+describe("审批卡：短按钮行 + 正文图例（真机布局裁决）", () => {
+	test("i18n：按钮回退短词，图例键双语就位且每行 ≤ 50 显示列", () => {
 		const en = locale("en")
 		const zh = locale("zh-CN")
-		expect(en["overlay.ask.allowAlways"]).toBe(EN_ALWAYS)
-		expect(en["overlay.ask.allowSession"]).toBe(EN_SESSION)
-		expect(zh["overlay.ask.allowAlways"]).toBe(ZH_ALWAYS)
-		expect(zh["overlay.ask.allowSession"]).toBe(ZH_SESSION)
-		const budget = dialogWidth("medium") / 2 // 60 / 2 = 30
-		for (const label of [EN_ALWAYS, EN_SESSION, ZH_ALWAYS, ZH_SESSION]) {
-			expect(stringWidth(label)).toBeLessThanOrEqual(budget)
+		for (const dict of [en, zh]) {
+			expect(dict["overlay.ask.allowAlways"]).toBe("always")
+			expect(dict["overlay.ask.allowSession"]).toBe("session")
+		}
+		expect(en["overlay.ask.alwaysHint"]).toBe(EN_HINT_A)
+		expect(en["overlay.ask.sessionHint"]).toBe(EN_HINT_S)
+		expect(zh["overlay.ask.alwaysHint"]).toBe(ZH_HINT_A)
+		expect(zh["overlay.ask.sessionHint"]).toBe(ZH_HINT_S)
+		for (const hint of [EN_HINT_A, EN_HINT_S, ZH_HINT_A, ZH_HINT_S]) {
+			expect(stringWidth(hint)).toBeLessThanOrEqual(50)
 		}
 	})
 
-	test("zh 卡：两个新标签整串出现在渲染帧，不再拦腰折行", async () => {
+	test("en 80 列：always / session / Reject / Allow 四项完整同一行；图例两行在正文", async () => {
+		setLanguage("en")
+		const setup = await mountCard()
+		try {
+			const frame = setup.captureCharFrame()
+			const row = buttonLine(frame)
+			expect(row).toContain("always [a]")
+			expect(row).toContain("session [s]")
+			// 真机缺陷形态：Rej / ect 与 All / ow 分两行；这里必须整词同一行。
+			expect(row).toContain("Reject")
+			expect(row).toContain("Allow")
+			expect(frame).toContain(EN_HINT_A)
+			expect(frame).toContain(EN_HINT_S)
+			// 旧长句按钮标签不得回归。
+			expect(frame).not.toContain("this tool, this session")
+			expect(frame).not.toContain("all write tools, this session")
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("zh 80 列：always / session / 拒绝 / 允许 四项完整同一行；图例两行在正文", async () => {
 		setLanguage("zh-CN")
 		const setup = await mountCard()
 		try {
 			const frame = setup.captureCharFrame()
-			expect(frame).toContain("审批：bash")
-			// 真机缺陷是「写操作」被拦腰折成「写操 / 作」。新标签必须整串落在帧里。
-			expect(frame).toContain(ZH_ALWAYS)
-			expect(frame).toContain(ZH_SESSION)
-			expect(frame).toContain("[a]")
-			expect(frame).toContain("[s]")
-			// 旧长文案必须已退场，避免新旧同帧并存。
-			expect(frame).not.toContain("本会话此工具不再问")
-			expect(frame).not.toContain("本会话放行全部写操作")
-			// 每个标签的显示宽度预算：≤ 半卡宽；此预算与渲染整串共同构成机器判据。
-			const budget = dialogWidth("medium") / 2
-			expect(stringWidth(ZH_ALWAYS)).toBeLessThanOrEqual(budget)
-			expect(stringWidth(ZH_SESSION)).toBeLessThanOrEqual(budget)
+			const row = buttonLine(frame)
+			expect(row).toContain("always [a]")
+			expect(row).toContain("session [s]")
+			expect(row).toContain("拒绝")
+			expect(row).toContain("允许")
+			expect(frame).toContain(ZH_HINT_A)
+			expect(frame).toContain(ZH_HINT_S)
+			expect(frame).not.toContain("此工具本会话免问")
+			expect(frame).not.toContain("写操作本会话全放行")
 		} finally {
 			await setup.dispose()
 			setLanguage("en")
 		}
 	})
 
-	test("en 卡：新标签文本 + 键提示出现在渲染帧，旧长文案退场", async () => {
+	test("no escalation: no a/s buttons and no legend lines", async () => {
 		setLanguage("en")
-		const setup = await mountCard()
+		const setup = await mountCard(false)
 		try {
 			const frame = setup.captureCharFrame()
-			// en 标签在 60 列卡里有空格可断点，行内按词折；这里断言词元与键提示都在帧里。
-			for (const word of EN_ALWAYS.split(" ")) expect(frame).toContain(word)
-			for (const word of EN_SESSION.split(" ")) expect(frame).toContain(word)
-			expect(frame).toContain("[a]")
-			expect(frame).toContain("[s]")
-			expect(frame).not.toContain("always allow this tool")
-			expect(frame).not.toContain("allow all write tools")
+			expect(frame).not.toContain("always [a]")
+			expect(frame).not.toContain(EN_HINT_A)
+			expect(frame).not.toContain(EN_HINT_S)
 		} finally {
 			await setup.dispose()
 		}

@@ -77,7 +77,15 @@ export function ApprovalCard(props: {
 				: t("overlay.ask.approvalTitle", { name: props.name })}
 			message={invalidated()
 				? t("overlay.ask.invalidated", { reason: props.invalidatedReason ?? "" })
-				: summarizeArgs(props.name, props.args)}
+				: `${summarizeArgs(props.name, props.args)}${
+						// 真机布局裁决（80 列英文帧坐实）：60 列卡内 4 按钮行可用
+						// 约 54 列，放不下带短句的 a/s 标签，连 Reject/Allow 都被
+						// 拦腰折断。故按钮回退为短词 always/session，大白话语义
+						// 改在正文图例两行展示（只在授予 escalation 时出现）。
+						props.escalation === true
+							? `\n${t("overlay.ask.alwaysHint")}\n${t("overlay.ask.sessionHint")}`
+							: ""
+					}`}
 			label={invalidated()
 				? { confirm: t("overlay.ask.invalidatedAck"), cancel: t("overlay.ask.invalidatedAck") }
 				: { confirm: t("overlay.ask.allow"), cancel: t("overlay.ask.reject") }}
