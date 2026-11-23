@@ -1,0 +1,24 @@
+copy→pbpaste=[ARCHIVE-COPY-9]
+clear: placeholder=1 quitdialog=0
+done-stage1
+newflow: card=1 console_err=0 tabline=[1 main]  2 todo
+second msg F2=1 console_err=0
+focus-return: composer-heavy=1 dock-gone=0
+stage2-done
+09-tab-main-framed: ┌─[1 main]  2 todo 🔧 tool───────────────────
+10-tab-todo-framed: ┏━1 main  [2 todo] 🔧 tool━━━━━━━━━━━━━━━━━━━
+11-tab-main-again-framed: ┏━[1 main]  2 todo 🔧 tool━━━━━━━━━━━━━━━━━━━
+13-subagent-brief-a: 
+14-subagent-brief-b: subagent *3 3s                                                                                                        │
+15-subagent-brief-c: subagent *3 11s                                                                                                       │
+brief-gone-after-done=0 FIN=1
+17-compact-main:    [1 main]  2 todo
+18-compact-todo:    [1 main]  2 todo
+19-compact-main-again:    [1 main]  2 todo
+stage3-4-done
+ctrl+c clear: placeholder=1 quitdialog=0
+21-compact-main:    [1 main]  2 todo composer=┃
+22-compact-todo:    1 main  [2 todo] composer=│
+23-compact-main-again:    [1 main]  2 todo composer=│
+24-compact-todo-again:    1 main  [2 todo] composer=│
+stage4-redo-done
