@@ -1937,6 +1937,20 @@ function terminalFromReason(reason: unknown): TerminalDecision {
   return { kind: 'end' }
 }
 
+/** R7: map a child `turn/end` reason to the settle outcome the seam projects.
+ *  The seam's `bridgeSettledStatus` maps `aborted` → interrupted, passes
+ *  `failed`/`cancelled` through, and defaults everything else to completed.
+ *  The host reason may be a string ('completed') or an object ({kind:'aborted'}),
+ *  so accept both. Never invent a failure for an unknown reason. */
+function childSettleOutcome(reason: unknown): string {
+  const kind = reason !== null && typeof reason === 'object'
+    ? (reason as Record<string, unknown>).kind
+    : reason
+  if (kind === 'error' || kind === 'blocked') return 'failed'
+  if (kind === 'aborted' || kind === 'interrupted' || kind === 'forked') return 'aborted'
+  return 'completed'
+}
+
 /** Per-in-flight-turn accumulator. Tokens are appended to both `textAcc` and a
  *  pending buffer; `turn.end.text` is built from `textAcc`, so concatenation of
  *  emitted `turn.token` texts equals it by construction. */
@@ -3229,6 +3243,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
             if (row !== undefined && row.parentSessionId === binding.sessionId) {
               const childId = sessionId
               const parentId = binding.sessionId
+              // R7 revive: this known child's own turn/start proves the host
+              // re-attached it for a NEW run. Restore running so its subsequent
+              // turn/end emits exactly one settle frame again (and the parental
+              // catalog spawn's `agent.spawn` frame re-adds its dock row).
+              index.noteRunning(sessionId)
               queueMicrotask(() => syncChildApprovalPolicy(childId, parentId))
             }
           }
@@ -3369,12 +3388,35 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // `subagents.interrupt` can answer `already-settled` between list snapshots.
     if (type === 'turn/end') {
       const index = getSubagentIndex(ctx)
-      if (index.has(sessionId)) {
+      const row = index.get(sessionId)
+      if (row !== undefined) {
+        const boundId = binding?.sessionId
+        // R7: a child's OWN terminal settles its live roster row immediately.
+        // Before this, catalog-family children (plain `subagent`/`use_agent`, the
+        // common delegation path) only settled once the parent journal's
+        // `user/message subagent-settled` notice was drained — 12-21s of stale
+        // `running` rows. Reuse the existing `agent.settle` frame with the
+        // catalog-family pairing key (`catalog:<childId>`:0, same as the spawn)
+        // so the seam folds it through the SAME pure projector. The `running`
+        // guard makes a repeated turn/end (or a late parent agent-end on a
+        // different runId) a no-op here: never double-settle, never revive.
+        const shouldSettle = row.status === 'running' && boundId !== undefined && row.parentSessionId === boundId
         // B3: flush this child's pending progress before its terminal so the
         // final live tail is delivered, then stop folding it (noteSettled below).
         flushProgressNow(sessionId)
         index.noteSettled(sessionId, typeof data.seq === 'number' ? data.seq : undefined)
         clearChildProgress(sessionId)
+        if (shouldSettle) {
+          const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
+          emitEvent('agent.settle', {
+            turnId,
+            sessionId: boundId,
+            childId: sessionId,
+            runId: `catalog:${sessionId}`,
+            seq: 0,
+            outcome: childSettleOutcome(data.reason),
+          })
+        }
       }
     }
 

@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { apply } from "../src/index"
+import { getSubagentIndex } from "../src/subagent-index"
 
 const STDIO_SWITCH = "DSH_OPENTUI_BRIDGE_STDIO"
 type Frame = Record<string, any>
@@ -121,8 +122,19 @@ function makeHarness() {
 			for (const fn of eventListeners.get("session/event") || []) fn(session, event)
 		},
 		eventFrames(type: string): Frame[] { return parsed().filter((f) => f.type === type) },
+		ctx,
 	}
 }
+
+/** Catalog-spawn a child on the bound parent, exactly as a plain `use_agent` call does. */
+function spawnCatalogChild(h: ReturnType<typeof makeHarness>, sessionId: string, childId: string): void {
+	h.emitSessionEvent(
+		{ id: sessionId },
+		{ type: "subagent/catalog", data: { version: 3, childId, childCreatedAt: 1795074915419, label: childId } },
+	)
+}
+const catalogSettles = (h: ReturnType<typeof makeHarness>, childId: string): Frame[] =>
+	h.eventFrames("agent.settle").filter((f) => f.payload.childId === childId)
 
 async function startTurn(h: ReturnType<typeof makeHarness>, id: number): Promise<{ sessionId: string; turnId: string }> {
 	h.send({ id, method: "session.open", params: { mode: "new" } })
@@ -396,5 +408,146 @@ describe("subagent lifecycle frames (inproc visibility)", () => {
 		const hello = await h.waitFor(50)
 		expect(hello.ok).toBe(true)
 		expect(hello.result.protocolVersion).toBe(1)
+	})
+})
+
+// ---- R7: a child's OWN turn/end settles its live dock row immediately --------
+// Before this fix the catalog family (plain `subagent` / `use_agent`) only
+// settled when the parent journal's `user/message subagent-settled` notice was
+// drained — 12-21s of stale `running` rows. The child's own turn/end rides the
+// same firehose; emit the EXISTING `agent.settle` frame (catalog pairing key)
+// from it so the seam folds it through the same pure projector.
+describe("R7 child turn/end settle lag", () => {
+	test("E-SET-1: child turn/end emits one agent.settle with the catalog pairing key", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		spawnCatalogChild(h, sessionId, "c-r7")
+		expect(h.eventFrames("agent.spawn")).toHaveLength(1)
+
+		h.emitSessionEvent(
+			{ id: "c-r7" },
+			{ type: "turn/end", data: { reason: { kind: "completed" }, seq: 9 } },
+		)
+		const settles = catalogSettles(h, "c-r7")
+		expect(settles).toHaveLength(1)
+		expect(settles[0].payload).toMatchObject({
+			sessionId,
+			childId: "c-r7",
+			runId: "catalog:c-r7",
+			seq: 0,
+			outcome: "completed",
+		})
+		expect(typeof settles[0].payload.turnId).toBe("string")
+	})
+
+	test("E-SET-1: failed and aborted terminals map to the seam's settled outcomes", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		const cases: Array<[string, unknown, string]> = [
+			["c-fail", { kind: "error" }, "failed"],
+			["c-abort", { kind: "aborted" }, "aborted"],
+			["c-interrupt", "interrupted", "aborted"],
+			["c-done", "completed", "completed"],
+		]
+		for (const [childId, reason, outcome] of cases) {
+			spawnCatalogChild(h, sessionId, childId)
+			h.emitSessionEvent({ id: childId }, { type: "turn/end", data: { reason } })
+		}
+		const settles = h.eventFrames("agent.settle")
+		expect(settles).toHaveLength(cases.length)
+		for (const [childId, , outcome] of cases) {
+			expect(settles.find((f) => f.payload.childId === childId)?.payload.outcome).toBe(outcome)
+		}
+	})
+
+	test("E-SET-2: a repeated child turn/end is a no-op (no double settle)", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		spawnCatalogChild(h, sessionId, "c-twice")
+		h.emitSessionEvent({ id: "c-twice" }, { type: "turn/end", data: { reason: "completed" } })
+		h.emitSessionEvent({ id: "c-twice" }, { type: "turn/end", data: { reason: "completed" } })
+		h.emitSessionEvent({ id: "c-twice" }, { type: "turn/end", data: { reason: { kind: "aborted" } } })
+		expect(catalogSettles(h, "c-twice")).toHaveLength(1)
+	})
+
+	test("E-SET-2: a late parent tool-workflow agent-end never re-settles or revives the child", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		spawnCatalogChild(h, sessionId, "c-late-parent")
+		h.emitSessionEvent({ id: "c-late-parent" }, { type: "turn/end", data: { reason: "completed" } })
+		expect(catalogSettles(h, "c-late-parent")).toHaveLength(1)
+
+		// Parent's durable agent-end arrives late, on a DIFFERENT runId namespace.
+		// It forwards its own settle frame, but never touches the catalog child's
+		// runSeq key — so no duplicate settle, no running revival.
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool-workflow/agent-end", data: { runId: "run-x", seq: 0, outcome: "completed" } },
+		)
+		expect(catalogSettles(h, "c-late-parent")).toHaveLength(1)
+		expect(getSubagentIndex(h.ctx).get("c-late-parent")?.status).toBe("settled")
+	})
+
+	test("E-SET-3: a background child finishing while the parent turn is idle still settles", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent({ id: sessionId }, { type: "turn/end", data: { reason: "completed" } })
+		spawnCatalogChild(h, sessionId, "c-bg")
+		h.emitSessionEvent({ id: "c-bg" }, { type: "turn/end", data: { reason: "completed" } })
+		const settles = catalogSettles(h, "c-bg")
+		expect(settles).toHaveLength(1)
+		// No active turn => honest inert empty turnId, same as the idle catalog spawn.
+		expect(settles[0].payload.turnId).toBe("")
+	})
+
+	test("E-SET-4: a re-awakened child reappears and settles again on its next turn/end", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		spawnCatalogChild(h, sessionId, "c-revive")
+		h.emitSessionEvent({ id: "c-revive" }, { type: "turn/end", data: { reason: "completed" } })
+		expect(catalogSettles(h, "c-revive")).toHaveLength(1)
+		expect(getSubagentIndex(h.ctx).get("c-revive")?.status).toBe("settled")
+
+		// Host re-attaches the child for a NEW run: own turn/start + a fresh parent
+		// catalog row. Both the index status and the dock row must come back.
+		h.emitSessionEvent({ id: "c-revive" }, { type: "turn/start", data: { turn: 2 } })
+		expect(getSubagentIndex(h.ctx).get("c-revive")?.status).toBe("running")
+		spawnCatalogChild(h, sessionId, "c-revive")
+		const spawns = h.eventFrames("agent.spawn").filter((f) => f.payload.childId === "c-revive")
+		expect(spawns).toHaveLength(2)
+
+		h.emitSessionEvent({ id: "c-revive" }, { type: "turn/end", data: { reason: "completed" } })
+		expect(catalogSettles(h, "c-revive")).toHaveLength(2)
+	})
+
+	test("E-SET-5: journal/host-list re-read keeps the settled terminal authoritative", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		spawnCatalogChild(h, sessionId, "c-journal")
+		h.emitSessionEvent({ id: "c-journal" }, { type: "turn/end", data: { reason: { kind: "aborted" } } })
+		const index = getSubagentIndex(h.ctx)
+		expect(index.get("c-journal")?.status).toBe("settled")
+
+		// A later authoritative host-list re-read (Stop-driven syncFromList) that
+		// still reports the child not-running must not revive it, and must not
+		// emit a fresh spawn/settle frame for it. #subagentJournalLoaded guard in
+		// the seam is untouched (shell-side, out of this slice's scope).
+		index.syncFromList([
+			{ sessionId: "c-journal", origin: "subagent", parentSessionId: sessionId, running: false, updatedAt: 1795074916000 },
+		])
+		expect(index.get("c-journal")?.status).toBe("settled")
+		expect(catalogSettles(h, "c-journal")).toHaveLength(1)
+		expect(h.eventFrames("agent.spawn").filter((f) => f.payload.childId === "c-journal")).toHaveLength(1)
+	})
+
+	test("E-SET-2: a foreign child's turn/end cannot settle the bound child", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		spawnCatalogChild(h, sessionId, "c-own")
+		// An unknown/foreign session turn/end is not in the index — no settle frame,
+		// no ghost row (index.has gate).
+		h.emitSessionEvent({ id: "foreign-child" }, { type: "turn/end", data: { reason: "completed" } })
+		expect(h.eventFrames("agent.settle")).toHaveLength(0)
+		expect(getSubagentIndex(h.ctx).get("c-own")?.status).toBe("running")
 	})
 })

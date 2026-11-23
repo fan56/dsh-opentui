@@ -122,6 +122,16 @@ export class SubagentIndex {
     if (typeof lastSeq === 'number') row.lastSeq = lastSeq
   }
 
+  /** R7 revive: a KNOWN child's own `turn/start` proves the host re-attached it
+   *  for a new run. Restore `running` so its next `turn/end` emits exactly one
+   *  settle frame (and so ask-routing's running-only gate opens again). A fresh
+   *  `subagent/catalog` already inserts a new running row via `noteCatalog`. */
+  noteRunning(childId: string): void {
+    if (typeof childId !== 'string' || childId === '') return
+    const row = this.rows.get(childId)
+    if (row !== undefined) row.status = 'running'
+  }
+
   has(childId: string): boolean {
     return this.rows.has(childId)
   }
