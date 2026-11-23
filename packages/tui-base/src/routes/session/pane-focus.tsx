@@ -46,6 +46,41 @@ import { Keymap } from "../../context/keymap"
 
 export type Pane = "composer" | "transcript"
 
+// ---------------------------------------------------------------------------
+// R5 active-panel signal (module-level, CLOSURE LAW — the dock's
+// `mergedDockCursor` precedent). Pane focus above answers "who owns the
+// KEYBOARD" (renderer truth); this answers "which resident panel was touched
+// LAST" (an explicit interaction signal) and drives the heavy/single BORDER
+// weight of the persistent framed panels. Default is the composer.
+//
+// Dialogs never read it (they stay heavy permanently); the unframed
+// lastrequest / notices slots are listed for completeness and accept clicks,
+// but paint no border of their own.
+// ---------------------------------------------------------------------------
+export type ActivePanel = "composer" | "transcript" | "activity" | "lastrequest" | "notices"
+
+export const DEFAULT_ACTIVE_PANEL: ActivePanel = "composer"
+
+const [activePanel, setActivePanelSignal] = createSignal<ActivePanel>(DEFAULT_ACTIVE_PANEL)
+export { activePanel }
+
+/** The single write channel. Kept explicit (no ad-hoc writes) so every
+ * interaction that can move the frame weight is auditable. */
+export function markPanelActive(panel: ActivePanel): void {
+	setActivePanelSignal(panel)
+}
+
+/** Composer's three interaction channels — textarea key, content change and a
+ * click on its box — all reassert the composer as the active panel. */
+export function composerInteraction(): void {
+	markPanelActive("composer")
+}
+
+/** Session switch / test teardown: back to the documented default. */
+export function resetActivePanel(): void {
+	setActivePanelSignal(DEFAULT_ACTIVE_PANEL)
+}
+
 export type PaneNodes = {
 	/** The transcript's scrollbox (undefined before mount / after teardown). */
 	transcript?: () => Renderable | undefined

@@ -31,6 +31,7 @@ import {
 	SKIN_NOTICE_FADE_MS,
 	SKIN_PULSE_MS,
 } from "./widgets-dock"
+import { markPanelActive } from "./pane-focus"
 
 export const NOTICE_AUTO_DISMISS_MS = 8000
 export const NOTICE_MAX_LINES = 8
@@ -140,7 +141,14 @@ export function NoticesDock(): JSX.Element {
 	}
 	const width = () => Math.max(8, dimensions().width - 2)
 	return (
-		<box flexShrink={0} flexDirection="column" width="100%" height={notices().length} paddingLeft={1}>
+		<box
+			flexShrink={0}
+			flexDirection="column"
+			width="100%"
+			height={notices().length}
+			paddingLeft={1}
+			onMouseUp={() => markPanelActive("notices")}
+		>
 			<For each={noticeList()}>
 				{(notice) => (
 					<box flexDirection="row" height={1} width="100%">

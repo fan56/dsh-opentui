@@ -39,6 +39,7 @@ import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
 import { motionDecorationsEnabled } from "../../skin/motion"
 import { dockSpin, skinFadeInColor, skinLineFadeT, SKIN_FADE_IN_MS } from "./widgets-dock"
+import { markPanelActive } from "./pane-focus"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -209,7 +210,14 @@ export function LastRequestDock(props: {
 	}
 
 	return (
-		<box flexShrink={0} flexDirection="column" width="100%" height={lines().length} paddingLeft={1}>
+		<box
+			flexShrink={0}
+			flexDirection="column"
+			width="100%"
+			height={lines().length}
+			paddingLeft={1}
+			onMouseUp={() => markPanelActive("lastrequest")}
+		>
 			<For each={lines()}>
 				{(line) => (
 					<text fg={lineFg(line)} wrapMode="none">

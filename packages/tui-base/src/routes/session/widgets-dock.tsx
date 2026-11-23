@@ -86,7 +86,8 @@ import { takeWidth } from "../../util/locale"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
-import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
+import { COMPOSER_COMPACT_TERMINAL_ROWS, panelFocusFrame } from "../../skin/semantic"
+import { activePanel, markPanelActive } from "./pane-focus"
 import {
 	DOCK_COMPACT_MAX_LINES,
 	DOCK_FADE_OUT_MS,
@@ -502,6 +503,18 @@ export const [activityDockTab, setActivityDockTab] = createSignal<ActivityDockTa
  * layer — no divergent switch logic between the two channels. */
 export function selectActivityDockTab(tab: ActivityDockTab): void {
 	setActivityDockTab(tab)
+	// R5: both channels (mouse tab click + alt+1/2 keymap) go through this one
+	// selector, so a tab switch also makes the activity panel the active frame.
+	markPanelActive("activity")
+}
+
+/** R5: any LEFT press on the framed activity box (tab label or body) marks it
+ * active. The `autoFocus:false` app never transfers renderer focus on a click,
+ * so the border weight must be driven by this explicit signal. Non-left
+ * buttons are ignored, matching `onDockTabMouseUp`'s guard. */
+export function onActivityPanelMouseUp(event: MouseEvent): void {
+	if (event.button !== MouseButton.LEFT) return
+	markPanelActive("activity")
 }
 
 /** Unmount/session-switch reset, mirroring `resetMergedDockCursor`. */
@@ -1789,6 +1802,7 @@ export function WidgetsDock(props: {
 	}
 	let dockBox: Renderable | undefined
 	const onDockTitleMouseUp = (event: MouseEvent) => {
+		onActivityPanelMouseUp(event)
 		if (dockBox === undefined) return
 		const tab = dockTabAtPosition(event.x, event.y, dockBox.screenX, dockBox.screenY, tabBar())
 		if (tab !== undefined) onDockTabMouseUp(tab, event)
@@ -1902,6 +1916,10 @@ export function WidgetsDock(props: {
 	const compactHeight = () => 2 + compactLower().length
 
 	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
+	// R5: the framed activity board is no longer "heavy blue for the whole
+	// turn" — its weight/color/title all follow the active-panel signal via
+	// the shared pure mapping. Default active = composer → single + muted.
+	const activityFrame = () => panelFocusFrame({ focused: activePanel() === "activity", theme: theme ?? undefined })
 	const lineView = (line: DockLine) => dockLineNode(line, width(), skinCtx(), fgFor, accentFg)
 	// Merged rows carry structured segments. Each segment resolves its TARGET
 	// color from its semantic accent (think violet / tool cyan) or, when it has
@@ -1970,9 +1988,10 @@ export function WidgetsDock(props: {
 						width="100%"
 						height={frameHeight()}
 						border={["top", "bottom", "left", "right"]}
-						borderStyle="heavy"
-						borderColor={activityFrameBorderColor(theme)}
+						borderStyle={activityFrame().borderStyle}
+						borderColor={activityFrame().borderColor}
 						title={mergedTitleText()}
+						titleColor={activityFrame().titleColor}
 						titleAlignment="left"
 						onMouseScroll={onMergedWheel}
 						onMouseUp={onDockTitleMouseUp}

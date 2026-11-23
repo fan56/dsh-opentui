@@ -23,7 +23,7 @@
  * BORDER ANIMATION IS FORBIDDEN (user directive): these colors switch
  * instantly on state change. Nothing here may interpolate.
  */
-import type { RGBA } from "@opentui/core"
+import { parseColor, type RGBA } from "@opentui/core"
 import type { ComponentTheme } from "../theme/component"
 
 /** No-provider fallbacks (the pre-skin hardcoded hexes). */
@@ -42,9 +42,34 @@ export type SkinBorderColor = RGBA | string
 /** Mutable array: the Box `border` prop takes `BorderSides[]`. */
 export type SkinBorderSides = ("top" | "bottom" | "left" | "right")[]
 
-/** Unfocused surface border: single line + border.base. */
+/** R5 / USER-JUDGMENT J2: how far an unfocused border is lifted from
+ * `border.base` toward `text.muted`. dsh-blue dark's raw `border.base`
+ * (`rgba(0.23,0.25,0.36)`) nearly disappears into the surface as a single
+ * line, so the unfocused frame is carried one tier up. Instant, static color
+ * — no animation (same contract as the focus swap). */
+export const UNFOCUSED_BORDER_MUTED_MIX = 0.5
+
+/** Linear mix of two colors → hex string (RGBA channels are normalized 0-1). */
+function mixSkinColor(a: SkinBorderColor, b: SkinBorderColor, t: number): string {
+	const ca = parseColor(a)
+	const cb = parseColor(b)
+	const k = Math.max(0, Math.min(1, t))
+	const channel = (x: number, y: number) => Math.round((x + (y - x) * k) * 255)
+	return `#${[channel(ca.r, cb.r), channel(ca.g, cb.g), channel(ca.b, cb.b)]
+		.map((value) => value.toString(16).padStart(2, "0"))
+		.join("")}`
+}
+
+/** Unfocused surface border: single line + a VISIBLE muted color. With a
+ * theme the raw `border.base` is lifted toward `text.muted` so a non-focused
+ * panel never vanishes (the `border.base` fallback is already bright enough
+ * and a theme without `text.muted` is returned verbatim). */
 export function unfocusedBorderColor(theme?: ComponentTheme): SkinBorderColor {
-	return theme?.border.base ?? SKIN_FALLBACK.border
+	const base = theme?.border.base
+	if (base === undefined) return SKIN_FALLBACK.border
+	const muted = theme?.text.muted
+	if (muted === undefined) return base
+	return mixSkinColor(base, muted, UNFOCUSED_BORDER_MUTED_MIX)
 }
 
 /** Focused surface border: the theme's INTERACTIVE hue (500 step) — the
@@ -81,6 +106,21 @@ export function surfaceBorder(
 				? focusedBorderColor(state.theme)
 				: unfocusedBorderColor(state.theme),
 	}
+}
+
+/** R5 persistent-panel frame: the ONE mapping every resident framed panel
+ * (activity / composer) reads from the active-panel signal. Focused = heavy +
+ * focused color; unfocused = single + visible muted color. The box title only
+ * swaps COLOR (opentui Box has no titleAttributes and ANSI in a title is
+ * literalized) — it follows the border color, exactly like the composer's
+ * existing title. Dialogs are NOT callers: they stay heavy permanently. */
+export function panelFocusFrame(state: { focused: boolean; theme?: ComponentTheme }): {
+	borderStyle: "single" | "heavy"
+	borderColor: SkinBorderColor
+	titleColor: SkinBorderColor
+} {
+	const face = surfaceBorder({ focused: state.focused, theme: state.theme })
+	return { borderStyle: face.borderStyle, borderColor: face.borderColor, titleColor: face.borderColor }
 }
 
 /** Current list row (the dialog-select legacy semantics, lifted here as the

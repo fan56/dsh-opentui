@@ -72,6 +72,7 @@ import type { SessionSeam } from "../../seams/session"
 import { ComposerController, type ComposerDelivery, type ComposerFlushResult, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
+import { activePanel, composerInteraction } from "./pane-focus"
 import { t } from "../../i18n"
 import { Keymap } from "../../context/keymap"
 import { useCursorStyle } from "../../config"
@@ -285,8 +286,17 @@ export function SessionComposer(props: SessionComposerProps) {
 	// cursor config (semantic.skinCursor). Bare FT harnesses mount without a
 	// ConfigProvider — fall back to the skin default there.
 	const cursor = () => skinCursor(configCursorStyle?.())
-	// Border state: busy recolors to warning (instant), focus sets the weight.
-	const border = () => surfaceBorder({ busy: busy(), focused: visuallyFocused(), theme: theme ?? undefined })
+	// Border state: busy recolors to warning (instant). R5 weight is the
+	// active-panel signal AND the renderer focus: a click on another panel
+	// leaves the textarea focused (autoFocus:false) but drops the composer to a
+	// single muted frame, while an overlay blur still dims it through
+	// `visuallyFocused` (with the existing blur debounce).
+	const border = () =>
+		surfaceBorder({
+			busy: busy(),
+			focused: activePanel() === "composer" && visuallyFocused(),
+			theme: theme ?? undefined,
+		})
 	const busyColor = () => warningColor(theme ?? undefined)
 
 	/**
@@ -551,6 +561,7 @@ export function SessionComposer(props: SessionComposerProps) {
 			titleColor={border().borderColor}
 			backgroundColor={color.background()}
 			paddingLeft={1}
+			onMouseUp={() => composerInteraction()}
 		>
 			{props.slashPalette?.()}
 			<textarea
@@ -570,8 +581,12 @@ export function SessionComposer(props: SessionComposerProps) {
 				cursorStyle={cursor()}
 				keyBindings={keyBindings}
 				onSubmit={submit}
-				onKeyDown={recall}
+				onKeyDown={(event) => {
+					composerInteraction()
+					recall(event)
+				}}
 				onContentChange={() => {
+					composerInteraction()
 					syncHeight()
 					if (textarea && !textarea.isDestroyed) props.slashSync?.(textarea.plainText)
 				}}
