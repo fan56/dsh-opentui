@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-11-23
+
+### Added
+
+- **Ctrl+C now copies the selected text in the input box.** With a selection,
+  `ctrl+c` writes it to the system clipboard instead of clearing the line; with
+  no selection it still clears a non-empty input, and on an empty input it
+  still quits as before. The action is exposed as the `input.copy` config
+  binding and is bound to `ctrl+c` on every platform plus `super+c`/`cmd+c`
+  where the terminal forwards it (no loss where it does not). Paste, selection
+  and the existing readline shortcuts are unchanged, and `ctrl+y` / `cmd+z`
+  are not touched.
+- **The activity panel is tabbed.** A `[1 main]  2 todo` tab bar splits the
+  panel into the existing combined view (main) and a todo-only detail view;
+  switch by clicking the tab text with the mouse or pressing `alt+1` /
+  `alt+2`. The active tab is bracketed, and the tabs work in both the framed
+  and compact layouts while keeping the panel's existing width behavior.
+- **Bare `/permission` opens a preset picker.** With no argument the command
+  opens a dialog (arrow keys + Enter) over the permission presets instead of
+  printing the catalog; the chosen value goes through the same validation,
+  risk confirmation and face-switch path as `/permission <preset>`. When no
+  session is bound yet (before the first message, after `/new`, or after a
+  `/resume` that produced no turn) it now shows a friendly "send a message
+  first" hint instead of `no active session`. The picker marks the configured
+  default preset but never presents it as the live session value — the host
+  stays authoritative and its actual preset is not read back.
+- **Panels show focus with heavy vs. thin borders.** The activity panel
+  (including its tab bar), the composer, the last-request dock and the
+  notices dock draw a heavy, accented border and title when active, and a
+  single, muted-but-visible border when inactive — never invisible. The
+  active panel follows the last interaction (a mouse click on a panel, or
+  typing in the composer) and defaults to the composer; popups are always
+  active and never dimmed. When the activity dock hides, focus returns to the
+  composer.
+- **A subagent brief line sits above the agent list.** It reads
+  `subagent *N <sec>s` and shows only the number of currently running
+  children, never a total. Timing is per batch: it starts at the first
+  child's launch, children started mid-batch join the same clock, and a batch
+  opened after all children finish restarts from zero. When a todo brief is
+  also present the two share one line (`todo 2/4 178s  ·  subagent *3 12s`).
+  Both the framed and compact layouts show it, using ASCII labels only so the
+  text survives modal popups.
+- **`DSH_OPENTUI_KEY_TRACE=<file>` opts in to an input-state trace.** When the
+  variable is set, key and input events are written to that file to help
+  diagnose stray input left in the composer; tracing is off by default and
+  nothing is written otherwise.
+
+### Changed
+
+- **Think rows no longer fade out.** A finished think/tool row used to linger
+  and tween to transparent for a moment after the turn ended; the activity
+  panel now holds the finished rows for about two seconds and then disappears
+  immediately, with no fading middle frame.
+- **Slash-command output is shown in the info color.** The output of a slash
+  command is printed as plain text in the theme's info color instead of being
+  parsed as Markdown, so `#` and `*` in the output appear literally. Tool
+  execution rows, subagent status rows and relayed notices keep their existing
+  colors.
+- **`/settings` host-side values now use the host's live configuration.**
+  Settings take effect immediately without a restart, persist across launcher
+  restarts (including `session-log-deepseek.enabled`), and display the real
+  host values instead of a static default; conflicts are reported the way the
+  host reports them. Permission-scope hints now appear in the picker header
+  and the settings row.
+- **The approval card's `a` and `s` verdicts have explicit meanings.** `a`
+  means "do not ask again for this tool in this session" and `s` means "allow
+  all write operations in this session"; both still require an escalation
+  confirmation. The verdict buttons are shortened to fit on one line with a
+  plain-language legend in the card body and a matching hint in settings.
+- **zh-CN activity tab labels are ASCII** (`main` / `todo`) rather than CJK,
+  because wide characters get dropped behind modal popups.
+
+### Fixed
+
+- **Subagent progress no longer freezes.** The bridge forwards live progress
+  frames (round count and `lastLine`) from running children, folds reasoning
+  deltas into `lastLine`, and clears each child's progress residue when it
+  settles, so the tail/running view updates during the turn instead of staying
+  at the last value until a turn boundary.
+- **Sending a message right after `/new` works again.** `/new` now closes the
+  old session before opening the new one; previously it opened the new session
+  while the old was still open and the next message failed. The seam also
+  recovers from that failed state.
+- **Finished subagent rows no longer linger.** A child's own `turn/end` now
+  settles its row immediately instead of waiting for the parent's journal
+  `subagent-settled` notice, which left completed children shown as running for
+  12–21 seconds and could make the brief count look higher than the real
+  concurrency (the pool limit of 3 was never exceeded). A late parent
+  `agent-end` no longer re-settles or revives a row, re-reading the journal
+  keeps the terminal state authoritative, and a child re-awakened by its parent
+  reappears with a fresh run.
+
 ## [0.26.4] - 2026-11-23
 
 ### Changed
