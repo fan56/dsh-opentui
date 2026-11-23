@@ -1451,6 +1451,28 @@ const CAP_SETTINGS_WIRE_METHODS: Readonly<Record<string, string>> = {
 }
 
 /**
+ * N2 (design 05 §3.4 / Q6) — classify a settings-arm host error into a wire code.
+ *
+ * dsh-settings `SettingsConflictError` carries `code='SETTINGS_CONFLICT'` (and
+ * `name='SettingsConflictError'`) but its MESSAGE deliberately has no "conflict"
+ * word — the old case-insensitive message-regex test misread every real
+ * conflict as INTERNAL, defeating the seam's retry-once contract. Conflict is
+ * decided by the structured code/name only; an ordinary error whose message happens to
+ * contain "conflict" stays INTERNAL. Absence keeps the existing UNSUPPORTED map.
+ */
+export function classifySettingsFrameCode(err: unknown): 'settings/conflict' | 'UNSUPPORTED' | 'INTERNAL' {
+  const candidate = err !== null && typeof err === 'object'
+    ? (err as { code?: unknown; name?: unknown })
+    : undefined
+  const code = typeof candidate?.code === 'string' ? candidate.code : ''
+  const name = typeof candidate?.name === 'string' ? candidate.name : ''
+  if (code === 'SETTINGS_CONFLICT' || name === 'SettingsConflictError') return 'settings/conflict'
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : ''
+  if (message.startsWith('NOT_WIRED') || message.includes('unavailable')) return 'UNSUPPORTED'
+  return 'INTERNAL'
+}
+
+/**
  * S4b (R1) — client-facing wire method names → CapIR W ids for the 10 UNARY
  * account methods, served through the SAME generated capcontract chain as the
  * model/settings frames (table lookup, NOT a hand-copied `req.method ===`
@@ -4692,13 +4714,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           : { value }
         replyOk(req.id, result)
       } catch (err) {
+        // N2: conflict is a structured code/name, never a message regex — see
+        // classifySettingsFrameCode (the host conflict message has no word
+        // "conflict", so the old case-insensitive test mislabelled it INTERNAL).
         const message = err instanceof Error ? err.message : String(err)
-        const code = message.includes('settings/conflict') || /conflict/i.test(message)
-          ? 'settings/conflict'
-          : message.startsWith('NOT_WIRED') || message.includes('unavailable')
-            ? 'UNSUPPORTED'
-            : 'INTERNAL'
-        replyError(req.id, code, message)
+        replyError(req.id, classifySettingsFrameCode(err), message)
       }
       return
     }

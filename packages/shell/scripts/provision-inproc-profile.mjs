@@ -1248,6 +1248,11 @@ function verifyHostCompatibility(bridgeDir) {
   }
 }
 
+// B1 S3 — runtime-field merge. Static import placed AFTER the template block
+// (ESM import declarations are hoisted and may sit at any top-level position)
+// so the ledger-evidenced template lines 566-578 never shift.
+import { mergeRuntimeFields } from './lib/patch-runtime-merge.mjs'
+
 // --- Inproc cordis.patch.yml ownership ------------------------------------
 /** Read the profileRevision stamped by this script, if present. */
 function readPatchRevision(content) {
@@ -1273,9 +1278,19 @@ function provisionPatch() {
   }
 
   const localRevision = readPatchRevision(current)
-  if (current === PATCH_CONTENT && localRevision === PATCH_REVISION) {
+  // B1 S3 (design 05 §4.3a): carry runtime-written volatile scalars into the
+  // fresh template copy instead of discarding them on every launch. The merge
+  // is line-based and allow-listed (see lib/patch-runtime-merge.mjs); every
+  // other byte — including the ledger-evidenced template section — is intact.
+  const merged = mergeRuntimeFields(PATCH_CONTENT, current)
+  const nextContent = merged.content
+  if (current === nextContent && localRevision === PATCH_REVISION) {
     say(7, 'patch', 'already current, skipping')
     return
+  }
+  for (const note of merged.notes) warn(`cordis.patch.yml: ${note}`)
+  if (merged.mergedFields.length > 0) {
+    say(7, 'patch', `preserved runtime fields: ${merged.mergedFields.join(', ')}`)
   }
 
   if (current !== undefined && current.length > 0) {
@@ -1289,7 +1304,7 @@ function provisionPatch() {
 
   // Atomic write: temp file in the same dir, then rename.
   const tmpPath = `${patchPath}.tmp-${process.pid}-${Date.now()}`
-  writeFileSync(tmpPath, PATCH_CONTENT)
+  writeFileSync(tmpPath, nextContent)
   renameSync(tmpPath, patchPath)
   say(7, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
 }
