@@ -39,6 +39,8 @@ const keymapConfig = {
 const ESC_HINT = "Press Esc again to stop"
 const QUIT_HINT = "Press Ctrl+C again to quit" // must be gone from the rendered frame
 const QUIT_TITLE = "Quit dsh-opentui?"
+const QUIT_YES = "Yes" // titlecased from t("turn.quit.confirmLabel") = "yes"
+const QUIT_NO = "No" // titlecased from t("turn.quit.cancelLabel") = "no"
 
 const clipboard: ClipboardService = { read: async () => undefined, write: async () => {} }
 
@@ -217,6 +219,25 @@ describe("turn-cancel ctrl+c quit dialog (real renderer, DialogConfirm stack)", 
 			expect(frame()).toContain(QUIT_TITLE)
 			expect(calls).toEqual([])
 			expect(frame()).not.toContain(QUIT_HINT)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("the quit dialog buttons read Yes / No, not Quit / Cancel", async () => {
+		const calls: string[] = []
+		const { setup, frame } = await mountQuit({ busy: () => false, calls })
+		try {
+			setup.mockInput.pressCtrlC()
+			await settle(setup)
+			expect(frame()).toContain(QUIT_TITLE)
+			expect(frame()).toContain(QUIT_YES)
+			expect(frame()).toContain(QUIT_NO)
+			// The ambiguous Cancel button is gone; the title still says Quit.
+			expect(frame()).not.toContain("Cancel")
+			// Cancel renders before confirm (dialog-confirm.tsx maps ["cancel", "confirm"]),
+			// so a swapped label pair fails here instead of passing on two contains() hits.
+			expect(frame().indexOf(QUIT_NO)).toBeLessThan(frame().indexOf(QUIT_YES))
 		} finally {
 			await setup.dispose()
 		}
