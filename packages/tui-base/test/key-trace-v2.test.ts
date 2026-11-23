@@ -22,6 +22,7 @@ const SOURCES = [
   "draft-restored",
   "failure-refill",
   "history",
+  "history-refill",
   "submit-clear",
   "steer-queue",
   "ctrl-c-clear",
@@ -43,14 +44,17 @@ afterEach(() => {
   }
 })
 
-describe("V1: source vocabulary keeps v1 and adds steer-queue + ctrl-c-clear", () => {
-  test("all nine sources present in the enum, sink writes steer-queue", () => {
+describe("V1: source vocabulary keeps v1, adds steer-queue + ctrl-c-clear + history-refill", () => {
+  test("all ten sources present in the enum, sink writes steer-queue", () => {
     const traceSrc = src(TRACE)
     for (const from of SOURCES) expect(traceSrc).toContain(`"${from}"`)
     expect(traceSrc).toMatch(/B2 followup[\s\S]{0,200}steer-queue/)
     // A2: the shipped v2 clear-on-ctrl+c path has its own explicit source.
     expect(traceSrc).toContain('"ctrl-c-clear"')
-    expect(src("examples/v2-entry.tsx")).toContain('keyTrace?.composerSet("ctrl-c-clear", 0)')
+    const v2 = src("examples/v2-entry.tsx")
+    expect(v2).toContain('keyTrace?.composerSet("ctrl-c-clear", 0)')
+    // C1: /history refill is traced with its own source.
+    expect(v2).toContain('keyTrace?.composerSet("history-refill", text.length)')
 
     const path = tempPath()
     const sink = createTraceSink(path)
@@ -69,7 +73,11 @@ describe("V2: SessionComposer textarea onContentChange → contentChange", () =>
     const block = composer.match(/onContentChange=\{\(\) => \{[\s\S]*?\}\}/)
     expect(block).not.toBeNull()
     expect(block![0]).toContain("const value = textarea.plainText")
-    expect(block![0]).toContain("keyTrace?.contentChange(value.length, value)")
+    expect(block![0]).toContain("keyTrace.contentChange(value.length, value)")
+    // C2: the plainText read is short-circuited when trace is off — the guard
+    // precedes it, so the disabled path does not read textarea.plainText.
+    expect(block![0]).toContain("if (keyTrace !== undefined && textarea && !textarea.isDestroyed)")
+    expect(block![0].indexOf("keyTrace !== undefined")).toBeLessThan(block![0].indexOf("textarea.plainText"))
   })
 
   test("contentChange line is exact and head-capped", () => {
@@ -118,7 +126,7 @@ describe("V3: every programmatic assignment carries its frozen source", () => {
 })
 
 describe("V4: disabled env = zero behaviour change", () => {
-  test("no live sink, no file, and only optional-call trace sites", () => {
+  test("no live sink, no file, and no enabled-path work when trace is off", () => {
     expect(keyTrace).toBeUndefined()
     expect(resolveTraceFromEnv({})).toBeUndefined()
     const dir = mkdtempSync(join(tmpdir(), "b2b-v2-trace-"))
@@ -127,7 +135,10 @@ describe("V4: disabled env = zero behaviour change", () => {
     expect(readdirSync(dir)).toHaveLength(0)
 
     const composer = src(COMPOSER)
-    expect(composer).not.toMatch(/keyTrace\.(?!\?)/) // no bare dereference
-    expect(composer.match(/keyTrace\?\./g)).toHaveLength(2) // helper + contentChange call
+    // C2: the ONLY bare dereference is inside the `keyTrace !== undefined`
+    // guard, so the disabled path never reaches it (and never reads plainText).
+    expect(composer.match(/keyTrace\.(?!\?)/g) ?? []).toHaveLength(1)
+    expect(composer).toContain("if (keyTrace !== undefined && textarea")
+    expect(composer.match(/keyTrace\?\./g)).toHaveLength(1) // helper only
   })
 })

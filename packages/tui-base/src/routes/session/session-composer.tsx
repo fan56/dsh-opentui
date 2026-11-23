@@ -609,9 +609,9 @@ export function SessionComposer(props: SessionComposerProps) {
 				onContentChange={() => {
 					// B2 followup: same user-edit funnel as the v1 Prompt — the
 					// shipped v2 composer's text changes were invisible before.
-					if (textarea && !textarea.isDestroyed) {
+					if (keyTrace !== undefined && textarea && !textarea.isDestroyed) {
 						const value = textarea.plainText
-						keyTrace?.contentChange(value.length, value)
+						keyTrace.contentChange(value.length, value)
 					}
 					composerInteraction()
 					syncHeight()

@@ -1312,6 +1312,9 @@ function V2SessionPageBody(props: {
 					// closes itself; onClosed reclaims focus below).
 					onRefill: (text: string) => {
 						composerRef?.node()?.setText(text)
+						// C1: programmatic refill is a traced composerSet, distinct
+						// from the ↑/↓ history recall (`history`).
+						keyTrace?.composerSet("history-refill", text.length)
 						if (composerRef && !composerRef.focused()) composerRef.focus()
 					},
 					// f fork-at-turn success: resume the forked session through the

@@ -22,12 +22,14 @@ const HEAD_CHARS = 32
  * SessionComposer's busy-submit chooser path — after the user picks steer or
  * queue the buffer is cleared, which has no counterpart in the v1 vocabulary
  * (`submit-clear` covers only the idle send). `ctrl-c-clear` is the shipped v2
- * copy layer's no-selection + text + idle clear-on-ctrl+c path. The other
- * sources stay for v1 Prompt compatibility. */
+ * copy layer's no-selection + text + idle clear-on-ctrl+c path; `history-refill`
+ * is the /history Enter/c refill (distinct from the ↑/↓ `history` recall). The
+ * other sources stay for v1 Prompt compatibility. */
 export type ComposerSetSource =
   | "draft-restored"
   | "failure-refill"
   | "history"
+  | "history-refill"
   | "submit-clear"
   | "steer-queue"
   | "ctrl-c-clear"
