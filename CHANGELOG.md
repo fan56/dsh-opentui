@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not touched.
 - **The activity panel is tabbed.** A `[1 main]  2 todo` tab bar splits the
   panel into the existing combined view (main) and a todo-only detail view;
-  switch by clicking the tab text with the mouse or pressing `alt+1` /
-  `alt+2`. The active tab is bracketed, and the tabs work in both the framed
-  and compact layouts while keeping the panel's existing width behavior.
+  click the tab text with the mouse to switch. The active tab is bracketed,
+  and the tabs work in both the framed and compact layouts while keeping the
+  panel's existing width behavior. (`alt+1` / `alt+2` are bound to the same
+  two actions but were not confirmed in a real terminal for this release, so
+  they are not advertised here yet.)
 - **Bare `/permission` opens a preset picker.** With no argument the command
   opens a dialog (arrow keys + Enter) over the permission presets instead of
   printing the catalog; the chosen value goes through the same validation,
