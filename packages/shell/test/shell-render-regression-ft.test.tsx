@@ -14,13 +14,15 @@
  * Scope guards (pilot verdict §7): no sustained streaming frames (upstream
  * diff-paint corruption), no whole-frame snapshots.
  */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import {
 	createShellRenderFixture,
 	turnEndErrorRecord,
 	userMessageRecord,
 } from "./shell-render-fixture.tsx"
 import type { FakeTurnCallbacks } from "./shell-render-fixture.tsx"
+import { markPanelActive, resetActivePanel } from "../../tui-base/src/routes/session/pane-focus"
+import { setMotionTier } from "../../tui-base/src/skin/motion"
 
 /** Longest painted line in a normalized frame (ASCII content only, so
  * string length == display width; the fixture never feeds wide chars). */
@@ -35,6 +37,13 @@ const WRAP_PROSE =
 const WRAP_TOKENS = ["alpha", "bravo", "charlie"]
 
 describe("shell render regression battery (widths / resize / empty / dock-hide / error)", () => {
+	// R5 漏网：active-panel 边框信号默认 composer（single 边框）；本文件用 heavy
+	// ┏/┗ 定位 activity 框的用例须显式把 activity 设为 active，复位防止跨用例泄漏。
+	afterEach(() => {
+		resetActivePanel()
+		setMotionTier(undefined)
+	})
+
 	// ------------------------------------------------------------------
 	// 1. Width matrix — long-line wrap keeps content, never spills.
 	// ------------------------------------------------------------------
@@ -113,6 +122,15 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 	//    is cleared and the frame's defer window passes.
 	// ------------------------------------------------------------------
 	test("dock activity frame appears during a turn and hides after end + linger", async () => {
+		// The dock's height tween is a known fixture flake under an animation
+		// tier: a stalled shared clock leaves the frame showing only its first
+		// content line (tool OR tree header), so the scene-C tree assertions
+		// time out (pre-existing flake, recorded in .proof/b3-agent-progress/
+		// 07-render-attribution.log:37). Pin the tier off here — the dock's
+		// "terminal correctness beats animation completeness" rule then snaps
+		// to the exact target line count, so the asserted tree rows are stable.
+		// Test-only; production animation is untouched.
+		setMotionTier("off")
 		let releaseTool: (() => void) | undefined
 		const toolParked = new Promise<void>((resolve) => {
 			releaseTool = resolve
@@ -137,6 +155,10 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 			}],
 			turnScript: script,
 		})
+		// R5: this case locates the activity frame by its heavy ┏/┗ borders;
+		// border weight is focus-driven (default composer paints single borders),
+		// so pin activity active before waiting for the bordered frame.
+		markPanelActive("activity")
 		const pending = fixture.send("d5 probe")
 
 		// Positive: the turn is live → the heavy-bordered activity frame is up,

@@ -1,6 +1,8 @@
 /**
  * Opt-in key/input trace for input-state forensics (B2).
  *
+ * 敏感数据面：trace 文件记录用户输入片段，属敏感数据面，勿入日志/工单。
+ *
  * Enable with `DSH_OPENTUI_KEY_TRACE=/path/to/trace.jsonl`. When the variable
  * is unset, `keyTrace` is `undefined` and every instrumentation point is a
  * single optional-call check — no file is opened, no work is done.

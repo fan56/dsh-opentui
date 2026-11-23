@@ -32,8 +32,9 @@
  * Fixture: ./shell-render-fixture.tsx. Scope guards: short-burst frames
  * only — no sustained streaming turn (upstream diff-paint corruption).
  */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { createShellRenderFixture } from "./shell-render-fixture.tsx"
+import { markPanelActive, resetActivePanel } from "../../tui-base/src/routes/session/pane-focus"
 import { setMotionTier } from "../../tui-base/src/skin/motion"
 import { latestTodos, skinDockLineFg, todosTableLines } from "../../tui-base/src/routes/session/widgets-dock"
 import { setDockSpin } from "../../tui-base/src/routes/session/widgets-dock"
@@ -49,6 +50,12 @@ async function sleepUntil(at: number): Promise<void> {
 }
 
 describe("incident regressions: paint continuity (real renderer, canned events)", () => {
+	// R5 漏网：本文件用 heavy ┏/┗/┃ 定位边框用例须显式把 activity 设为 active；
+	// 复位防止信号跨用例泄漏（默认 composer → single 边框）。
+	afterEach(() => {
+		resetActivePanel()
+	})
+
 	// -------------------------------------------------------------------
 	// Incident 2 — fade frames (positive case): a pure-think turn (no tool)
 	// must paint intermediate fade frames, not jump to the terminal state.
@@ -145,6 +152,10 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 				width,
 				stored: [{ kind: "tool", name: "todo_write", args: todoArgs, brief: "Updated todo list", ok: true }],
 			})
+			// R5: heavy ┏/┗/┃ borders are focus-driven (default composer → single).
+			// Re-pin per iteration: fixture dispose unmounts WidgetsDock, whose
+			// onCleanup resets the active panel back to composer.
+			markPanelActive("activity")
 
 			const frame = await fixture.waitForFrame((f) => f.includes("🧩 activity"))
 			const lines = frame.split("\n")
@@ -155,11 +166,15 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 			// row per todo. OLD: `expect(frame).not.toContain("● Todos")`;
 			// NEW: assert the header and all three child rows are painted.
 			expect(frame).toContain("● Todos (1/3)")
-			// The activity TITLE itself never mentions "todo" (the tree is a
-			// content row, not the title) — this guard is unchanged.
+			// The activity TITLE never paints the Todos TREE header (that is a
+			// content row, not the title). R2 merges the tab bar into the title,
+			// so the tab label "2 todo" is legitimately present — narrow the
+			// guard to the tree header "Todos" (plural), mirroring the tui-base
+			// side fix in 9e3bab7. Assertion strength is not weakened: the tree
+			// header must still be absent from the title line.
 			const topIdx = lines.findIndex((line) => line.includes("┏"))
 			expect(topIdx).toBeGreaterThanOrEqual(0)
-			expect(lines[topIdx]!.toLowerCase()).not.toContain("todo")
+			expect(lines[topIdx]!.toLowerCase()).not.toContain("todos")
 
 			// Locate the activity frame by its HEAVY borders (┏ title / ┗ close);
 			// the transcript uses light ┌/└, so ┏/┗ are unambiguous.
