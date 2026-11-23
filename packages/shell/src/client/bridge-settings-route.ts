@@ -124,27 +124,35 @@ export function officialCapsFromDocument(document: SeamSettingsDocument | undefi
 	return caps
 }
 
-function isConflictCode(code: unknown): boolean {
-	return code === "SETTINGS_CONFLICT" || code === "settings/conflict"
+/** Conflict is a STRUCTURED code/name decision, mirroring the bridge's
+ *  `classifySettingsFrameCode` (packages/bridge/src/index.ts) — the two seam
+ *  sides must share ONE判定口径. Never a message regex: the host's real
+ *  `SettingsConflictError` message deliberately has NO "conflict" word, and an
+ *  ordinary error that merely mentions it must NOT be labelled a conflict
+ *  (that was the exact N2 trap the bridge side already fixed). */
+function isConflictError(err: unknown): boolean {
+	const rec = asRecord(err)
+	return rec.code === "SETTINGS_CONFLICT" || rec.code === "settings/conflict" || rec.name === "SettingsConflictError"
 }
 
-/** A thrown host mutate error → seam mutate result (conflict detected by code
- *  first, message as a tolerant fallback — never rewritten into a different
- *  capability error). */
+/** A thrown host mutate error → seam mutate result. The bridge always emits a
+ *  structured code (`BridgeProtocolError.code`), so conflict is decided by that
+ *  code/name only — never by the message text. */
 export function hostMutateError(err: unknown): SeamSettingsMutateResult {
-	const code = asRecord(err).code
 	const message = settingsFailureReason(err)
-	return { ok: false, conflict: isConflictCode(code) || /conflict/i.test(message), error: message }
+	return { ok: false, conflict: isConflictError(err), error: message }
 }
 
 /** Host mutate wire reply → seam mutate result. The bridge arm resolves void
  *  on success (undefined / `{}` reply) and throws on failure, so any non-error
- *  reply counts as success. */
+ *  reply counts as success. A `{ok:false, error:{code,message}}` reply and the
+ *  flat `{ok:false, code, message}` seam shape are both classified by code/name. */
 export function projectHostMutateResult(raw: unknown): SeamSettingsMutateResult {
 	const result = asRecord(raw)
 	if (result.ok === false) {
-		const message = settingsFailureReason(result.error ?? result.message)
-		return { ok: false, conflict: isConflictCode(result.code) || /conflict/i.test(message), error: message }
+		const failure = result.error ?? result.message
+		const message = settingsFailureReason(failure)
+		return { ok: false, conflict: isConflictError(result) || isConflictError(failure), error: message }
 	}
 	return { ok: true }
 }
