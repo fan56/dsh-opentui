@@ -2,6 +2,9 @@
 
 依据 `docs/workflows/w6-release.md` §一.3（NOT RUN/环境不可达项走显式豁免：裁决人+日期+理由，不静默删除、不自判放行）与 README 测试架构总表「环境不可达项走显式豁免」。
 
+**门禁状态 = FAIL（环境），待用户书面豁免。**
+**用户豁免原话与日期：____**（留待用户填写；本文件不代填、不自判放行）
+
 ## 裁决人
 
 用户（2026-11-23，发版指令「那你发版本吧」之后由协调者按基线对照事实呈报；本文件为事实记录，豁免是否被接受以用户知悉为准）。
@@ -34,10 +37,19 @@
 
 ## 证据
 
-`.proof/release-premise/`（`*.log` 按 `.gitignore:4` 不入库）：
+### 当前轮（权威，已入库）
 
-- `e2e-3x-summary.log`、`e2e-run-{1,2,3}/`（本批三次）
-- 基线工作树 `/private/tmp/e2e-baseline`（本机临时目录，不入库；`.proof/baseline-run-1/`）
+- `.proof/final-gate/e2e-run-{1,2,3}/unified.log`（三次 family 明细）与 `.proof/final-gate/e2e-run-{1,2,3}.out`（unified 输出），配套 `.proof/final-gate/00-summary.md:89-106`（步骤 10 汇总）与 `.proof/final-gate/10-exitcodes.txt`。
+- 三次均为同一检出、同一命令 `bash e2e/families/run-all.sh --skip-container`，结果一致：`FAILED_FAMILIES=3`、`E2E UNIFIED: FAIL`、`exit=1`；失败 family 为 `model-domain`、`account-credentials-domain`、`verify-gate`，与上文豁免集合逐项一致，**无新增失败 family**。
+  - `00-summary.md:99-104`：`model-domain` 的 E3/E4、`account-credentials-domain` 的 E5、`verify-gate` 的 env precheck orphan（N=5/6/7）。
+  - 逐轮 unified.log 行 2 记录的 HEAD 字面为 `733e859dbb82008bd3d040ff16f19ed2e371f5eb`（即 00-summary.md 那轮）。任务交接称「最终 HEAD 13411a7 上的三次」，但 `13411a7` 是纯测试前提修复（`test(shell): re-pin activity focus`），`733e859`→`13411a7` 之间除测试外仅 `9fe76f3`（zh-CN tab 标签 ASCII 化），与本豁免涉及的 model/account/verify-gate 三面无关；失败 family 集合与豁免判定两轮一致。此处如实记录原始输出中的 HEAD，不改写日志。
+- 门禁配套（同轮已入库）：`.proof/final-gate/real-client-gate-3/gate-run.out:70-71`（`=== verdict: FAIL=0 ===` / `REAL_CLIENT_GATE_PASS`）、`summary.json`（results 64 / pass 64 / fail 0，命名分支检出）；detached 检出的 `real-client-gate-2/` 为 63/64，唯一 fail 为 `· HEAD` vs `· 13411a7` 的环境产物。
+
+### 历史轮（8127420，仅作对照，不作当前判定依据）
+
+- 原 `.proof/release-premise/e2e-run-{1,2,3}/` 为 `8127420` 那轮的三次运行，未入库；三次 `head: 8127420a267dfbb4bf35b99c77bd4b9e525c9a32`、失败 family 同为三项。该目录已按本轮文档任务从磁盘删除，改为指向上方 final-gate 证据；其结论以事实表与上根因节保留。
+- `e2e-3x-summary.log` 仍记录该轮汇总（历史）。
+- 基线工作树 `/private/tmp/e2e-baseline`（本机临时目录，不入库；`.proof/baseline-run-1/`）。
 
 ## 未达成的字面前提（如实记录）
 

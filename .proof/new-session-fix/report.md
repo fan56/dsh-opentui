@@ -1,7 +1,7 @@
 # Proof Report: new-session-fix / `/new` 后下一条消息绑定新会话
 
-- Gate / 门禁: FAIL
-- Result / 结论: FAIL  （与 Gate 一致；E9 门禁阶梯未达成）
+- Gate / 门禁: PASS（按最终 HEAD `13411a7` 原始证据改判；改判前 FAIL。E9 门禁阶梯的「shell 全量 0 fail」在最终 HEAD 达成）
+- Result / 结论: PASS（与 Gate 一致；改判前 FAIL。E1–E8 保持 PASS 并补最终 HEAD 具名证据，E9 FAIL→PASS）
 - Profile(s): FEATURE + 真机 tmux 数值帧 + 反例基线
 - Change ref: `f08fa9d`（唯一 commit，"fix(seam): /new closes the old session before opening the new one (ADR-0010 OPEN→CLOSING→OPENING)"）。
 - Working tree: 本 agent 只新增本报告，并把未入库的 4 个 `.ans` 帧纳入本批；他人未提交改动未触碰。
@@ -27,9 +27,9 @@
 | E6 | bridge 守卫有测试：`{mode:"new",replace:true}` 有绑定时回 BAD_PARAMS、原绑定不受影响 | PASS | `05-bridge-guard-test.log:4-9`（1 pass / 0 fail / 10 expect） | `05-bridge-guard-test.log:4-9` | 同上 |
 | E7 | 真机 a/b/c/d 帧 + journal 两条消息同属新 id | PASS | `06a:8-15`（A2/A3 输入 + `PONG_A`）、`06b`（`PONG_A`/`PONG_B`）、`06c`（`NSFIX-C`/`PONG_C`）、`06d`（`NSFIX-D-cold`/`PONG_D`）；`07-journal-check.log:10-18`（新 id `54ed8a9f…` 下 A2-after-new=12、A3=3、B2-second=2、PONG_A=3、PONG_B=3，同属一个 id） | `06a/06b/06c/06d-*.ans`,`07-journal-check.log` | 同上；见 §4 的 `error: turn aborted` 偏离 |
 | E8 | 5 个「应保持绿」文件字节不变且全绿 | PASS | `08-keep-green.log:末尾`（205 pass / 0 fail，5 files）；`git show f08fa9d --stat` 只含 4 文件（prereg + bridge 新测试 + seam + seam test），无 keep-green 文件 | `08-keep-green.log`,`git show f08fa9d --stat` | 同上 |
-| E9 | 门禁阶梯：seam 0 fail、bridge 0 fail、**shell 全量 0 fail**、typecheck:entry 成功 | FAIL | seam `04-seam-test.log:170-173` 170 pass/0 fail；bridge `10-bridge-full.log` 381 pass/0 fail；**shell `11-shell-full.log` 1355 pass / 5 skip / 1 fail**（"dock activity frame appears during a turn and hides after end + linger"）；复跑 `11b-render-rerun.log:16-29` 仍 1 fail、52 行原文显示 `[1 main]  2 todo` 活动框仍可见而期望 `┏`；`09-typecheck-entry.log` 只有命令、无 exit 标记 | `04-seam-test.log`,`10-bridge-full.log`,`11-shell-full.log:1640`,`11b-render-rerun.log:16-29`,`09-typecheck-entry.log` | FAIL：预注册 PASS 判定式「全量 0 fail」未达成 |
+| E9 | 门禁阶梯：seam 0 fail、bridge 0 fail、**shell 全量 0 fail**、typecheck:entry 成功 | PASS | 最终 HEAD（13411a7）四阶梯全部由原始输出覆盖：seam `final-2/04-pert-shell-bridge-session-seam.out` 170 pass / 0 fail；bridge `final-2/03-full-bridge.out` 381 pass / 0 fail；**shell `final-2/03-full-shell.out` 1356 pass / 5 skip / 0 fail**（改判前 fail 的 dock-hide 用例现为 `final-2/04-pert-shell-render-regression-ft.out:9` 具名 `(pass)`）；typecheck `final-2/04-typecheck-entry.out` exit 0（`00-summary-2.md:78`）。改判前依据的 `11-shell-full.log` / `11b-render-rerun.log` 1 fail 为 733e859 陈旧结果，根因见 `.proof/dock-frame-regression/00-preregistered-expected.md`（过时测试前提，13411a7 测试侧修复） | `.proof/final-gate/final-2/04-pert-shell-bridge-session-seam.out`, `03-full-bridge.out`, `03-full-shell.out`, `04-pert-shell-render-regression-ft.out:9`, `04-typecheck-entry.out`；`00-summary-2.md:78` | PASS：预注册 PASS 判定式「全量 0 fail + typecheck 成功」在最终 HEAD 达成 |
 
-汇总：PASS 8（E1–E8） / FAIL 1（E9） / NOT RUN 0 / CLAIM 0。
+汇总（改判后）：PASS 9（E1–E9） / FAIL 0 / NOT RUN 0 / CLAIM 0。改判前：PASS 8（E1–E8） / FAIL 1（E9）。E1–E8 在最终 HEAD 由具名 pass 再次确认（E1/E6 见 `final-2/04-pert-bridge-session-open-replace-guard.out:4` 与 `04-pert-shell-bridge-session-seam.out:45-53`）；E9 因 shell 全量 0 fail 改判 PASS。
 
 ## 3. 原始输出指针（存在性 + sha256）
 
@@ -53,13 +53,22 @@
 
 ## 4. 已知偏离与诚实声明
 
-- **E9 失败项（真实 fail，不放水）**：shell 全量 `11-shell-full.log` 与复跑 `11b-render-rerun.log` 均在同一用例 FAIL：「dock activity frame appears during a turn and hides after end + linger」。原文期望 `┏` 可见，实际帧仍含 `[1 main]  2 todo` 活动框。该用例与 b2c-tab-mount 的 dock 改动相关，属跨切片交叉，不能归零；E9 判 FAIL。预注册 PASS 判定式要求全量 0 fail，故整片 Gate FAIL。
-- **E7 帧内有 `error: turn aborted` 两行**：`06a-new-then-message.ans` 在 A2-after-new 之后出现两行 `error: turn aborted`，随后 A3 得到 `PONG_A`。journal 显示 A2/A3/B2 均在新 id（54ed8a9f…）下。判 E7 PASS 仅基于「消息绑定新 id 且最终有回复」；两条 aborted 错误行的时序与是否属于预注册「无 Console 错误面板」的措辞，留给主 agent 真机复验裁决，本报告不自判放行。
+- **E9 失败项——已在最终 HEAD 消解**：shell 全量 `11-shell-full.log` 与复跑 `11b-render-rerun.log` 的同一用例 FAIL（「dock activity frame appears during a turn and hides after end + linger」，733e859 期）经 `.proof/dock-frame-regression/00-preregistered-expected.md` 二分为过时测试前提（36dc77a 的焦点回收属有意行为），由 13411a7 测试侧重钉解决。最终 HEAD `final-2/04-pert-shell-render-regression-ft.out:9` 具名 `(pass)` + `03-full-shell.out` 0 fail 为证，E9 改判 PASS。
+- **E7 帧内 `error: turn aborted` 两行——真机复验已裁决**：主 agent 最终包帧 `frame-pass-1123/07-new-then-message-card.ans` 与 `08-new-second-message.ans`（§2 第 5/6 项）判「`/new` 后 1 秒发消息 → 新会话绑定、**无 Console 报错**、无未确认输入」PASS 与「新会话第二条消息正常」PASS；`results.txt` 记 `newflow: card=1 console_err=0` / `second msg F2=1 console_err=0`。原切片帧的 aborted 行未出现在主 agent 最终包复验中，E7 PASS 维持。
 - `09-typecheck-entry.log` 只有 `$ tsc -p tsconfig.entry.json` 命令、无 `exit=0` 或错误输出；「typecheck:entry 成功」无显式退出码证据，作为缺口登记（不影响 E9 已因 shell fail 判 FAIL 的结论）。
 - 预注册合法边界：`SESSION_LOCKED`/`JOURNAL_CORRUPT` 等非本次分类的 open 失败码不在 E 表内，未声称覆盖。
 - USER-JUDGMENT U1（过渡态 UI）/U2（错误文案）按默认记录、不进门禁。
 - 真机使用自有 tmux server + 自有 scratch HOME，未碰 `uibatchframe` 或用户 `~/.dsh`。
 
-## 5. 主 agent（协调者）真机复验结论（留空占位）
+## 5. 主 agent（协调者）真机复验结论
 
-见 .proof/frame-pass-1123/report.md（主 agent 抓帧验收报告）。
+依据 `.proof/frame-pass-1123/report.md`（最终包 sha `aff2afb9…`，13411a7）：§2 第 5 项「`/new` 后 1 秒发消息 → 新会话绑定、无 Console 报错、无未确认输入」PASS（帧 `07`）、第 6 项「新会话第二条消息正常（不再静默写旧会话）」PASS（帧 `08`），`results.txt` 的 `console_err=0` 直接覆盖 E7 的 Console 报错疑点；§3 D8 记录 `/new` 修复根因与 commit `f08fa9d` 一致。真机复验支持 E7 PASS 与整片改判 PASS，无相反证据。
+
+## 6. 最终 HEAD 复跑（13411a7）
+
+数据来源：`.proof/final-gate/final-2/` 与 `.proof/final-gate/pertests/`。
+
+- 三包全量（`final-2/03-full-*.out`）：shell 1356 pass / 5 skip / 0 fail；tui-base 1639 pass / 1 skip / 0 fail；bridge **381 pass / 0 fail**。exit 均 0。
+- typecheck：`final-2/04-typecheck-entry.out` exit 0（`00-summary-2.md:78`）。
+- 本切片相关明细 pass 计数：`final-2/04-pert-shell-bridge-session-seam.out` = **170 pass / 0 fail**（E1–E5，含 `:45` newSession close→open、`:46-51` 各 close 码、`:52` open 失败自愈、`:53` resume 分支）；`final-2/04-pert-bridge-session-open-replace-guard.out:4` = 1 pass / 0 fail（E6 W3 replace guard）；`pertests/tui-base-commands.out:21,31`（`/new` 清 transcript + 重新加载）pass。
+- 真机帧：`frame-pass-1123/07,08`。

@@ -48,3 +48,27 @@
 2. **motion off 的 elapsed 机制**：scratch home 原配置 `motion:"off"`，`onAnimationTick` 不订阅，`dockSpin` 不逐帧 bump；所有 elapsed 列（含既有 think/tool 与 todo 简报）只在 seam 行变更时重算。实测逐秒帧仍可见简报秒数递增。尝试把 scratch home 改成 `motion:"full"` 后出现**既有**的高度 tween 掉行现象（dock 只画 1 行内容，标题仍显示子代理存在），与本刀改动无关；已恢复原设置并以原设置取证。
 3. **并发上限**：任务票写「本机并发上限 3」，实测模型可同时开 6 个子代理（帧 `verify-030`）。不影响本刀逻辑，如实登记。
 4. **合并行真机未覆盖**：本轮模型未调用 todo 工具，`todo 简报 · subagent 简报` 的合并帧未取得；合并文本由 E-R8-2 单测 exact 覆盖。
+
+## 主 agent 帧证据对齐（frame-pass-1123 帧 14/15/16/25）
+
+执行方 report 的 `expected → observed` 判定（E-R7/E-R8-1…E-R8-5 = PASS、E-REAL = PARTIAL、真机 a/c = PASS、b = PARTIAL、d = NOT RUN）与主 agent 最终包验收报告 `.proof/frame-pass-1123/report.md`（最终包 sha `aff2afb9…`，13411a7）逐项对齐，帧证据如下：
+
+| 主 agent 帧 | 帧内事实 | 对应本 report 判定 | 对齐结论 |
+|---|---|---|---|
+| `14-subagent-brief-b.ans` | `subagent *3 3s`（计时起点） | 真机 a（简报出现、计时递增）PASS；E-R8-1 PASS | 支持，不改判 |
+| `15-subagent-brief-c.ans` | `subagent *3 11s`（与 14 相差 8s，计时递增） | 真机 a PASS；E-R8-3（计时不重置）PASS | 支持，不改判 |
+| `16-after-all-done.ans` | 简报与 agent 行收起、`FIN=1`（`results.txt` `brief-gone-after-done=0 FIN=1`） | 真机 c（全部完成后一起收起）PASS；E-R8-1 的 running=0 空 | 支持，不改判 |
+| `25-compact-24row-subagent-brief.txt` | 紧凑 24 行下 `subagent *3 3s` + 对话区保留 16 行（§2 第 14 项 PASS，底线 6 行） | E-R8-4（紧凑真帧 + 帧高预算）PASS | 支持，不改判 |
+
+关键边界（保持 PARTIAL / NOT RUN，不因上述帧越级改判）：
+
+- 真机 **b 仍 PARTIAL**：帧 `14`/`15`/`16` 证明计时递增与最终收起，但**没有「3→2」单个 agent 错峰 settle 的干净帧**；帧 `15` 是 `*3→*3`（计时涨），非计数递减。主 agent 报告 §4.2、§2 第 11 项亦声明该错峰帧未取到。PARTIAL 维持。
+- 真机 **d 仍 NOT RUN**：无「全部跑完后同 turn 再开新批从 0 起算」的真机帧；帧 `16` 之后是收起，不是新批。锚点 →0 再 0→N 仅由 E-R8-3 单测 `pertests/tui-base-r8-subagent-brief.out:11`（0→N records anchor; N→M keeps it; →0 clears; next 0→N restarts）覆盖，真机对应帧不存在。NOT RUN 维持。
+- E-R8-2（两简报合并/独占）的合并路径本轮仍无真机帧（主 agent §4.3 同述），由单测 `pertests/tui-base-r8-subagent-brief.out:7-10` 覆盖，PASS 判定维持（单测）。
+
+## 最终 HEAD 复跑对齐（13411a7）
+
+- 逐条明细（最终 HEAD `final-2/`）：`04-pert-tui-base-r7-settled-subagents.out:8-10` = **3 pass / 0 fail**（E-R7）；`04-pert-tui-base-r8-subagent-brief.out:19-21` = **14 pass / 0 fail**（E-R8-1…E-R8-5，含 `:11` 锚点语义、`:16-17` 两模式真渲染帧）。733e859 轮同文件 `pertests/tui-base-r7-settled-subagents.out`、`pertests/tui-base-r8-subagent-brief.out` pass 数一致（3 / 14）。
+- 三包全量（`final-2/03-full-*.out`，13411a7）：shell 1356 pass / 5 skip / 0 fail；tui-base 1639 pass / 1 skip / 0 fail；bridge 381 pass / 0 fail。exit 均 0。（本 report §门禁 的 tui-base 数字取自 0690166 捕获轮的 `05-full-tui-base.log`，与最终 HEAD 一致。）
+- typecheck：`final-2/04-typecheck-entry.out` exit 0（`00-summary-2.md:78`）。
+- 门禁总判定不变：本切片 E-R7/E-R8-x/E-GATE PASS、真机 b PARTIAL、d NOT RUN、a/c PASS。

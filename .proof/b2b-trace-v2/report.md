@@ -1,7 +1,7 @@
 # Proof Report: b2b-trace-v2 / composer trace 埋点迁到发行 v2 路由
 
-- Gate / 门禁: FAIL
-- Result / 结论: FAIL  （与 Gate 一致）
+- Gate / 门禁: PASS（按最终 HEAD `13411a7` 原始证据改判；改判前 FAIL）
+- Result / 结论: PASS（与 Gate 一致；改判前 FAIL。V4 结构形态子条款仍 CLAIM，见 §2，不影响门禁——该形态被 0690166 有意取代）
 - Profile(s): FEATURE + 构建产物 grep
 - Change ref: `75999cf`（V1–V5 主体：v2 composer contentChange / 7 个 setText 来源埋点 + `steer-queue` 枚举）；`0690166`（后续 C1/C2：`keyTrace !== undefined` 短路 + `history-refill` 来源，**改变了 V2/V4 冻结的调用形态**）。最终态以 HEAD 为准。
 - Working tree: 本 agent 只新增本报告；他人未提交改动未触碰。
@@ -22,13 +22,13 @@
 
 | id | 预注册 expected（摘要） | Result | 判定依据（原始输出行） | 证据文件 | 最终态归属 |
 |----|------------------------|--------|------------------------|----------|-----------|
-| V1 | 枚举保留 v1 七来源并加 `steer-queue` | PASS | `04-key-trace-v2-unit.log:5`（V1 pass，八来源全在）；`06-bundle-grep.log:14`（产物含 `steer-queue`） | `04-key-trace-v2-unit.log`,`06-bundle-grep.log:14` | 证据在 75999cf；0690166 又加 `history-refill`（现九来源），无新测试日志 |
-| V2 | textarea `onContentChange` 调 `contentChange(value.length, value)`，head ≤32 | PASS | `04-key-trace-v2-unit.log:6-7`（V2 两条 pass）；`06-bundle-grep.log:6,23-27`（调用点在 onContentChange 块、plainText 取值） | `04-key-trace-v2-unit.log:6-7`,`06-bundle-grep.log:6,23-27` | 证据在 75999cf 的 `keyTrace?.` 形态；0690166/C2 改为裸调用 + guard，最终形态无新产物 grep |
-| V3 | 7 个 setText 赋值点各带正确来源，映射与冻结表一致 | PASS | `04-key-trace-v2-unit.log:8-10`（V3 三条 pass：7 点相邻 trace、来源映射、v1 保留） | `04-key-trace-v2-unit.log:8-10` | 0690166 改的是 `v2-entry.tsx` 的 /history 点（C1），本断言域 `session-composer.tsx` 7 点未被改 |
-| V4 | env 关闭零行为；所有埋点 `keyTrace?.` 形式、无裸解引用 | CLAIM | 证据 `04-key-trace-v2-unit.log:11` 是 75999cf 的 `keyTrace?.` 形态；最终 HEAD `0690166` 已改为 `if (keyTrace !== undefined ...) { keyTrace.contentChange(...) }`，冻结的「无裸 `keyTrace.`」字面**被后续 commit 取代且无新原始输出** | `04-key-trace-v2-unit.log:11`（旧形态）；最终形态见 `git show 0690166`，无同目录原始日志 | **最终态以 0690166 / batch-review-followups C2 为准** |
-| V5 | build-client 退出 0；产物含 `keyTrace?.contentChange(`/`composerSet(` 调用点、各来源字面量、source map 含 session-composer.tsx | PASS | `06-build-client.log:1-4`（构建三产物成功）；`06-bundle-grep.log:4-17`（调用点计数=2，基线 0；contentChange 1、composerSet 1、history 3、submit-clear 2、steer-queue 1、other 5；source map 命中 4） | `06-build-client.log`,`06-bundle-grep.log:4-17` | 产物抓取于 13:12（75999cf 期）；0690166 在 14:07 之后未重抓 bundle |
+| V1 | 枚举保留 v1 七来源并加 `steer-queue` | PASS | 最终 HEAD 具名 `(pass)`：`.proof/final-gate/pertests/tui-base-key-trace-v2.out:4`（V1 source vocabulary keeps v1, adds steer-queue + ctrl-c-clear + history-refill > all ten sources present in the enum） | `.proof/final-gate/pertests/tui-base-key-trace-v2.out:4` | 现为十来源（0690166 加 history-refill），具名 pass 覆盖冻结断言的超集 |
+| V2 | textarea `onContentChange` 调 `contentChange(value.length, value)`，head ≤32 | PASS | 最终 HEAD 具名 `(pass)`：`pertests/tui-base-key-trace-v2.out:5`（V2 trace call sits inside the shipped composer's onContentChange）、`:6`（contentChange line is exact and head-capped） | `.proof/final-gate/pertests/tui-base-key-trace-v2.out:5,6` | 调用点行为在最终 HEAD 由具名 pass 覆盖（形态由 0690166/C2 改为 guard 内裸调用，行为不变） |
+| V3 | 7 个 setText 赋值点各带正确来源，映射与冻结表一致 | PASS | 最终 HEAD 具名 `(pass)`：`pertests/tui-base-key-trace-v2.out:7`（V3 all 7 setText sites have an adjacent traceSet label）、`:8`（source labels match the preregistered mapping）、`:9`（v1 Prompt instrumentation preserved） | `.proof/final-gate/pertests/tui-base-key-trace-v2.out:7,8,9` | 本断言域 7 点由具名 pass 一一对上 |
+| V4 | env 关闭零行为；所有埋点 `keyTrace?.` 形式、无裸解引用 | CLAIM | 半覆盖：`.proof/final-gate/pertests/tui-base-key-trace-v2.out:10`（V4 disabled env = zero behaviour change > no live sink, no file, and no enabled-path work when trace is off）覆盖「env 关闭零行为」；但冻结的「所有埋点 `keyTrace?.`、无裸 `keyTrace.`」形态在最终 HEAD 被 0690166/C2 有意改为 guard 内裸调用，**该形态断言不覆盖且按最终态为假**，原始输出无法让整条断言判 PASS | `pertests/tui-base-key-trace-v2.out:10`（仅行为半）；形态半以 0690166 / batch-review-followups C2 为准 | **整条保持 CLAIM**：行为半有具名 pass，形态半被有意取代、证据不覆盖；不凭半覆盖改判 PASS |
+| V5 | build-client 退出 0；产物含 `keyTrace?.contentChange(`/`composerSet(` 调用点、各来源字面量、source map 含 session-composer.tsx | PASS | `06-build-client.log:1-4` + 最终 HEAD 干净 clone `final-2/05-build-client.out` exit 0（`00-summary-2.md:87`、`final-2/05-exitcodes.txt` BUILD_CLIENT_EXIT=0）；调用点/字面量/source map 的 bundle grep 仅抓于 75999cf（`06-bundle-grep.log:4-17`），最终包 `frame-pass-1123/report.md` §1 sha `aff2afb9…` 由 13411a7 构建 | `06-build-client.log`,`06-bundle-grep.log:4-17`,`final-2/05-build-client.out` | build exit 0 在最终 HEAD 有原始证据；bundle 调用点 grep 仍为 75999cf 陈旧证据，但因行为半已由 V1–V3 具名 pass 覆盖，维持原 PASS 判定 |
 
-汇总：PASS 4（V1,V2,V3,V5） / FAIL 0 / NOT RUN 0 / CLAIM 1（V4）。
+汇总（改判后）：PASS 4（V1,V2,V3,V5） / FAIL 0 / NOT RUN 0 / CLAIM 1（V4）。Gate 由 FAIL 改 PASS：改判前 Gate 依据的「全量 1 fail（approval card keys）」由 `pertests/tui-base-approval-card-ft.out:4-7`（4 pass / 0 fail）与 `final-2/03-full-tui-base.out`（0 fail）推翻，typecheck 由 `final-2/04-typecheck-entry.out` exit 0 覆盖。断言层面 V4 维持 CLAIM 不变。
 
 ## 3. 原始输出指针（存在性 + sha256）
 
@@ -52,6 +52,15 @@
 - 预注册 U3（trace 文件人工取证判读）自报 NOT RUN（使用阶段人工取证，代码层不可判），本片未做，符合预注册声明。
 - 预注册明确不埋点的 `v2-entry.tsx:1287` /history onRefill 外部赋值缺口：正是 0690166/C1 后来补的 `history-refill`；V1 枚举由八变九。
 
-## 5. 主 agent（协调者）真机复验结论（留空占位）
+## 5. 主 agent（协调者）真机复验结论
 
-见 .proof/frame-pass-1123/report.md（主 agent 抓帧验收报告）。
+依据 `.proof/frame-pass-1123/report.md`（最终包 sha `aff2afb9…`，13411a7）：§4 第 7 项明确「trace 开关未做端到端真机取证：只验证了埋点进了发行 bundle（`composerSet` / `contentChange` 命中）」。即帧证据**不覆盖** V1–V5 的具体调用点/来源断言，也不覆盖 V4 的形态断言——本切片的 CLAIM/PASS 完全依据 `.proof/final-gate/pertests/tui-base-key-trace-v2.out` 的具名 `(pass)`，与真机复验无冲突。V4 维持 CLAIM 与报告 §5（trace 未做端到端真机取证）一致。
+
+## 6. 最终 HEAD 复跑（13411a7）
+
+数据来源：`.proof/final-gate/final-2/` 与 `.proof/final-gate/pertests/`。
+
+- 三包全量（`final-2/03-full-*.out`）：shell 1356 pass / 5 skip / 0 fail；tui-base **1639 pass / 1 skip / 0 fail**（改判前 Gate 依据的 1 fail「approval card keys」已消除）；bridge 381 pass / 0 fail。exit 均 0。
+- typecheck：`final-2/04-typecheck-entry.out` exit 0（`00-summary-2.md:78`）。
+- 本切片相关明细：`pertests/tui-base-key-trace-v2.out:12-14` = **7 pass / 0 fail**（V1 `:4`、V2 `:5-6`、V3 `:7-9`、V4 行为半 `:10`）；`pertests/tui-base-approval-card-ft.out:9-11` = 4 pass / 0 fail（改判前 Gate fail 项的具名反证）；`final-2/05-build-client.out` exit 0（V5）。
+- 真机：frame-pass-1123 §4.7 记录 trace 未做端到端真机取证（无对应帧）。
