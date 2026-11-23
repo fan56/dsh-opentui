@@ -723,9 +723,10 @@ const BRIDGE_AGENT_START = "tool-workflow/agent-start"
 const BRIDGE_AGENT_END = "tool-workflow/agent-end"
 /** Plain `subagent` calls (the common delegation path) record `subagent/catalog`
  *  on the parent instead of the tool-workflow agent records above. Same childId
- *  + label, but no agent-end terminal — fold as a spawn that stays running
- *  UNTIL the host journals a `user/message` source.kind "subagent-settled" notice
- *  (P1-2). */
+ *  + label. A live `agent.settle` from the child's own turn/end settles the row
+ *  immediately; the parent journal's `user/message` source.kind "subagent-settled"
+ *  notice (P1-2) remains the durable fallback for a missed live frame, and the
+ *  live settle is made sticky against catalog-only re-folds (P1-1). */
 const BRIDGE_SUBAGENT_CATALOG = "subagent/catalog"
 /** source.kind on a `user/message` row that carries an async child's terminal. */
 const BRIDGE_SUBAGENT_SETTLED = "subagent-settled"
@@ -3676,6 +3677,30 @@ export class BridgeSessionSeam implements SessionSeam {
 				? this.#foldWithFrozenSettle(BRIDGE_SUBAGENT_CATALOG, payload, now, true)
 				: this.#foldWithFrozenSettle(BRIDGE_AGENT_START, payload, now, true)
 		} else if (frame.type === "agent.settle") {
+			// P1-1 (revive): a live settle is terminal for THIS run but carries no
+			// journal notice, so a later catalog-only re-fold (turn-end
+			// storedTranscript / sessionInfo incremental / session.list fallback)
+			// would revive the row via the catalog-family revive rule. Register the
+			// PRE-settle run key into the SAME sticky map sweep/C3 use
+			// (#settleChildFromHost step ①) so #syncSubagentMeta re-asserts the
+			// frozen settle after any such re-fold. No new state, #subagentJournalLoaded
+			// guard and the journal terminal authority are untouched; the fold itself
+			// (and therefore the outcome mapping) is unchanged. Only a running child
+			// is registered — an already-settled row has no `startedAt` and would
+			// register a mismatching `id@` key.
+			const childId = typeof payload.childId === "string" ? payload.childId : ""
+			const existing = childId !== "" ? this.#subagentViews.get(childId) : undefined
+			if (existing !== undefined && existing.status === "running") {
+				// A live settle can arrive BEFORE any journal fold has established
+				// #subagentSessionId (turn-external child terminal). Bind it from the
+				// frame here so the first catalog-only replay of THIS SAME session is
+				// not mistaken for a session switch by #foldAgentReplayRows — that
+				// switch clears #sweepSettledRuns and would drop the sticky settle.
+				if (this.#subagentSessionId === undefined && frameSession !== "") {
+					this.#subagentSessionId = frameSession
+				}
+				this.#sweepSettledRuns.set(childId, bridgeChildJournalKey(existing))
+			}
 			changed = this.#foldWithFrozenSettle(BRIDGE_AGENT_END, payload, now, true)
 		}
 		if (changed) {

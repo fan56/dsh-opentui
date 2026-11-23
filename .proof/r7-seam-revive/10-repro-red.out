@@ -1,0 +1,17 @@
+bun test v1.4.4 (38afee6c8)
+
+.proof/r7-seam-revive/repro/r7-replay-revive.repro.test.ts:
+[A] afterLive=completed rounds=0 elapsed=9660 | afterTurnEndReFold=running rounds=0 elapsed=undefined | emitsSinceReFold=["c1:completed","c1:running","c1:running"]
+(pass) A: turn-end full re-fold, notice NOT in journal, session.list empty (best-effort read gives no row) [1.19ms]
+[B] afterLive=completed rounds=0 elapsed=9660 | syncAfterFold=completed rounds=0 elapsed=9660 | afterSweep=completed rounds=0 elapsed=9660 | emits=["c1:completed","c1:running","c1:running","c1:completed","c1:completed"]
+(pass) B: turn-end full re-fold, notice NOT in journal, session.list reports the child running=false [0.14ms]
+[C] afterLive=completed rounds=0 elapsed=9660 | afterTurnEndReFold=completed rounds=0 elapsed=9660 | emits=["c1:completed","c1:completed","c1:completed"]
+(pass) C: turn-end full re-fold, notice PRESENT in journal (control) [0.09ms]
+[E] afterLive=completed rounds=0 elapsed=9660 | afterSessionInfoDrain=running rounds=0 elapsed=undefined
+(pass) E: /session incremental drain (sessionInfo) with a catalog row and no notice — no sweep follows [0.58ms]
+[P] afterSpawn=running rounds=0 elapsed=undefined | afterSettle=completed rounds=0 elapsed=9660 | afterDuplicateAndConflicting=completed rounds=0 elapsed=9660 | emits=["c1:<absent>","c1:running","c1:completed"]
+(pass) P (positive pairing): catalog-keyed live spawn + catalog-keyed live settle (seq 0) pairs and settles; a 2nd identical settle is a no-op [0.06ms]
+
+ 5 pass
+ 0 fail
+Ran 5 tests across 1 file. [77.00ms]

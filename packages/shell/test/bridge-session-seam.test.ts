@@ -3765,3 +3765,103 @@ describe("026 cwd face — session/list.cwd (answer-bearing + honest degrade)", 
 		expect(h.requests.filter((r) => r.method === "session.list")).toHaveLength(0)
 	})
 })
+
+// ---------------------------------------------------------------------------
+// R7 seam P1-1 — a LIVE `agent.settle` (child turn/end) must stay terminal when
+// a later catalog-only journal re-fold carries no `subagent-settled` notice.
+// The live settle registers its PRE-settle run key into #sweepSettledRuns (the
+// same sticky map sweep/C3 use) so #syncSubagentMeta re-asserts the frozen
+// settle after any replay that revives the catalog row.
+// ---------------------------------------------------------------------------
+describe("R7 seam — live settle sticky against catalog-only re-fold (P1-1)", () => {
+	const CREATED = 1_795_424_492_844 // real child turn/start clock from .proof/subagent-settle-lag/20-journal.md
+	const catalogRow = {
+		seq: 21, type: "subagent/catalog",
+		payload: { childId: "c1", childCreatedAt: CREATED, label: "L" },
+	}
+	const spawnFrame: BridgeEventFrame = {
+		type: "agent.spawn",
+		payload: { sessionId: "p", childId: "c1", label: "L", runId: "catalog:c1", seq: 0, childCreatedAt: CREATED },
+	}
+	// EXACT payload shape the bridge emits from a child turn/end (index.ts:3411-3418).
+	const settleFrame: BridgeEventFrame = {
+		type: "agent.settle",
+		payload: { turnId: "t1", sessionId: "p", childId: "c1", runId: "catalog:c1", seq: 0, outcome: "completed" },
+	}
+	const statusOf = (h: ReturnType<typeof makeHarness>, id = "c1") =>
+		h.seam.subagentViews().find((v) => v.id === id)?.status
+	const traceStatuses = (h: ReturnType<typeof makeHarness>) => {
+		const out: string[] = []
+		h.seam.onSubagentViews((views) => {
+			const v = views.find((x) => x.id === "c1")
+			out.push(v === undefined ? "absent" : v.status)
+		})
+		return out
+	}
+
+	test("turn-end storedTranscript: catalog-only re-fold keeps terminal, emits no running", async () => {
+		const h = makeHarness()
+		h.emit(spawnFrame)
+		h.emit(settleFrame)
+		expect(statusOf(h)).toBe("completed")
+
+		const emitted = traceStatuses(h) // immediate replay snapshot = ["completed"]
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [catalogRow], cursor: 40 } })
+		h.replies.set("session.list", { kind: "value", value: { items: [] } })
+		await h.seam.storedTranscript("p") // seam-rows.ts:870 — every parent turn end
+		await Bun.sleep(0)
+		await Bun.sleep(0)
+
+		expect(statusOf(h)).toBe("completed")
+		expect(emitted.filter((s) => s === "running")).toHaveLength(0)
+	})
+
+	test("/session incremental sessionInfo drain: catalog-only fold keeps terminal", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "p" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t1" } })
+		h.seam.resumeSession("p")
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit(spawnFrame)
+		h.emit(settleFrame)
+		expect(statusOf(h)).toBe("completed")
+
+		const emitted = traceStatuses(h)
+		// The child's own journal is empty (no subagent-settled notice); the parent
+		// journal still carries only the catalog row.
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => ({ kind: "value", value: { rows: params?.sessionId === "c1" ? [] : [catalogRow], cursor: 40 } }),
+		})
+		await h.seam.sessionInfo() // commands.ts:1203 -> #computeSessionInfo -> #foldAgentReplayRows
+		await Bun.sleep(0)
+		await Bun.sleep(0)
+
+		expect(statusOf(h)).toBe("completed")
+		expect(emitted.filter((s) => s === "running")).toHaveLength(0)
+		void done
+	})
+
+	test("a genuine NEW run (fresh childCreatedAt) still revives — sticky is run-key scoped", async () => {
+		const h = makeHarness()
+		h.emit(spawnFrame)
+		h.emit(settleFrame)
+		expect(statusOf(h)).toBe("completed")
+
+		const freshCatalog = {
+			seq: 44, type: "subagent/catalog",
+			payload: { childId: "c1", childCreatedAt: CREATED + 60_000, label: "L" },
+		}
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [freshCatalog], cursor: 50 } })
+		h.replies.set("session.list", { kind: "value", value: { items: [] } })
+		await h.seam.storedTranscript("p")
+		await Bun.sleep(0)
+		await Bun.sleep(0)
+
+		// Different run key => #sweepSettledRuns does NOT match => real new run wins.
+		expect(statusOf(h)).toBe("running")
+	})
+})
