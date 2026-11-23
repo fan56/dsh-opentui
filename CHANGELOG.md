@@ -117,10 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`alt+1` / `alt+2` switch the activity tabs (documentation correction).**
   0.27.0's notes said the keys were not confirmed in a real terminal. They
-  work: `alt+2` shows the todo tab and `alt+1` returns to main, on the same
-  global keymap layer as before. The earlier inconclusive check sent literal
-  `\e2` bytes instead of ESC+2, and pressing the keys while an approval dialog
-  owns the keyboard is a designed no-op (the dialog keeps the keys).
+  work: on the installed package, `alt+2` shows the todo tab and `alt+1`
+  returns to main while the activity panel is the active surface. The earlier
+  inconclusive check sent literal `\e2` bytes instead of ESC+2. Two limits
+  remain by design/for now: pressing them while an approval dialog owns the
+  keyboard is a no-op (the dialog keeps the keys), and while the composer is
+  the focused surface the global tab layer is gated off by page ownership, so
+  the mouse click or focusing the panel is still the reliable path.
 
 ## [0.26.4] - 2026-11-23
 
