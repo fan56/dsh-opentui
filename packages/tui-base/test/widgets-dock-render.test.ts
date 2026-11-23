@@ -41,6 +41,7 @@ import {
 	resetTodoBriefClock,
 } from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
+import { markPanelActive, resetActivePanel } from "../src/routes/session/pane-focus"
 import { stringWidth } from "../src/util/string-width"
 import { setMotionTier } from "../src/skin/motion"
 import type { SeamRow } from "../src/routes/session/seam-rows"
@@ -88,6 +89,9 @@ afterEach(() => {
 	resetMergedDockCursor()
 	resetDockHeight()
 	resetTodoBriefClock()
+	// R5: the active-panel signal defaults to composer; reset it so a case
+	// that pinned "activity" for heavy border glyphs cannot leak into the next.
+	resetActivePanel()
 })
 
 describe("WidgetsDock on the real renderer", () => {
@@ -348,6 +352,9 @@ describe("WidgetsDock on the real renderer", () => {
 			useMouse: false,
 		})
 		try {
+			// R5 following: dockContentLines counts heavy ┃ rows, so pin the
+			// activity panel active (default composer paints single borders).
+			markPanelActive("activity")
 			await sleep(300) // frame latch + entrance fades + settle
 			await setup.renderOnce()
 			expect(dockContentLines(setup.captureSpans())).toBe(8)
@@ -396,6 +403,8 @@ describe("WidgetsDock on the real renderer", () => {
 			useMouse: false,
 		})
 		try {
+			// R5 following: heavy ┃ row counting needs activity active.
+			markPanelActive("activity")
 			await sleep(300)
 			await setup.renderOnce()
 			expect(dockContentLines(setup.captureSpans())).toBe(8)
@@ -463,6 +472,8 @@ describe("WidgetsDock on the real renderer", () => {
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
+			// R5 following: heavy ┃ row counting needs activity active.
+			markPanelActive("activity")
 			await sleep(300) // frame latch + entrance fades + height tween
 			await setup.renderOnce()
 			const base = setup.captureSpans()
@@ -537,6 +548,8 @@ describe("WidgetsDock on the real renderer", () => {
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
+			// R5 following: heavy ┃ row counting needs activity active.
+			markPanelActive("activity")
 			await sleep(300)
 			await setup.renderOnce()
 			expect(dockContentLines(setup.captureSpans())).toBe(10)
@@ -567,6 +580,9 @@ describe("WidgetsDock on the real renderer", () => {
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
+			// R5 following: this case asserts the heavy ┏━┓ title glyphs; the
+			// border weight is focus-driven, so pin the activity panel active.
+			markPanelActive("activity")
 			resetMergedDockCursor()
 			await sleep(300) // frame latch + entrance fades
 			await setup.renderOnce()
@@ -661,6 +677,9 @@ describe("WidgetsDock on the real renderer", () => {
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
+			// R5 following: heavy ┏/┃/┗/┛ glyphs below require activity to be
+			// the active panel (default is composer → single border glyphs).
+			markPanelActive("activity")
 			resetMergedDockCursor()
 			await sleep(300) // latch defer + entrance fade + height tween
 			await setup.renderOnce()
@@ -701,6 +720,9 @@ describe("WidgetsDock on the real renderer", () => {
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
+			// R5 following: the frame-presence probe looks for heavy ┏ glyphs,
+			// so the activity panel must be the active one for this case.
+			markPanelActive("activity")
 			await sleep(300) // latch defer + entrance fade
 			await setup.renderOnce()
 			const during = setup.captureSpans()
