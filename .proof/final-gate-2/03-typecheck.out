@@ -1,0 +1,5 @@
+
+> dsh-opentui-monorepo@ typecheck:entry /Users/qingguee/repo/dsh-opentui-wt-uibatch-1123
+> cd packages/tui-base && bun run typecheck:entry
+
+$ tsc -p tsconfig.entry.json

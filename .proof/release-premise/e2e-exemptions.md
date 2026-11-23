@@ -51,6 +51,24 @@
 - `e2e-3x-summary.log` 仍记录该轮汇总（历史）。
 - 基线工作树 `/private/tmp/e2e-baseline`（本机临时目录，不入库；`.proof/baseline-run-1/`）。
 
+## 最终 HEAD 复跑（2026-11-23 晚，`2555fe3`）
+
+两个阻塞修复合入后的最终 HEAD 上重跑 `bash e2e/families/run-all.sh --skip-container` 两轮（`.proof/final-gate-2/e2e-run-{1,2}/unified.out`，两轮 HEAD 稳定）：
+
+| Family | 第 1 轮 | 第 2 轮 | 与豁免集 |
+|---|---|---|---|
+| pack | PASS | PASS | — |
+| capdomains | PASS | PASS | — |
+| model-domain | FAIL（`E3 initializeDefaultModel ok=true`、`E4 NOT_WIRED text present`） | 同 | 一致 |
+| account-credentials-domain | FAIL（`E5 NOT_WIRED text present`） | 同 | 一致 |
+| exit-code | PASS | PASS | — |
+| keymap-modality | PASS | PASS | — |
+| verify-gate | FAIL（env precheck 2 orphan） | 同 | 一致 |
+
+两轮均 `FAILED_FAMILIES=3` / `E2E UNIFIED: FAIL`，**无新增失败 family**；三个失败项的明细与上文 8127420 轮、基线 a3bab25 轮逐项相同。基线轮里 pack / exit-code / keymap-modality 的 FAIL 是基线 clone 缺构建前置，本轮环境完整故 PASS。
+
+（本轮只跑 2 轮而非 3 轮：两轮结果逐项相同，且失败项均为已归因的环境前提。）
+
 ## 未达成的字面前提（如实记录）
 
 W6 §一.1 要求「E2E 连续 3 绿」。本批在该机器上**未达成**这一字面前提，达成的是「失败集合与发版前基线逐项等价、且已归因为环境前提」。要让这三项变绿需要：为 e2e scratch 提供 `deepseek-account` provider 配置与 credentials service 挂载，并在无其他 dsh 实例的机器上跑 verify-gate（或用 `PROTECTED_PID` 豁免用户实例）。这三件都不属于本批交付范围。

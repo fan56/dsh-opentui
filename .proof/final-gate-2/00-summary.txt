@@ -1,0 +1,13 @@
+head rc=0
+bridge rc=0
+tui-base rc=0
+shell rc=0
+typecheck rc=0
+capcontract rc=0
+ledger1 rc=0
+ledger2 rc=0
+generated-status-lines=       0
+real-client-gate rc=0
+e2e-run-1 rc=1
+e2e-run-2 rc=1
+e2e-done

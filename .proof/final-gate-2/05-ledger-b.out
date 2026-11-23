@@ -1,0 +1,3 @@
+ledger: full=257 expected=75 wired_protocol=10 wired_manual=0 iclass=6 diff_empty=true
+5fd0b0d55e987676da99110e53b9799058d94ce0a196a3f9a36ec8dbaafa33f4  ledger/ledger.json
+cc181613d64da21db570186ce86ee9cf108940ae1187ad26bddc40ef47db87b8  ledger/ledger.md
