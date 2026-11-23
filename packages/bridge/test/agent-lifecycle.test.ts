@@ -520,7 +520,7 @@ describe("R7 child turn/end settle lag", () => {
 		expect(catalogSettles(h, "c-revive")).toHaveLength(2)
 	})
 
-	test("E-SET-5: journal/host-list re-read keeps the settled terminal authoritative", async () => {
+	test("E-SET-5: bridge syncFromList re-read keeps the index settled (bridge scope only)", async () => {
 		const h = makeHarness()
 		const { sessionId } = await startTurn(h, 1)
 		spawnCatalogChild(h, sessionId, "c-journal")
@@ -529,9 +529,15 @@ describe("R7 child turn/end settle lag", () => {
 		expect(index.get("c-journal")?.status).toBe("settled")
 
 		// A later authoritative host-list re-read (Stop-driven syncFromList) that
-		// still reports the child not-running must not revive it, and must not
-		// emit a fresh spawn/settle frame for it. #subagentJournalLoaded guard in
-		// the seam is untouched (shell-side, out of this slice's scope).
+		// still reports the child not-running must not revive the BRIDGE's own
+		// index entry, and must not emit a fresh spawn/settle frame for it.
+		// SCOPE: this exercises only the bridge subagent index, NOT the seam's
+		// journal re-read. The catalog-only seam journal re-fold (which used to
+		// revive a live-settled row, P1-1) is locked by
+		// packages/shell/test/bridge-session-seam.test.ts in the
+		// "R7 seam — live settle sticky against catalog-only re-fold (P1-1)"
+		// describe block. The seam-side #subagentJournalLoaded guard is out of
+		// this slice's scope and is untouched.
 		index.syncFromList([
 			{ sessionId: "c-journal", origin: "subagent", parentSessionId: sessionId, running: false, updatedAt: 1795074916000 },
 		])

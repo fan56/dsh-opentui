@@ -95,9 +95,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `subagent-settled` notice, which left completed children shown as running for
   12–21 seconds and could make the brief count look higher than the real
   concurrency (the pool limit of 3 was never exceeded). A late parent
-  `agent-end` no longer re-settles or revives a row, re-reading the journal
-  keeps the terminal state authoritative, and a child re-awakened by its parent
-  reappears with a fresh run.
+  `agent-end` no longer re-settles or revives a row, and a child re-awakened by
+  its parent reappears with a fresh run.
+
+## [0.27.1] - 2026-11-23
+
+### Fixed
+
+- **A live-settled subagent row can no longer be revived by a journal
+  re-read.** 0.27.0 settled a child from its own `turn/end`, but a later
+  re-fold of the parent journal that carried only the `subagent/catalog` row
+  and no settle notice re-ran the catalog revive rule and put the row back to
+  running until the next sweep — visible as a ghost row after `/session`, and
+  momentary at turn end. The live settle now registers the same frozen
+  terminal snapshot the sweep path uses, so a catalog-only re-fold keeps the
+  row terminal. A genuinely new run of the same child still revives: its new
+  `childCreatedAt` produces a different run key, which the snapshot does not
+  match.
+
+### Changed
+
+- **`alt+1` / `alt+2` switch the activity tabs (documentation correction).**
+  0.27.0's notes said the keys were not confirmed in a real terminal. They
+  work: `alt+2` shows the todo tab and `alt+1` returns to main, on the same
+  global keymap layer as before. The earlier inconclusive check sent literal
+  `\e2` bytes instead of ESC+2, and pressing the keys while an approval dialog
+  owns the keyboard is a designed no-op (the dialog keeps the keys).
 
 ## [0.26.4] - 2026-11-23
 

@@ -3282,12 +3282,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // and fires the same event on this firehose (dsh-subagent/src/catalog.ts:143,
     // verified live: type=subagent/catalog keys=version,childId,childCreatedAt,
     // mode,label,name on the bound session). Forward it as the SAME additive
-    // `agent.spawn` frame so the seam projects a running child row. There is no
-    // `agent.settle` for plain children on the firehose: the host journals the
-    // terminal as a `user/message` notice with source.kind "subagent-settled"
-    // instead (P1-2), which the seam folds by senderSessionId. Until that row
-    // is drained the child stays `running` (ADR-0010). An ABORTED parent turn
-    // never journals the settle notice — that ghost is a known residue.
+    // `agent.spawn` frame so the seam projects a running child row. The child's
+    // own `turn/end` ALSO emits an `agent.settle` frame with the SAME catalog
+    // pairing key (catalog:<childId>:0) — see the turn/end branch below — so the
+    // dock settles immediately rather than waiting for the parent journal's
+    // `user/message` source.kind "subagent-settled" notice (P1-2). That durable
+    // notice is still journaled and the seam folds it by senderSessionId as a
+    // fallback for a missed live frame. An ABORTED parent turn never journals
+    // the settle notice — that ghost is a known residue (ADR-0010).
     if (type === 'subagent/catalog') {
       const boundId = binding?.sessionId
       if (sessionId !== boundId) return
@@ -3323,10 +3325,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // needs it as a separate channel; `label` alone cannot distinguish an
       // ad-hoc child titled with a task from a `use_agent` agent name.
       const name = typeof data.name === 'string' && data.name !== '' ? data.name : ''
-      // Stable synthetic pairing key; no agent.settle is emitted for catalog
-      // children, so runId:seq is only the roster map key here. childCreatedAt
-      // is the host's real wall clock (epoch ms) — forward it so the seam can
-      // anchor a live spawn to it too, not just the journal replay path.
+      // Stable synthetic pairing key, reused by the child's own turn/end
+      // `agent.settle` frame (see below) so the seam pairs the live spawn and
+      // settle through the same runId:seq key. childCreatedAt is the host's real
+      // wall clock (epoch ms) — forward it so the seam can anchor a live spawn
+      // to it too, not just the journal replay path.
       emitEvent('agent.spawn', {
         turnId,
         sessionId: boundId,
