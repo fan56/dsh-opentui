@@ -90,7 +90,7 @@ import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS, panelFocusFrame } from "../../skin/semantic"
-import { activePanel, markPanelActive } from "./pane-focus"
+import { activePanel, markPanelActive, resetActivePanel } from "./pane-focus"
 import {
 	DOCK_COMPACT_MAX_LINES,
 	DOCK_FADE_OUT_MS,
@@ -1785,6 +1785,10 @@ export function WidgetsDock(props: {
 		// next session's brief clock, and the tab choice does not leak either.
 		resetTodoBriefClock()
 		resetActivityDockTab()
+		// R5-2 (oldfox): the activity panel's heavy focus frame is cross-session
+		// state (pane-focus.tsx). Without this reset the old session's active
+		// panel leaks into the next session's composer/activity borders.
+		resetActivePanel()
 	})
 	// The box reserves 4 of the W columns for title chrome: ┏ (col 0), the
 	// leading ━ it always draws before a left-aligned title (col 1), the trailing

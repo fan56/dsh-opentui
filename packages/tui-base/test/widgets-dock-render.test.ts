@@ -41,7 +41,7 @@ import {
 	resetTodoBriefClock,
 } from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
-import { markPanelActive, resetActivePanel } from "../src/routes/session/pane-focus"
+import { activePanel, markPanelActive, resetActivePanel } from "../src/routes/session/pane-focus"
 import { stringWidth } from "../src/util/string-width"
 import { setMotionTier } from "../src/skin/motion"
 import type { SeamRow } from "../src/routes/session/seam-rows"
@@ -1050,6 +1050,31 @@ describe("WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down)", () => {
 			expect(h.titleOf()).toContain("2/14")
 		} finally {
 			await h.setup.dispose()
+		}
+	})
+})
+
+describe("R5-2 — dock cleanup resets the cross-session active panel", () => {
+	test("dispose() fires onCleanup: activity-active returns to composer", async () => {
+		const [rows] = createSignal<SeamRow[]>([])
+		const setup = await testRender(() => createComponent(WidgetsDock, { get rows() { return rows() } }), {
+			width: WIDTH,
+			height: HEIGHT,
+			useMouse: false,
+		})
+		try {
+			resetActivePanel()
+			markPanelActive("activity")
+			expect(activePanel()).toBe("activity")
+			// Session switch / unmount: the dock's onCleanup must reset the
+			// active panel so the old session's heavy activity border cannot
+			// leak into the next session.
+			await setup.dispose()
+			expect(activePanel()).toBe("composer")
+		} finally {
+			// dispose() already ran cleanup; the guard keeps afterEach safe even
+			// if an assertion above throws before it.
+			resetActivePanel()
 		}
 	})
 })
