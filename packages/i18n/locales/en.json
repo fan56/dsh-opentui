@@ -50,6 +50,7 @@
   "command.permission.failed": "/permission failed: {reason}",
   "command.permission.set": "permission preset set to {name}",
   "command.permission.pickerTitle": "Select permission preset",
+  "command.permission.defaultMarkerHint": "● marks the default preset; the active preset is host-side",
   "command.permission.noSession": "no session bound yet — send a message first, then switch permission",
   "command.cwd.description": "show the current session working directory (basename)",
   "command.cwd.unavailable": "/cwd unavailable in this session",

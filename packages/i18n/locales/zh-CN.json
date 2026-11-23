@@ -50,6 +50,7 @@
   "command.permission.failed": "/permission 失败：{reason}",
   "command.permission.set": "权限预设已设为 {name}",
   "command.permission.pickerTitle": "选择权限预设",
+  "command.permission.defaultMarkerHint": "● 为默认档；当前档以宿主为准",
   "command.permission.noSession": "尚未绑定会话：先发一条消息再切换权限",
   "command.cwd.description": "显示当前会话的工作目录（目录名）",
   "command.cwd.unavailable": "本会话中 /cwd 不可用",

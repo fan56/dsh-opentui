@@ -1891,13 +1891,28 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.permission.catalogUnavailable"))
 					return
 				}
+				// R4 bug fix: before the first turn, after /new, or after /resume
+				// with no turn yet, no session is bound. The seam would otherwise
+				// throw a bare "no active session". Give an actionable hint instead.
+				// When a resume target IS staged, the seam itself falls back to
+				// stagedSessionId() and switches against that id, so this guard
+				// only fires when both accessors are empty.
+				// R4-3 (oldfox): run this BEFORE the picker so an unbound window
+				// gets the hint directly, without a pick + risk confirm first.
+				const boundId = ctx.seam.currentSessionId()
+				const stagedId = ctx.seam.stagedSessionId?.()
+				if ((boundId === undefined || boundId === "") && (stagedId === undefined || stagedId === "")) {
+					ctx.say(t("command.permission.noSession"))
+					return
+				}
 				let arg = argText.trim()
 				if (arg === "") {
 					// R4: bare /permission opens the generic preset picker instead of
 					// dumping the catalog. currentValue marks the DEFAULT row only —
 					// the real current-session preset is host-authoritative and not
 					// readable here (026 review S1 / :405-423), so never pass it off
-					// as "current". Cancel is a no-op (no switch, no output).
+					// as "current". The header line spells "default, not current"
+					// out to the user. Cancel is a no-op (no switch, no output).
 					const picked = await ctx.pickOne(
 						t("command.permission.pickerTitle"),
 						catalog.options.map((option) => ({
@@ -1905,7 +1920,7 @@ export function coreCommands(): SlashCommand[] {
 							value: option.value,
 							description: option.description,
 						})),
-						undefined,
+						t("command.permission.defaultMarkerHint"),
 						catalog.defaultPreset,
 					)
 					if (picked === undefined) return
@@ -1933,18 +1948,6 @@ export function coreCommands(): SlashCommand[] {
 						ctx.say(t("command.permission.cancelled"))
 						return
 					}
-				}
-				// R4 bug fix: before the first turn, after /new, or after /resume
-				// with no turn yet, no session is bound. The seam would otherwise
-				// throw a bare "no active session". Give an actionable hint instead.
-				// When a resume target IS staged, the seam itself falls back to
-				// stagedSessionId() and switches against that id, so this guard
-				// only fires when both accessors are empty.
-				const boundId = ctx.seam.currentSessionId()
-				const stagedId = ctx.seam.stagedSessionId?.()
-				if ((boundId === undefined || boundId === "") && (stagedId === undefined || stagedId === "")) {
-					ctx.say(t("command.permission.noSession"))
-					return
 				}
 				try {
 					const result = await face.switch(target.value)

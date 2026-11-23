@@ -2171,6 +2171,10 @@ describe("026 /permission — current session preset mirror", () => {
 		])
 		expect(ctx.hooks.picks[0]!.currentValue).toBe("workspace-write")
 		expect(ctx.hooks.picks[0]!.options.some((o) => o.title.includes("current"))).toBe(false)
+		// R4-2 (oldfox): the header line spells out "default, not current" so the
+		// ● marker is not mistaken for the active session preset.
+		expect(ctx.hooks.picks[0]!.headerLine).toContain("default preset")
+		expect(ctx.hooks.picks[0]!.headerLine).toContain("host-side")
 		expect(ctx.lines.join(" ")).not.toContain("available presets:")
 		expect(seam.permissionSwitchCalls).toHaveLength(0)
 	})
@@ -2343,6 +2347,9 @@ describe("R4 /permission preset picker + unbound session", () => {
 		await permCmd().run(ctx, "")
 		expect(ctx.lines.join(" ")).toContain("send a message first")
 		expect(ctx.lines.join(" ")).not.toContain("no active session")
+		// R4-3 (oldfox): the guard runs BEFORE the picker — no modal, no risk
+		// confirm, no switch for an unbound window.
+		expect(ctx.hooks.picks).toHaveLength(0)
 		expect(seam.permissionSwitchCalls).toHaveLength(0)
 	})
 
