@@ -1884,9 +1884,21 @@ export function WidgetsDock(props: {
 		void dockSpin()
 		return activityDockTab() === "main" ? frameLines() : todoTabLines(props.rows, width(), mergedDockCursor())
 	}
+	// motion-full regression (2026-11-23): the height-tween FEED must use the
+	// RAW target line count, never `tabContentLines().length`. For the main tab
+	// `tabContentLines()` is `frameLines()`, which is already clipped to the
+	// tween's painted count. Feeding that back into `setDockHeightTarget` on
+	// every animation tick (the effect re-runs on `dockSpin`, which `frameLines`
+	// reads) re-targets the tween to its own lagging painted value: a 2→8 growth
+	// restarts as 2→2 on the first tick and freezes there forever (on the real
+	// machine: border-only panel for seconds). The raw builders below are the
+	// untouched target — same data, no tween clip — so the tween advances to the
+	// exact terminal count. FlatDock already feeds from its raw `allLines()`.
+	const tabTargetLineCount = (): number =>
+		activityDockTab() === "main" ? mergedFrame().lines.length : todoTabLines(props.rows, width(), mergedDockCursor()).length
 	createEffect(() => {
 		if (!activityFrameLatch.shown()) return
-		setDockHeightTarget(tabContentLines().length)
+		setDockHeightTarget(tabTargetLineCount())
 	})
 	onCleanup(() => {
 		resetDockHeight()

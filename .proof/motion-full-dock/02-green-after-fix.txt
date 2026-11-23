@@ -1,0 +1,10 @@
+bun test v1.4.4 (38afee6c8)
+
+test/widgets-dock-render.test.ts:
+(pass) WidgetsDock on the real renderer > REG motion full: framed content grows to the raw target under the animation clock [804.52ms]
+
+ 1 pass
+ 20 filtered out
+ 0 fail
+ 22 expect() calls
+Ran 1 test across 1 file. [1079.00ms]

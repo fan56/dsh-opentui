@@ -1,0 +1,33 @@
+# RED — 修复前（TEMP-REVERT 状态：effect 仍为 setDockHeightTarget(tabContentLines().length)）
+
+命令（cwd=packages/tui-base）：
+  bun test test/widgets-dock-render.test.ts -t "REG motion full"
+
+说明：helper tabTargetLineCount() 已写好，但 effect 尚未接线，故意保持回归态以取证。
+新测试期望 painted 内容行数长到 raw target=6，实际被反馈环锁死在 1。
+
+--- 原始输出 ---
+bun test v1.4.4 (38afee6c8)
+
+test/widgets-dock-render.test.ts:
+497 | 				counts.push(dockContentLines(setup.captureSpans()))
+498 | 				await sleep(20)
+499 | 			}
+500 | 			// The animation clock is ON (motion full). The painted count must
+501 | 			// reach the exact raw target — the feedback-lock left it at 1.
+502 | 			expect(Math.max(...counts)).toBe(6)
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: 6
+Received: 1
+
+      at <anonymous> (/Users/qingguee/repo/dsh-opentui-wt-uibatch-1123/packages/tui-base/test/widgets-dock-render.test.ts:502:32)
+
+(fail) WidgetsDock on the real renderer > REG motion full: framed content grows to the raw target under the animation clock [831.91ms]
+
+ 0 pass
+ 20 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [1106.00ms]

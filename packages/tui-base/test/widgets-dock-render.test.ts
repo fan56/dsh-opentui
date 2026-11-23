@@ -455,6 +455,59 @@ describe("WidgetsDock on the real renderer", () => {
 		}
 	})
 
+	// motion-full regression (2026-11-23, `.proof/motion-full-dock/`): the
+	// height-tween FEED used to read `tabContentLines().length` (= `frameLines()`,
+	// already clipped to the tween's painted count). Because that getter reads
+	// `dockSpin`, the feed effect re-ran on every animation tick and re-targeted
+	// the tween to its own lagging painted value — a 1→6 growth restarted as
+	// 1→1 on the first tick and froze there (on the real machine: a border-only
+	// panel for seconds). This test drives the REAL renderer clock (motion full,
+	// no manual setDockHeightTarget) and nails that the painted content count
+	// reaches the RAW target. It is red on the pre-fix HEAD, green after the fix.
+	test("REG motion full: framed content grows to the raw target under the animation clock", async () => {
+		setMotionTier("full")
+		const sceneRows = (agents: number): SeamRow[] => {
+			const now = Date.now()
+			return [
+				{ key: "reasoning:mfull", kind: "reasoning", text: "tail", final: true, startedAt: now - 400, elapsedSec: 0.4 },
+				{ key: "tool:live:mfull", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+				todoWriteRows(1),
+				subagentRows(agents),
+			]
+		}
+		// 0 running children → scene B: only the visible think line paints (1).
+		const [rows, setRows] = createSignal<SeamRow[]>(sceneRows(0))
+		const setup = await testRender(() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => true }), {
+			width: WIDTH,
+			height: HEIGHT,
+			useMouse: false,
+		})
+		try {
+			markPanelActive("activity") // heavy ┃ rows are focus-driven
+			await sleep(300) // frame latch + entrance + initial settle
+			await setup.renderOnce()
+			expect(dockContentLines(setup.captureSpans())).toBe(1)
+
+			// Grow the RAW target to 6: scene A pins think(1)+tool(1)+todo brief(1)
+			// above 3 running agent rows.
+			setRows(sceneRows(3))
+			const counts: number[] = []
+			for (let i = 0; i < 20; i++) {
+				await setup.renderOnce()
+				counts.push(dockContentLines(setup.captureSpans()))
+				await sleep(20)
+			}
+			// The animation clock is ON (motion full). The painted count must
+			// reach the exact raw target — the feedback-lock left it at 1.
+			expect(Math.max(...counts)).toBe(6)
+			expect(counts[counts.length - 1]).toBe(6)
+			// No regression mid-tween (the target grows monotonically here).
+			for (let i = 1; i < counts.length; i++) expect(counts[i]!).toBeGreaterThanOrEqual(counts[i - 1]!)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
 	test("scene A: the 10-line frame is gear-inert; scene B: the gear drives think lines", async () => {
 		setMotionTier("full")
 		const now = Date.now()
