@@ -49,6 +49,7 @@ import { useToast } from "../../ui/toast"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { useConfig, useCursorStyle } from "../../config"
+import { copyComposerSelection } from "./copy"
 import { usePromptMove } from "./move"
 import { promptFilesForServer, resolvePastedAttachments } from "./local-attachment"
 import { locationKey, useData } from "../../context/data"
@@ -489,6 +490,15 @@ export function Prompt(props: PromptProps) {
               await pasteInputText(content.data, changed)
             }
           })
+        },
+      },
+      {
+        title: "Copy selection",
+        name: "input.copy",
+        category: "Prompt",
+        palette: undefined,
+        run: () => {
+          copyComposerSelection(input, clipboard, toast.error)
         },
       },
       {
@@ -950,6 +960,21 @@ export function Prompt(props: PromptProps) {
       target: inputTarget,
       enabled: inputTarget() !== undefined && !disabled(),
       bindings: ["prompt.paste"],
+    }
+  })
+
+  // Copy wins over the no-selection clear/exit bindings while text is selected.
+  // The binding keeps keymap's default preventDefault, so the event is consumed
+  // here and never reaches the app-level terminal-selection interceptor.
+  Keymap.createLayer(() => {
+    return {
+      priority: 2,
+      target: inputTarget,
+      enabled: (() => {
+        cursorVersion()
+        return inputTarget() !== undefined && !disabled() && input?.hasSelection() === true
+      })(),
+      bindings: ["input.copy"],
     }
   })
 

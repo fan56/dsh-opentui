@@ -260,6 +260,7 @@ export const Definitions = {
   "input.delete.word.forward": keybind("alt+d,alt+delete,ctrl+delete", "Delete word forward in input"),
   "input.delete.word.backward": keybind("ctrl+w,ctrl+backspace,alt+backspace", "Delete word backward in input"),
   "input.select.all": keybind("super+a", "Select all in input"),
+  "input.copy": keybind("ctrl+c,super+c", "Copy selected input text"),
   "prompt.history.previous": keybind("up", "Previous history item"),
   "prompt.history.next": keybind("down", "Next history item"),
 
