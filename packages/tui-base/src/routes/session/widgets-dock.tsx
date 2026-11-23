@@ -1732,6 +1732,18 @@ export function WidgetsDock(props: {
 		),
 	)
 	onCleanup(activityFrameLatch.dispose)
+	// R5 followup (focus orphan): a tab click / alt+1|2 during a turn marks the
+	// activity panel active (heavy frame). When the dock's visible face withdraws
+	// at turn end (latch false → neither framed nor compact board is mounted),
+	// that stale `activePanel()==="activity"` left the composer thin-framed
+	// until the next keystroke called composerInteraction(). Hand focus back to
+	// the composer as soon as the latch hides. Reads `activePanel` untracked so
+	// we never re-fire on our own write; the R5-2 onCleanup reset below stays
+	// the single TEARDOWN path (this effect is about the visible-face hide,
+	// not unmount) — resetActivePanel() is idempotent so the two cannot clash.
+	createEffect(() => {
+		if (!activityFrameLatch.shown() && untrack(activePanel) === "activity") resetActivePanel()
+	})
 	const frame = () => activityFrameMode(dimensions().height)
 	// Since 2026-11-19 the gear drives ONLY the THINK cap; the TOOL cap is
 	// `dockLineCap` (fixed 3 at normal terminals, graded down on short ones).

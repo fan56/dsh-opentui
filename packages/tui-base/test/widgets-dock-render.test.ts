@@ -42,6 +42,8 @@ import {
 	activityDockTab,
 	setActivityDockTab,
 	resetActivityDockTab,
+	selectActivityDockTab,
+	activityFrameLatch,
 } from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
 import { activePanel, markPanelActive, resetActivePanel } from "../src/routes/session/pane-focus"
@@ -1147,6 +1149,46 @@ describe("R5-2 — dock cleanup resets the cross-session active panel", () => {
 		}
 	})
 
+	test("B2c-3: turn-end latch hide returns a stale activity focus to composer", async () => {
+		// Focus orphan: a tab click / alt+1|2 during a turn marks activity active.
+		// When the turn ends the dock's visible face withdraws (latch false) but
+		// the active panel used to stay "activity", leaving the composer thin-
+		// framed until the next keystroke. The latch-hide effect must hand focus
+		// back while the dock is still MOUNTED (distinct from R5-2's unmount path).
+		const [rows, setRows] = createSignal<SeamRow[]>([])
+		const [turnActive, setTurnActive] = createSignal(true)
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => turnActive() }),
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
+		)
+		try {
+			resetActivePanel()
+			resetActivityDockTab()
+			// Turn in flight with a running tool → latch shown; a tab switch
+			// marks activity active (the normal mid-turn path).
+			setRows([{ key: "tool:live:focus", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: Date.now() }])
+			await sleep(150) // latch defer (60ms) + settle
+			await setup.renderOnce()
+			expect(activityFrameLatch.shown()).toBe(true)
+			selectActivityDockTab("todo")
+			expect(activePanel()).toBe("activity")
+			await setup.renderOnce()
+			expect(activePanel()).toBe("activity") // mid-turn focus is untouched
+
+			// Turn ends: drop the tool row so nothing keeps the latch up. After
+			// the 2s linger + 60ms hide defer, the board withdraws.
+			setTurnActive(false)
+			setRows([])
+			await sleep(DOCK_LINGER_MS + DOCK_FADE_OUT_MS + 200)
+			await setup.renderOnce()
+			expect(activityFrameLatch.shown()).toBe(false)
+			expect(activePanel()).toBe("composer")
+		} finally {
+			resetActivityDockTab()
+			resetActivePanel()
+			await setup.dispose()
+		}
+	})
 })
 
 /** Compare a captured fg to a target string/RGBA accent (channel tolerance). */
