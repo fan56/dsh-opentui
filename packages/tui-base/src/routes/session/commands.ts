@@ -1891,10 +1891,25 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.permission.catalogUnavailable"))
 					return
 				}
-				const arg = argText.trim()
+				let arg = argText.trim()
 				if (arg === "") {
-					for (const line of permissionCatalogLines(catalog)) ctx.say(line)
-					return
+					// R4: bare /permission opens the generic preset picker instead of
+					// dumping the catalog. currentValue marks the DEFAULT row only —
+					// the real current-session preset is host-authoritative and not
+					// readable here (026 review S1 / :405-423), so never pass it off
+					// as "current". Cancel is a no-op (no switch, no output).
+					const picked = await ctx.pickOne(
+						t("command.permission.pickerTitle"),
+						catalog.options.map((option) => ({
+							title: option.name ?? option.value,
+							value: option.value,
+							description: option.description,
+						})),
+						undefined,
+						catalog.defaultPreset,
+					)
+					if (picked === undefined) return
+					arg = picked
 				}
 				const target = catalog.options.find((option) => option.value === arg || option.name === arg)
 				if (target === undefined) {
@@ -1918,6 +1933,18 @@ export function coreCommands(): SlashCommand[] {
 						ctx.say(t("command.permission.cancelled"))
 						return
 					}
+				}
+				// R4 bug fix: before the first turn, after /new, or after /resume
+				// with no turn yet, no session is bound. The seam would otherwise
+				// throw a bare "no active session". Give an actionable hint instead.
+				// When a resume target IS staged, the seam itself falls back to
+				// stagedSessionId() and switches against that id, so this guard
+				// only fires when both accessors are empty.
+				const boundId = ctx.seam.currentSessionId()
+				const stagedId = ctx.seam.stagedSessionId?.()
+				if ((boundId === undefined || boundId === "") && (stagedId === undefined || stagedId === "")) {
+					ctx.say(t("command.permission.noSession"))
+					return
 				}
 				try {
 					const result = await face.switch(target.value)

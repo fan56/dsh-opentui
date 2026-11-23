@@ -1637,7 +1637,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * reply passes through the hand-written SECOND whitelist (E5).
 	 */
 	async #permissionSwitch(preset: string): Promise<SeamPermissionSwitchResult> {
-		const agentId = this.currentSessionId()
+		// R4 bug fix: a session may be staged but not bound yet (after /resume
+		// before the next turn). Fall back to the staged resume id so the host
+		// command targets that session instead of failing "no active session".
+		// currentSessionId() still wins when a session is bound.
+		const agentId = this.currentSessionId() ?? this.stagedSessionId()
 		if (agentId === undefined || agentId === "") {
 			throw new BridgeProtocolError("UNSUPPORTED", "permission.switch: no active session (agentId unavailable)")
 		}

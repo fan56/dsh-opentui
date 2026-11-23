@@ -3526,6 +3526,26 @@ describe("026 permission face — commands/execute", () => {
 		expect(h.requests.filter((r) => r.method === "commands.execute")).toHaveLength(0)
 	})
 
+	test("R4 E5: staged resume session (unbound) is used as agentId, no 'no active session'", async () => {
+		const h = makeHarness()
+		// /resume stages the id but binds it only at the next turn. Before that
+		// turn currentSessionId() is empty; the switch must target the staged id.
+		expect(h.seam.currentSessionId()).toBeUndefined()
+		expect(h.seam.resumeSession("s-resumed")).toBe("ok")
+		expect(h.seam.stagedSessionId()).toBe("s-resumed")
+		h.replies.set("commands.execute", {
+			kind: "value",
+			value: { commandId: "c-2", result: { kind: "success", text: "preset workspace-write" } },
+		})
+		const out = await h.seam.permission!.switch("workspace-write")
+		expect(out).toEqual({ ok: true, matched: true, text: "preset workspace-write" })
+		expect(h.lastRequest("commands.execute")?.params).toEqual({
+			agentId: "s-resumed",
+			line: "/permission workspace-write",
+			submittedAttachments: [],
+		})
+	})
+
 	test("unmatched reply (no result) -> matched=false, no fabricated success", async () => {
 		const h = makeHarness()
 		await bindPerm(h)

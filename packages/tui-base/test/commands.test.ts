@@ -74,6 +74,9 @@ class RecordingSeam {
 	permissionSwitchResult: SeamPermissionSwitchResult = { ok: true, matched: true, text: "preset workspace-write" }
 	/** 026 /permission: presets passed to face.switch(). */
 	permissionSwitchCalls: string[] = []
+	/** R4: seam session-id accessors, overridable for the unbound-window test. */
+	currentSessionIdValue: string | undefined = "s-current"
+	stagedSessionIdValue: string | undefined = undefined
 	/** 026 /cwd: the cwd the seam reports (undefined = no cwd). */
 	cwdValue: string | undefined = "/Users/test/project"
 	/** 026 /cwd: set to make cwd() reject. */
@@ -88,7 +91,8 @@ class RecordingSeam {
 		},
 		searchSessions: async () => [],
 		storedTranscript: async () => [],
-		currentSessionId: () => "s-current",
+		currentSessionId: () => this.currentSessionIdValue,
+		stagedSessionId: () => this.stagedSessionIdValue,
 		permission: {
 			catalog: async () => {
 				if (this.permissionCatalogFailure) throw this.permissionCatalogFailure
@@ -172,6 +176,8 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string | (string | undefined)
 			extras?: PickOneExtras
 			options: { title: string; description?: string }[]
 		}[],
+		/** R4: raw pickOne option rows (keeps `value`, which `picks` drops). */
+		rawPickOptions: [] as { title: string; value: string; description?: string }[][],
 	}
 	const ctx: SlashCommandContext & { hooks: typeof hooks; lines: string[] } = {
 		seam: seam.seam,
@@ -192,6 +198,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string | (string | undefined)
 				extras,
 				options: options.map((o) => ({ title: o.title, description: o.description })),
 			})
+			hooks.rawPickOptions.push(options)
 			// An array answer is a per-stage queue (the /model two-stage flow:
 			// stage 1's model pick, then stage 2's effort pick or esc).
 			if (Array.isArray(pickAnswer)) return pickAnswer.shift()
@@ -2149,15 +2156,22 @@ describe("026 /permission — current session preset mirror", () => {
 		expect(lines.some((l) => l.startsWith("current preset"))).toBe(false)
 	})
 
-	test("bare shows catalog presets + honest default/current wording (E6 answer-bearing)", async () => {
+	test("bare opens preset picker with all catalog rows + default-only marker (R4 E1)", async () => {
 		const seam = new RecordingSeam()
 		const ctx = makeCtx(seam)
 		await permCmd().run(ctx, "")
-		expect(ctx.lines[0]).toBe("available presets: workspace-write, danger-full-access")
-		expect(ctx.lines.some((l) => l.includes("sandboxed"))).toBe(true)
-		expect(ctx.lines.some((l) => l.startsWith("default preset:"))).toBe(true)
-		expect(ctx.lines.some((l) => l.includes("host-authoritative"))).toBe(true)
-		expect(ctx.lines.some((l) => l.startsWith("current preset"))).toBe(false)
+		// R4: bare no longer dumps catalog lines; the same catalog is now the
+		// picker's option set (semantic intent of the old E6 assertion preserved:
+		// all presets + descriptions visible, only the default marked, no lie
+		// about a readable current preset).
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(ctx.hooks.rawPickOptions[0]).toEqual([
+			{ title: "Workspace write", value: "workspace-write", description: "sandboxed" },
+			{ title: "Full access", value: "danger-full-access", description: "unrestricted" },
+		])
+		expect(ctx.hooks.picks[0]!.currentValue).toBe("workspace-write")
+		expect(ctx.hooks.picks[0]!.options.some((o) => o.title.includes("current"))).toBe(false)
+		expect(ctx.lines.join(" ")).not.toContain("available presets:")
 		expect(seam.permissionSwitchCalls).toHaveLength(0)
 	})
 
@@ -2270,6 +2284,76 @@ describe("026 /permission — current session preset mirror", () => {
 		expect(ctx.hooks.picks).toHaveLength(1)
 		expect(seam.permissionSwitchCalls).toHaveLength(0)
 		expect(ctx.lines.join(" ")).not.toContain("already")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// R4 — bare /permission picker + unbound-session guard
+// ---------------------------------------------------------------------------
+describe("R4 /permission preset picker + unbound session", () => {
+	const permCmd = () => coreCommands().find((c) => c.name === "/permission")!
+
+	test("R4 E2: picked value flows through risk confirm into face.switch", async () => {
+		const seam = new RecordingSeam()
+		// Queue: stage-1 picker -> danger-full-access; stage-2 risk confirm -> ack.
+		const ctx = makeCtx(seam, ["danger-full-access", "ack"])
+		await permCmd().run(ctx, "")
+		expect(ctx.hooks.picks).toHaveLength(2)
+		expect(ctx.hooks.picks[1]!.title).toContain("danger-full-access")
+		expect(seam.permissionSwitchCalls).toEqual(["danger-full-access"])
+		expect(ctx.lines.join(" ")).toContain("permission preset set to danger-full-access")
+	})
+
+	test("R4 E3: cancel the picker is a no-op (no switch, no failure text)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam) // pickOne resolves undefined
+		await permCmd().run(ctx, "")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+		expect(ctx.lines.join(" ")).not.toContain("failed")
+		expect(ctx.lines.join(" ")).not.toContain("set to")
+	})
+
+	test("R4 E4: bare picker + risk confirm preserved (cancel no switch, ack switches)", async () => {
+		const cancelSeam = new RecordingSeam()
+		const cancelCtx = makeCtx(cancelSeam, ["danger-full-access", "cancel"])
+		await permCmd().run(cancelCtx, "")
+		expect(cancelCtx.hooks.picks).toHaveLength(2)
+		expect(cancelSeam.permissionSwitchCalls).toHaveLength(0)
+		expect(cancelCtx.lines.join(" ")).toContain("unchanged")
+
+		const ackSeam = new RecordingSeam()
+		const ackCtx = makeCtx(ackSeam, ["danger-full-access", "ack"])
+		await permCmd().run(ackCtx, "")
+		expect(ackCtx.hooks.picks).toHaveLength(2)
+		expect(ackSeam.permissionSwitchCalls).toEqual(["danger-full-access"])
+
+		const safeSeam = new RecordingSeam()
+		const safeCtx = makeCtx(safeSeam, "workspace-write")
+		await permCmd().run(safeCtx, "")
+		expect(safeCtx.hooks.picks).toHaveLength(1)
+		expect(safeSeam.permissionSwitchCalls).toEqual(["workspace-write"])
+	})
+
+	test("R4 E5: no session bound -> actionable hint, no bare error, no switch", async () => {
+		const seam = new RecordingSeam()
+		seam.currentSessionIdValue = undefined
+		seam.stagedSessionIdValue = undefined
+		const ctx = makeCtx(seam, "workspace-write")
+		await permCmd().run(ctx, "")
+		expect(ctx.lines.join(" ")).toContain("send a message first")
+		expect(ctx.lines.join(" ")).not.toContain("no active session")
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+	})
+
+	test("R4 E5: staged resume target passes the command guard and switches", async () => {
+		const seam = new RecordingSeam()
+		seam.currentSessionIdValue = undefined
+		seam.stagedSessionIdValue = "s-resumed"
+		const ctx = makeCtx(seam, "workspace-write")
+		await permCmd().run(ctx, "")
+		expect(seam.permissionSwitchCalls).toEqual(["workspace-write"])
+		expect(ctx.lines.join(" ")).not.toContain("send a message first")
 	})
 })
 
