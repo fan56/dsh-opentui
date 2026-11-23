@@ -1,0 +1,33 @@
+DSH_HOME=/private/tmp/uibatch-b2c-home /private/tmp/uibatch-b2c-global/bin/dsh-opentui
+
+/private/tmp/uibatch-frame-ws ⌚ 13:08:25
+$ DSH_HOME=/private/tmp/uibatch-b2c-home /private/tmp/uibatch-b2c-global/bin/dsh-opentui
+provision-opentui-profile: dsh home /private/tmp/uibatch-b2c-home
+provision-opentui-profile: [1/5] profile        reusing /private/tmp/uibatch-b2c-home/profiles/opentui
+provision-opentui-profile: [2/5] model route    zai-coding-cn/glm-5.3-flash (already pinned); tool-web enabled, web sear
+ch pinned, mcp context7 configured
+provision-opentui-profile: [3/5] plugins        already satisfied (12/12)
+│                                                                                                                      │
+│┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐│
+││  ❯ 用 bash 执行 sleep 8 然后回复 TABS                                                                              ││
+│└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+   1 主面板  2 待办
+│ 输入消息（enter 发送，alt+enter 换行）                                                                               │
+  👤 用 bash 执行 sleep 8 然后回复 TABS
+  dsh(Standard + Append)  🌐 opencode-go  🤖 deepseek-v4.1-flash ● high  🔧 0 tools                         13:09:01
+ 🐳░░░░░░░░░░░░░ ⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 打断
