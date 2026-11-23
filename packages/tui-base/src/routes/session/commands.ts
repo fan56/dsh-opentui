@@ -1911,10 +1911,16 @@ export function coreCommands(): SlashCommand[] {
 					// dumping the catalog. currentValue marks the DEFAULT row only —
 					// the real current-session preset is host-authoritative and not
 					// readable here (026 review S1 / :405-423), so never pass it off
-					// as "current". The header line spells "default, not current"
-					// out to the user. Cancel is a no-op (no switch, no output).
+					// as "current". The default-marker hint spells "default, not
+					// current" out to the user. Cancel is a no-op.
+					// 2a: `headerLine` (3rd arg) is DROPPED by the real host's
+					// pickOne (examples/v2-entry.tsx never forwards it to
+					// DialogSelect), so the hint never reached the frame. Mirror
+					// it into the title — a slot pickOne DOES forward and the
+					// DialogHeader always paints — while keeping headerLine for
+					// /resume parity and the existing headerLine assertions.
 					const picked = await ctx.pickOne(
-						t("command.permission.pickerTitle"),
+						`${t("command.permission.pickerTitle")} · ${t("command.permission.defaultMarkerHint")}`,
 						catalog.options.map((option) => ({
 							title: option.name ?? option.value,
 							value: option.value,

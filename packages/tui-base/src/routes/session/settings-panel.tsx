@@ -407,9 +407,18 @@ export function buildHostItems(
 			// defaultPreset is a host DEFAULT: it only seeds NEW sessions. The
 			// current session switches via /permission, so say so on the row —
 			// otherwise the host-zone "live" wording misleads (B4).
+			// 2b: B4 appended the scope only to `source`, but the production
+			// settings modal (settings-modal.tsx fromItem) copies `note` and
+			// DROPS `source`, so the hint never reached any rendered row.
+			// Mirror it into `note` too (kept in `source` for settingsLines and
+			// the existing source assertions); the modal paints `note` in the
+			// focused bottom bar and in the editor layer.
 			const scope = t("settings.note.permissionPresetScope")
 			if (item.note !== undefined) item.note = `${item.note} · ${scope}`
-			else item.source = item.source === "" ? scope : `${item.source} · ${scope}`
+			else {
+				item.source = item.source === "" ? scope : `${item.source} · ${scope}`
+				item.note = scope
+			}
 		}
 		// B1 S6 — in the host-wired mode `subagent.maxDepth` is pinned by the
 		// inproc profile (R2-3 safety contract); keep it read-only with a reason.

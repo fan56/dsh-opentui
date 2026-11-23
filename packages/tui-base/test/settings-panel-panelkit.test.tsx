@@ -1003,6 +1003,27 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
+	/**
+	 * 2b 真机缺陷：permission.defaultPreset 的「仅新会话」提示在 Host 分区
+	 * 行聚焦与编辑态都不可见。根因是 B4 把提示只挂到 item.source，而生产 modal
+	 * 的 fromItem() 只复制 item.note、丢弃 source。修复后提示随 row.note 渲染：
+	 * 聚焦时底栏一行 + 编辑器顶部一行，两处都必须在真实渲染帧里出现。
+	 */
+	test("permission.defaultPreset scope hint is painted on focus and in the editor (2b)", async () => {
+		const { setup, frame } = await mount({ preselect: "permission.defaultPreset" })
+		try {
+			expect(frame()).toContain("permission.defaultPreset")
+			// Focused bottom bar shows currentRow().note.
+			expect(frame()).toContain("new sessions only")
+			// Editor layer shows row.note too (same note, not lost on Enter).
+			setup.mockInput.pressEnter()
+			await settle(setup)
+			expect(frame()).toContain("new sessions only")
+		} finally {
+			await setup.dispose()
+		}
+	})
+
 	test("opentui's 18 rows are all reachable with ↓ (P0-3, row 18 included)", async () => {
 		// 24 terminal rows => an 18-row fixed frame => page size 6, so the
 		// 18-row section pages.

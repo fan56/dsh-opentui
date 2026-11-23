@@ -217,7 +217,11 @@ describe("schema extraction", () => {
 		expect(preset.editable).toBe(true)
 		expect(preset.source).toContain("permissionPresets/catalog")
 		expect(preset.source).toContain("new sessions only") // B4 scope hint
-		expect(preset.note).toBeUndefined()
+		// 2b: B4 left `note` undefined here and only wrote `source`. The
+		// production settings modal carries `note` (fromItem drops `source`),
+		// so the scope hint must ALSO live in `note` to be rendered at all.
+		// Old assertion `expect(preset.note).toBeUndefined()` encoded the bug.
+		expect(preset.note).toContain("new sessions only")
 	})
 
 	test("catalog defaultPreset is the displayed effective value when the field is unset", () => {
