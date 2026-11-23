@@ -51,6 +51,10 @@
 - `e2e-3x-summary.log` 仍记录该轮汇总（历史）。
 - 基线工作树 `/private/tmp/e2e-baseline`（本机临时目录，不入库；`.proof/baseline-run-1/`）。
 
+## 0.27.1 复跑（2026-11-23 深夜，`fix/alt-dock-tabs-1123`）
+
+同命令两轮（`.proof/release-gate-0271/e2e-run-{1,2}.out`）：`FAILED_FAMILIES=3` 两轮一致，仍为 model-domain、account-credentials-domain、verify-gate；pack / capdomains / exit-code / keymap-modality PASS。失败明细与上表逐项相同，**无新增**。豁免沿用用户 2026-11-23 的书面决定。
+
 ## 最终 HEAD 复跑（2026-11-23 晚，`2555fe3`）
 
 两个阻塞修复合入后的最终 HEAD 上重跑 `bash e2e/families/run-all.sh --skip-container` 两轮（`.proof/final-gate-2/e2e-run-{1,2}/unified.out`，两轮 HEAD 稳定）：

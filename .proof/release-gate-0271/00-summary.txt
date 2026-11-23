@@ -1,0 +1,12 @@
+bridge rc=0
+tui-base rc=0
+shell rc=0
+typecheck rc=0
+capcontract rc=0
+generated-lines=       0
+real-client-gate rc=0
+secrets-selftest rc=0
+secrets-proof rc=0
+e2e-1 rc=1
+e2e-2 rc=1
+gate-done
