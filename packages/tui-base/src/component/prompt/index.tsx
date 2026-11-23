@@ -978,14 +978,16 @@ export function Prompt(props: PromptProps) {
   // with none it passes through to this layer. Copy then wins over the
   // no-selection clear/exit bindings while the composer has a selection.
   //
-  // R1b (oldfox P3): `enabled` must NOT fold in `input.hasSelection()`. That
-  // method is not a Solid signal — mixing it with `cursorVersion()` made the
-  // layer definition evaluate to a plain boolean, which keymap compiles to
-  // `ctx.activeWhen(() => false)` (permanently inactive) whenever the boolean
-  // was false at compile time. Keep `enabled` purely reactive (target/focus)
-  // and do the live selection check in `input.copy`'s `run` instead:
-  // copyComposerSelection returns false with no selection, so the key falls
-  // back to prompt.clear / empty-input exit unchanged (R1 P2 fallback).
+  // R1b (oldfox P3, comment corrected on oldfox R1 followup): `enabled` stays
+  // purely reactive (target/focus) and the live selection check lives in
+  // `input.copy`'s `run` — copyComposerSelection returns false with no
+  // selection, so the key falls back to prompt.clear / empty-input exit
+  // unchanged (R1 P2 fallback). This is a SIMPLIFICATION, not a proven bug
+  // fix: the earlier claim that folding `input.hasSelection()` into `enabled`
+  // compiled via `ctx.activeWhen(() => false)` into a permanently-dead layer
+  // does not hold — a plain false only feeds activeWhen for a SINGLE
+  // registration, and the old IIFE read `cursorVersion()`, so the layer was
+  // re-registered as the cursor moved. No defect was demonstrated.
   Keymap.createLayer(() => {
     return {
       priority: 2,

@@ -92,7 +92,13 @@ describe("keymap: ctrl+g dispatches the /subagents command", () => {
 		expect(source).toMatch(/run: \(\) => slash\.interceptSubmit\("\/subagents"\)/)
 		// The command host owns the mount bridge; the key layer must not couple
 		// to the viewer's internals (the other agent owns that file).
-		const layer = source.slice(source.indexOf("Keymap.createLayer"), source.indexOf("const overlayHost"))
+		// Anchor by the LAYER ID, not by "first createLayer → const overlayHost":
+		// other layers (the copy layer) may register anywhere — keymap sorts by
+		// priority, so registration position has no functional meaning.
+		const idAnchor = source.indexOf('id: "session.subagents"')
+		expect(idAnchor).toBeGreaterThan(-1)
+		const layerStart = source.lastIndexOf("Keymap.createLayer", idAnchor)
+		const layer = source.slice(layerStart, idAnchor + 400)
 		expect(layer).not.toContain("openSubagentsViewer")
 		// No running-agent gate: the hint advertises the panel unconditionally.
 		expect(layer).not.toMatch(/subagentViews/)

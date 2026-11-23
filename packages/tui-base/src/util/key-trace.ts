@@ -21,14 +21,16 @@ const HEAD_CHARS = 32
  * B2 followup (v2 composer port): `steer-queue` is added for the shipped
  * SessionComposer's busy-submit chooser path — after the user picks steer or
  * queue the buffer is cleared, which has no counterpart in the v1 vocabulary
- * (`submit-clear` covers only the idle send). The other sources stay for v1
- * Prompt compatibility. */
+ * (`submit-clear` covers only the idle send). `ctrl-c-clear` is the shipped v2
+ * copy layer's no-selection + text + idle clear-on-ctrl+c path. The other
+ * sources stay for v1 Prompt compatibility. */
 export type ComposerSetSource =
   | "draft-restored"
   | "failure-refill"
   | "history"
   | "submit-clear"
   | "steer-queue"
+  | "ctrl-c-clear"
   | "paste"
   | "reset"
   | "other"

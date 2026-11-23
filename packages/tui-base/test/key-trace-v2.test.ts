@@ -24,6 +24,7 @@ const SOURCES = [
   "history",
   "submit-clear",
   "steer-queue",
+  "ctrl-c-clear",
   "paste",
   "reset",
   "other",
@@ -42,11 +43,14 @@ afterEach(() => {
   }
 })
 
-describe("V1: source vocabulary keeps v1 and adds steer-queue", () => {
-  test("all eight sources present in the enum, sink writes steer-queue", () => {
+describe("V1: source vocabulary keeps v1 and adds steer-queue + ctrl-c-clear", () => {
+  test("all nine sources present in the enum, sink writes steer-queue", () => {
     const traceSrc = src(TRACE)
     for (const from of SOURCES) expect(traceSrc).toContain(`"${from}"`)
     expect(traceSrc).toMatch(/B2 followup[\s\S]{0,200}steer-queue/)
+    // A2: the shipped v2 clear-on-ctrl+c path has its own explicit source.
+    expect(traceSrc).toContain('"ctrl-c-clear"')
+    expect(src("examples/v2-entry.tsx")).toContain('keyTrace?.composerSet("ctrl-c-clear", 0)')
 
     const path = tempPath()
     const sink = createTraceSink(path)

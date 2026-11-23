@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { registerDefaultKeys, registerEnabledFields } from "@opentui/keymap/addons"
+import { createBindingLookup } from "@opentui/keymap/extras"
 import { createTestKeymap } from "@opentui/keymap/testing"
+import { createComponent, createElement, testRender } from "@opentui/solid"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { copyComposerSelection } from "../src/component/prompt/copy"
 import { TuiKeybind } from "../src/config/keybind"
+import { Keymap } from "../src/context/keymap"
 
 function mockClipboard() {
   const writes: string[] = []
@@ -223,5 +226,158 @@ describe("R1b copy consumes selection (real keymap engine)", () => {
     const idx = v2.indexOf("Copy selected input text")
     expect(idx).toBeGreaterThan(-1)
     expect(v2.slice(idx - 400, idx)).toContain("priority: 2")
+  })
+
+  test("A1/A2 (shipped view): named input.copy, no inline bind, clear+trace, id-anchored test", () => {
+    const v2 = src("examples/v2-entry.tsx")
+    const layer = v2.slice(v2.indexOf("Copy selected input text") - 400, v2.indexOf("Copy selected input text") + 1600)
+    // A1: config id + no inline bind so keymap resolves default ctrl+c,super+c
+    // and honours remaps.
+    expect(layer).toContain('id: "input.copy"')
+    expect(layer).not.toMatch(/bind:\s*"ctrl\+c"/)
+    // A2: clear-on-ctrl+c with text, idle only, traced with an explicit source.
+    expect(layer).toContain('!busy()')
+    expect(layer).toContain('node.plainText !== ""')
+    expect(layer).toContain('node.setText("")')
+    expect(layer).toContain('keyTrace?.composerSet("ctrl-c-clear", 0)')
+    // A4: the subagents-hotkey slice is anchored by layer id, not by
+    // "first createLayer → const overlayHost".
+    const hotkey = src("test/subagents-hotkey.test.tsx")
+    expect(hotkey).not.toContain('source.indexOf("Keymap.createLayer"), source.indexOf("const overlayHost")')
+    expect(hotkey).toContain('id: "session.subagents"')
+  })
+
+  test("A3 (v1 comment): no 'permanently inactive' claim; simplification, not proven defect", () => {
+    const prompt = src("src/component/prompt/index.tsx")
+    expect(prompt).not.toContain("permanently inactive")
+    expect(prompt).toContain("SIMPLIFICATION, not a proven bug")
+    expect(prompt).toContain("cursorVersion()")
+  })
+})
+
+/** A2 behaviour table mirrored into the real keymap engine (low-level). The
+ * harness registers a priority-2 `input.copy` layer whose run follows the v2
+ * layer (copy → clear-idle → false), plus a priority-0 fallthrough layer. A
+ * `false` run MUST fall through; a `true` run MUST consume the key. */
+function bootV2Copy(opts: { selection?: boolean; text?: string; busy?: boolean }) {
+  const harness = createTestKeymap({ defaultKeys: false })
+  registerDefaultKeys(harness.keymap)
+  registerEnabledFields(harness.keymap)
+  const target = harness.host.createTarget("textarea")
+  harness.host.focus(target)
+  const clipboard = mockClipboard()
+  let selected = opts.selection ?? false
+  let text = opts.text ?? ""
+  const calls = { copyRun: 0, clears: 0, fellThrough: 0 }
+  harness.keymap.registerLayer({
+    priority: 2,
+    target,
+    enabled: true,
+    commands: [
+      {
+        name: "input.copy",
+        run: () => {
+          calls.copyRun++
+          if (selected) {
+            void clipboard.write("selected text")
+            return true
+          }
+          if (opts.busy || text === "") return false
+          text = ""
+          calls.clears++
+          return true
+        },
+      },
+    ],
+    bindings: [{ key: "ctrl+c", cmd: "input.copy" }],
+  })
+  harness.keymap.registerLayer({
+    priority: 0,
+    target,
+    enabled: true,
+    commands: [{ name: "fallthrough", run: () => ((calls.fellThrough++, true)) }],
+    bindings: [{ key: "ctrl+c", cmd: "fallthrough" }],
+  })
+  return { ...harness, clipboard, calls, getText: () => text }
+}
+
+describe("A5 copy/clear behaviour table (real keymap engine)", () => {
+  test("① selection → write 且不清空 (copy consumes, no clear)", () => {
+    const h = bootV2Copy({ selection: true, text: "draft", busy: false })
+    h.host.press("c", { ctrl: true })
+    expect(h.clipboard.writes).toEqual(["selected text"])
+    expect(h.calls.clears).toBe(0)
+    expect(h.calls.fellThrough).toBe(0)
+    expect(h.getText()).toBe("draft")
+  })
+
+  test("② 无选区有字且空闲 → 清空且 write 0 次、不回落", () => {
+    const h = bootV2Copy({ selection: false, text: "draft", busy: false })
+    h.host.press("c", { ctrl: true })
+    expect(h.clipboard.writes).toEqual([])
+    expect(h.calls.clears).toBe(1)
+    expect(h.calls.fellThrough).toBe(0)
+    expect(h.getText()).toBe("")
+  })
+
+  test("③ 无选区空输入 → run 返回 false，回落", () => {
+    const h = bootV2Copy({ selection: false, text: "", busy: false })
+    h.host.press("c", { ctrl: true })
+    expect(h.calls.copyRun).toBe(1)
+    expect(h.clipboard.writes).toEqual([])
+    expect(h.calls.clears).toBe(0)
+    expect(h.calls.fellThrough).toBe(1)
+  })
+
+  test("④ turn 进行中无选区 → run 返回 false，回落 (interrupt unchanged)", () => {
+    const h = bootV2Copy({ selection: false, text: "draft", busy: true })
+    h.host.press("c", { ctrl: true })
+    expect(h.calls.copyRun).toBe(1)
+    expect(h.clipboard.writes).toEqual([])
+    expect(h.calls.clears).toBe(0)
+    expect(h.calls.fellThrough).toBe(1)
+    expect(h.getText()).toBe("draft")
+  })
+
+  test("⑤ 配置改键 input.copy→ctrl+x 后 ctrl+x 触发复制 (config id, no inline bind)", async () => {
+    const copies: string[] = []
+    function Probe() {
+      Keymap.createLayer(() => ({
+        priority: 2,
+        commands: [
+          {
+            id: "input.copy",
+            title: "Copy selection",
+            run: () => {
+              copies.push("copy")
+              return true
+            },
+          },
+        ],
+      }))
+      return createElement("box", { width: 1, height: 1 })
+    }
+    const config = TuiKeybind.parse({ "input.copy": "ctrl+x" })
+    const keybinds = createBindingLookup(TuiKeybind.toBindingConfig(config), {
+      bindingDefaults: TuiKeybind.bindingDefaults(),
+    })
+    const setup = await testRender(
+      () =>
+        createComponent(Keymap.Provider, {
+          config: { keybinds },
+          get children() {
+            return createComponent(Probe, {})
+          },
+        }),
+      { width: 40, height: 10, useMouse: false },
+    )
+    try {
+      setup.mockInput.pressKey("x", { ctrl: true })
+      await Bun.sleep(60)
+      await setup.renderOnce()
+      expect(copies).toContain("copy")
+    } finally {
+      await setup.dispose()
+    }
   })
 })
