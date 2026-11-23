@@ -21,7 +21,7 @@ import {
 	userMessageRecord,
 } from "./shell-render-fixture.tsx"
 import type { FakeTurnCallbacks } from "./shell-render-fixture.tsx"
-import { markPanelActive, resetActivePanel } from "../../tui-base/src/routes/session/pane-focus"
+import { activePanel, markPanelActive, resetActivePanel } from "../../tui-base/src/routes/session/pane-focus"
 import { setMotionTier } from "../../tui-base/src/skin/motion"
 
 /** Longest painted line in a normalized frame (ASCII content only, so
@@ -155,10 +155,6 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 			}],
 			turnScript: script,
 		})
-		// R5: this case locates the activity frame by its heavy ┏/┗ borders;
-		// border weight is focus-driven (default composer paints single borders),
-		// so pin activity active before waiting for the bordered frame.
-		markPanelActive("activity")
 		const pending = fixture.send("d5 probe")
 
 		// Positive: the turn is live → the heavy-bordered activity frame is up,
@@ -168,6 +164,14 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 		const live = await fixture.waitForFrame(
 			(f) => f.includes("● Todos (0/1)") && f.includes("└─ ● d5 active task"),
 		)
+		// 36dc77a (R5 followup): while the dock is hidden its latch-hide effect
+		// hands focus back to the composer, so pinning activity BEFORE the turn
+		// (old setup) is overwritten during the 60ms show-defer window. Pin
+		// activity only once the framed board is actually up — the real path is
+		// a tab click / alt+1|2 during a turn — so the heavy ┏/┗ border premise
+		// matches the active-panel signal. Lifecycle assertions below unchanged.
+		markPanelActive("activity")
+		expect(activePanel()).toBe("activity")
 		expect(live).toContain("🔧 tool")
 		expect(live).toContain("grep")
 		expect(live).toContain("● Todos (0/1)")
