@@ -72,6 +72,7 @@ import { useWorkingDirectoryActions } from "../../ui/working-directory-actions"
 import { truncateFilePath } from "../../ui/file-path"
 import { PromptMetadataRow } from "./metadata"
 import { limitLabel, useUsageLimits } from "../usage"
+import { keyTrace, type ComposerSetSource } from "../../util/key-trace"
 
 export type PromptProps = {
   sessionID?: string
@@ -186,6 +187,9 @@ function argumentSlash(input: string, commands: readonly KeymapCommand[]) {
 
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
+  // B2: label every programmatic composer assignment for the opt-in forensic
+  // trace. The optional call short-circuits when the env var is unset.
+  const traceSet = (from: ComposerSetSource) => keyTrace?.composerSet(from, input?.plainText?.length ?? 0)
   let anchor: BoxRenderable
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable | undefined>()
 
@@ -343,6 +347,7 @@ export function Prompt(props: PromptProps) {
     if (directory !== (currentLocation.current?.directory ?? data.location.default().directory)) return
     if (!input || input.isDestroyed) return
     input.insertText(evt.data.text)
+    traceSet("other")
     setTimeout(() => {
       // setTimeout is a workaround and needs to be addressed properly
       if (!input || input.isDestroyed) return
@@ -579,6 +584,7 @@ export function Prompt(props: PromptProps) {
           const normalized = normalizePromptContent(content)
 
           input.setText(normalized)
+          traceSet("other")
 
           setStore("prompt", {
             ...realignPromptInputMentions(normalized, editorPrompt, renderer.widthMethod),
@@ -603,6 +609,7 @@ export function Prompt(props: PromptProps) {
                 const start = input.cursorOffset
                 const end = start + measure(text)
                 input.insertText(text + " ")
+                traceSet("other")
                 const extmarkId = input.extmarks.create({
                   start,
                   end,
@@ -700,6 +707,7 @@ export function Prompt(props: PromptProps) {
     },
     set(prompt) {
       input.setText(prompt.text)
+      traceSet("other")
       setStore("prompt", prompt)
       restoreExtmarksFromPrompt(prompt)
       input.gotoBufferEnd()
@@ -712,11 +720,12 @@ export function Prompt(props: PromptProps) {
     },
   }
 
-  function resetComposer() {
+  function resetComposer(from: ComposerSetSource = "reset") {
     input.extmarks.clear()
     setStore("prompt", emptyPrompt())
     setStore("extmarkToPart", new Map())
     input.clear()
+    traceSet(from)
   }
 
   // Captured once: the session route is keyed by sessionID, so this Prompt
@@ -730,6 +739,7 @@ export function Prompt(props: PromptProps) {
     if (store.prompt.text) return
     if (saved && saved.prompt.text) {
       input.setText(saved.prompt.text)
+      traceSet("draft-restored")
       setStore("prompt", saved.prompt)
       restoreExtmarksFromPrompt(saved.prompt)
       input.cursorOffset = Math.min(saved.cursor, measure(saved.prompt.text))
@@ -910,6 +920,7 @@ export function Prompt(props: PromptProps) {
           const entry = stash.pop()
           if (entry) {
             input.setText(entry.prompt.text)
+            traceSet("other")
             setStore("prompt", entry.prompt)
             restoreExtmarksFromPrompt(entry.prompt)
             input.gotoBufferEnd()
@@ -927,6 +938,7 @@ export function Prompt(props: PromptProps) {
             <DialogStash
               onSelect={(entry) => {
                 input.setText(entry.prompt.text)
+                traceSet("other")
                 setStore("prompt", entry.prompt)
                 restoreExtmarksFromPrompt(entry.prompt)
                 input.gotoBufferEnd()
@@ -1069,6 +1081,7 @@ export function Prompt(props: PromptProps) {
             const item = history.move(-1, input.plainText)
             if (!item) return false
             input.setText(item.text)
+            traceSet("history")
             setStore("prompt", item)
             setStore("mode", item.mode ?? "normal")
             restoreExtmarksFromPrompt(item)
@@ -1109,6 +1122,7 @@ export function Prompt(props: PromptProps) {
             const item = history.move(1, input.plainText)
             if (!item) return false
             input.setText(item.text)
+            traceSet("history")
             setStore("prompt", item)
             setStore("mode", item.mode ?? "normal")
             restoreExtmarksFromPrompt(item)
@@ -1212,12 +1226,13 @@ export function Prompt(props: PromptProps) {
     const currentMode = store.mode
     const entry = { ...store.prompt, mode: currentMode }
     if (trimmed) {
-      resetComposer()
+      resetComposer("submit-clear")
       props.onSubmit?.()
     }
     const restoreEntry = () => {
       if (disposed || input.isDestroyed || input.plainText !== "") return
       input.setText(entry.text)
+      traceSet("failure-refill")
       setStore("prompt", entry)
       setStore("mode", entry.mode ?? "normal")
       restoreExtmarksFromPrompt(entry)
@@ -1417,7 +1432,7 @@ export function Prompt(props: PromptProps) {
         // Copy before clearing: unwrap returns the live store target, and the
         // resetComposer store write merges into that same object.
         saveDraft(sessionID, { prompt: { ...unwrap(store.prompt) }, cursor: input.cursorOffset })
-        resetComposer()
+        resetComposer("submit-clear")
       }
       route.navigate({
         type: "session",
@@ -1434,6 +1449,7 @@ export function Prompt(props: PromptProps) {
     const extmarkEnd = extmarkStart + measure(virtualText)
 
     input.insertText(virtualText + " ")
+    traceSet("paste")
 
     const extmarkId = input.extmarks.create({
       start: extmarkStart,
@@ -1465,6 +1481,7 @@ export function Prompt(props: PromptProps) {
     input.extmarks.delete(extmarkId)
     input.setSelection(extmark.start, extmark.end)
     input.insertText(part.text)
+    traceSet("paste")
     return true
   }
 
@@ -1500,6 +1517,7 @@ export function Prompt(props: PromptProps) {
     }
 
     input.insertText(normalizedText)
+    traceSet("paste")
 
     setTimeout(() => {
       if (!input || input.isDestroyed) return
@@ -1516,6 +1534,7 @@ export function Prompt(props: PromptProps) {
     const textToInsert = virtualText + " "
 
     input.insertText(textToInsert)
+    traceSet("paste")
 
     const extmarkId = input.extmarks.create({
       start: extmarkStart,
@@ -1801,6 +1820,7 @@ export function Prompt(props: PromptProps) {
               cursorStyle={cursorStyle()}
               onContentChange={() => {
                 const value = input.plainText
+                keyTrace?.contentChange(value.length, value)
                 setStore("prompt", "text", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()

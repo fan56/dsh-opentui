@@ -25,6 +25,7 @@ import {
 } from "solid-js"
 import { useConfig } from "../config"
 import { TuiKeybind } from "../config/keybind"
+import { keyTrace } from "../util/key-trace"
 import { resolveInteractivity, useInteractivity } from "./interactivity"
 import { useFocusRouterOptional, type CaptureTier } from "./focus-router"
 import type { OwnerFrame } from "./input-ownership"
@@ -136,6 +137,26 @@ function Provider(props: ParentProps<{ config?: KeymapConfig }>) {
       ].flatMap((command) => config.keybinds.get(command)),
     }),
   ]
+  // B2 key trace: the keymap's global keypress hook runs before every layer
+  // dispatch and renderable handler, and the Provider mounts once at the app
+  // root — this is the single funnel for every physical key reaching the app.
+  // The interceptor is registered only when trace is enabled, so the disabled
+  // path adds nothing to the per-keystroke handling, and the callback neither
+  // consumes nor stops propagation (no behaviour change).
+  if (keyTrace) {
+    const trace = keyTrace
+    dispose.push(
+      keymap.intercept("key", ({ event }) => {
+        trace.key({
+          key: event.name,
+          ctrl: event.ctrl,
+          alt: event.meta,
+          shift: event.shift,
+          super: event.super ?? false,
+        })
+      }),
+    )
+  }
   const leader = config.keybinds.get("leader")?.[0]?.key
   if (leader) {
     dispose.push(
