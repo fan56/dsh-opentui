@@ -1,0 +1,6 @@
+main: ┌─1 main  [2 todo]    tool──────────────────
+alt2: ┌─1 main  [2 todo]    tool──────────────────
+alt1: ┌─1 main  [2 todo]    tool──────────────────
+click17: ┌─1 main  [2 todo] 🔧 tool───────────────────
+click05: ┏━[1 main]  2 todo 🔧 tool━━━━━━━━━━━━━━━━━━━
+tabs-done

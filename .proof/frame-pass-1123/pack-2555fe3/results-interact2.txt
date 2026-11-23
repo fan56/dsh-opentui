@@ -1,0 +1,8 @@
+clear: text-left=3 placeholder=1
+tab-todo=
+tab-main-after-alt1=
+permission-dialog-lines:
+│┌────────────────────────────┃    Select permission preset           
+││  ❯ CLEARTEST/permission    ┃    ● marks the default preset; the act
+resume:
+interact2-done

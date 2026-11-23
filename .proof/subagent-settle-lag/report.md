@@ -47,10 +47,16 @@
 
 原始输出：`10-bridge-settle.out`（协调者与收尾 agent 各跑一次，均 **389 pass / 0 fail / 2044 expect**，33 files）。
 
-## 5. 未在本切片完成（如实）
+## 5. 真机证据（0.27.0 安装包，HEAD `2555fe3`）
 
-- **E-REAL-1/2/3（逐秒帧 + 宿主 journal `turn/end` 时刻）NOT RUN here**：3 个错峰子代理（sleep 4/10/16）的逐秒帧由协调者在最终 `npm pack` 安装包上采集，证据落 `.proof/frame-pass-1123/`（铁律：真机验收主 agent 亲自做）。预注册 JUDGMENT-5 已允许模型不错峰时标 NOT RUN 并止步于单测。
-- `20-frames/` 目录为空（收尾 agent 在启动真机前中断），不作为证据。
+已在 `npm pack` 安装包（`a3619290…`）+ 全新 scratch home + `/motion full` 上完成，详见 `20-journal.md` 与 `20-frames/`：
+
+- **E-REAL-1 PASS**：三个子会话 `turn/end` 后，面板行消失延迟 **765 ms / 375 ms / 768 ms**（均 ≤2s）。
+- **E-REAL-2 PASS**：`subagent *3 → *1 → 0`，严格不增；旧的 `*3 → *6` 显示错误未复现。
+- **E-REAL-3 PASS**：`0s→1s→2s→3s→4s` 计时非递减，单个 settle 不重置锚点。
+
+未做：人为错峰（三个子代理在同一秒起跑、先后结束）；预注册 JUDGMENT-5 已允许。
+`20-frames/` 内为本轮逐秒 `.ans` 帧与采样 CSV。
 
 ## 6. 脱敏
 

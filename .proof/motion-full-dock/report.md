@@ -49,10 +49,19 @@
 
 补充：`bun test packages/tui-base/test/widgets-dock-render.test.ts packages/tui-base/test/widgets-dock-tabs-r2.test.ts` = **33 pass / 1 skip / 0 fail**。唯一 skip 是 R3 关渐隐后已失效的 `M1 ... fade frame` 用例，`HEAD` 上即已是 `test.skip`（非本次引入）。
 
-## 5. 未在本切片完成（如实）
+## 5. 真机证据（0.27.0 安装包，HEAD `2555fe3`）
 
-- **真机矩阵 NOT RUN here**：motion full / reduced / off × 带框(120×40) / 紧凑(80×24) × 场景（bash sleep、并行 3 子代理）由协调者在最终 `npm pack` 安装包上执行（铁律：UI 验收由主 agent 亲自抓帧），证据追加进 `.proof/frame-pass-1123/`。本报告不预判其结果。
-- E1/E3/E4（纯函数层 tween 单调性、首帧 snap、motion off 恒等 target）由既有测试与本次真渲染用例覆盖，未单独立新用例。
+已在 `npm pack` 安装包（`a3619290…`）+ 全新 scratch home 上由协调者亲自抓帧（`.proof/frame-pass-1123/pack-2555fe3/`）：
+
+| 档位 | 场景 | 面板内容 |
+|---|---|---|
+| motion **full** | bash `sleep 8/12` turn | 内容行在工具启动后 **第一时间**出现（`⚙ bash sleep · 0.6s`，此前回归态是 1–7 秒只有边框） |
+| motion **full** | 3 子代理 | `🔧 tool · 🤖 subagent` 标题 + `subagent *3` 简报 + 三行代理（`agent-1/2/3`） |
+| motion **reduced** | bash `sleep 8` | 内容行 t+4.6s 出现（`⚙ bash sleep · 0.6s`） |
+| motion **off** | bash `sleep 8` | 内容行 t+3.5s 出现（`⚙ bash sleep · 0.5s`） |
+| motion **full** + 紧凑 80×24 | bash `sleep 8` | tab 条 `[1 main] 2 todo` + 单行 dock `⚙bash sleep · 2.7s` 均有内容 |
+
+未在本切片复跑完整 14 项交互矩阵；那部分在 `.proof/frame-pass-1123/pack-2555fe3/REPORT.md` 里按项记录（含 NOT VERIFIED 项）。
 
 ## 6. 脱敏
 

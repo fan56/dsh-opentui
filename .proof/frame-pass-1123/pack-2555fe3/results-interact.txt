@@ -1,0 +1,10 @@
+80-tab-main: ┌─[1 main]  2 todo    tool────────────────────
+81-tab-todo-alt: ┌─[1 main]  2 todo    tool────────────────────
+82-tab-main-alt: ┌─[1 main]  2 todo    tool────────────────────
+83-tab-todo-mouse: ┌─[1 main]  2 todo 🔧 tool─────────────────────
+84-tab-main-mouse: ┏━[1 main]  2 todo 🔧 tool━━━━━━━━━━━━━━━━━━━━━
+clear: placeholder=0 quitdialog=1
+permission: ││  ❯ CLEARTEST/permission                                  |  👤 CLEARTEST/permission|
+resume-header: ││  ❯ CLEARTEST/permission    ┃    UPDATED   DIR                     S|
+composer-heavy=1
+interact-done
