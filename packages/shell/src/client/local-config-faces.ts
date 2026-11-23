@@ -280,7 +280,7 @@ export class LocalSettingsStore {
 		// nav (Down x4 from the first Host row → first "other" row) is stable.
 		others.sort((a, b) => (a.ns === "agent-default-model" ? -1 : b.ns === "agent-default-model" ? 1 : 0))
 		namespaces.push(...others)
-		return { writable: true, hasDocument: existsSync(this.#patchPath), namespaces }
+		return { writable: true, hasDocument: existsSync(this.#patchPath), namespaces, source: "local-file" }
 	}
 
 	/** Whitelisted path-op mutation; never accepts a whole-document replace. */

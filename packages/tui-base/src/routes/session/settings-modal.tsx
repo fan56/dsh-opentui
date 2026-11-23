@@ -62,6 +62,7 @@ import {
 	settingsBridgeOpen,
 	settingsSummary,
 	settingsWritable,
+	settingsWriteStatus,
 	setSettingsBridge,
 	useSettingsPanelOpenState,
 	type SettingsItem,
@@ -682,9 +683,11 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	const savedLabels: string[] = []
 	let statusTimer: ReturnType<typeof setTimeout> | undefined
 
-	/** Transient 「已保存 · X」; falls back to the resting text after 1.5 s. */
-	function flashSaved(label: string) {
-		setStatus(t("settings.status.saved", { label }))
+	/** Transient source-aware success flash (B1 S6): host writes are already
+	 *  live; local-file degraded writes need a host restart. Falls back to the
+	 *  resting text after 1.5 s. */
+	function flashSaved(label: string, source: SeamSettingsDocument["source"] | undefined) {
+		setStatus(settingsWriteStatus(source, label))
 		if (statusTimer !== undefined) clearTimeout(statusTimer)
 		statusTimer = setTimeout(() => {
 			statusTimer = undefined
@@ -852,7 +855,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				return true
 			}
 			savedLabels.push(row.label)
-			flashSaved(row.label)
+			flashSaved(row.label, result.document?.source ?? document()?.source)
 			props.onApplied?.([...savedLabels])
 			return true
 		} finally {

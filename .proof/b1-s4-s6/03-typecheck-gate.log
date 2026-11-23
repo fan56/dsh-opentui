@@ -1,0 +1,15 @@
+=== typecheck:entry ===
+
+> dsh-opentui-monorepo@ typecheck:entry /Users/qingguee/repo/dsh-opentui-wt-uibatch-1123
+> cd packages/tui-base && bun run typecheck:entry
+
+$ tsc -p tsconfig.entry.json
+typecheck_exit=0
+=== frozen surface git diff (expect quiet / 0) ===
+frozen_diff_exit=0
+=== NOT_WIRED literal count in NEW source file (expect 0) ===
+0
+=== NOT_WIRED count on ADDED lines of changed src files (expect 0) ===
+0
+=== timestamp ===
+2026-11-23T02:47:24Z

@@ -612,11 +612,21 @@ export interface SeamAgentRow {
 	broken?: string
 }
 
+/** B1 S5 — where the official caps came from. `unavailable` means the host
+ * settings document could not be read; numeric fields are then ABSENT (never
+ * filled from the local file) so the panel renders `n/a` with `reason`. */
+export type SeamAgentOfficialCapsSource = "host" | "unavailable"
+
 /** The official subagent plugin's caps (settings ns `subagent`); absent
- * fields mean the host did not serve them — render `n/a`, never a guess. */
+ * fields mean the host did not serve them — render `n/a`, never a guess.
+ * `source`/`reason` are optional for pre-B1 producers; the bridge seam always
+ * sets them. */
 export interface SeamAgentOfficialCaps {
 	maxActiveSubagents?: number
 	maxDepth?: number
+	source?: SeamAgentOfficialCapsSource
+	/** Short sanitized reason when `source === "unavailable"`. */
+	reason?: string
 }
 
 /** Where a model/thinking edit landed (drives the scope note). */
@@ -646,12 +656,23 @@ export interface SeamSettingsRow {
 	secrets?: { path: string[]; set: boolean }[]
 }
 
+/** B1 S4 — authoritative source of a settings document. `host` = the host
+ * `settings.describe` answered (values are authoritative, writes route to the
+ * host); `local-file` = the host was unavailable and the client fell back to a
+ * local patch file FOR RENDERING ONLY — host rows are read-only and their
+ * numbers must show `n/a` (never the local file's numbers). */
+export type SeamSettingsSource = "host" | "local-file"
+
 /** The settings document view (`settings/describe`): writes are refused
- * wholesale when `writable` is false. */
+ * wholesale when `writable` is false. `source` is required for B1 S4+ producers;
+ * legacy fixtures that omit it are treated as `host`. */
 export interface SeamSettingsDocument {
 	writable: boolean
 	hasDocument: boolean
 	namespaces: SeamSettingsRow[]
+	source: SeamSettingsSource
+	/** Source details: profile / document path / sanitized failure reason. */
+	sourceDetail?: { profile?: string; documentPath?: string; reason?: string }
 }
 
 /** One path-addressed write (the wire's SettingsPathOpView). Path ops only —

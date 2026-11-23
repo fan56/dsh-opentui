@@ -54,6 +54,7 @@ import type {
 	SeamPermissionCatalog,
 	SeamSettingsDocument,
 	SeamSettingsMutateResult,
+	SeamSettingsSource,
 	SeamSettingsOp,
 	SessionSeam,
 } from "../../seams/session"
@@ -341,6 +342,15 @@ export function buildHostItems(
 			item.note = t("settings.note.hostUnavailable")
 			return item
 		}
+		// B1 S5 — local-file degrade: the host did not answer, so the local
+		// patch file's numbers are NOT authoritative. Every host row renders n/a
+		// + the sanitized reason and stays read-only (no local-number fallback).
+		if (document.source === "local-file") {
+			item.note = t("settings.note.hostLocalFile", {
+				reason: document.sourceDetail?.reason ?? t("settings.note.hostUnavailable"),
+			})
+			return item
+		}
 		if (row === undefined) return item
 		const raw = valueAtPath(row.value, spec.path)
 		const base = valueAtPath(row.base, spec.path)
@@ -400,6 +410,13 @@ export function buildHostItems(
 			const scope = t("settings.note.permissionPresetScope")
 			if (item.note !== undefined) item.note = `${item.note} · ${scope}`
 			else item.source = item.source === "" ? scope : `${item.source} · ${scope}`
+		}
+		// B1 S6 — in the host-wired mode `subagent.maxDepth` is pinned by the
+		// inproc profile (R2-3 safety contract); keep it read-only with a reason.
+		// Legacy documents without `source` keep the pre-B1 behavior.
+		if (document.source === "host" && spec.id === "subagent.maxDepth") {
+			item.editable = false
+			item.note = t("settings.note.maxDepthPinned")
 		}
 		return item
 	})
@@ -619,6 +636,10 @@ export function planHostWrite(item: SettingsItem, raw: string | boolean | number
 		return { ok: true, ns, ops: [{ op: "set", path: [...path], value: on }], applied: on }
 	}
 	if (item.kind === "number") {
+		// B1 S6 — host unset = "fall back to the inherited value" (e.g.
+		// maxActiveSubagents 3 → 8), a silent safety widening. Empty is blocked
+		// with an explicit reason; no `{op:"unset"}` is ever planned here.
+		if (String(raw).trim() === "") return { ok: false, error: t("settings.error.hostEmptyNumber") }
 		const parsed = parseIntegerInput(String(raw), item.min, item.max)
 		if (!parsed.ok) return parsed
 		return { ok: true, ns, ops: [{ op: "set", path: [...path], value: parsed.value }], applied: parsed.value }
@@ -760,10 +781,34 @@ export function settingsWritable(
 			reason: t("settings.writable.describeFailed", { detail: describeError }),
 		}
 	}
+	// B1 S4/S5 — a successful describe in local-file mode is a DEGRADE, not a
+	// writable host document: host rows must stay read-only with an honest reason.
+	if (document?.source === "local-file") {
+		return {
+			local: true,
+			host: false,
+			reason: t("settings.writable.localFileDegraded", {
+				reason: document.sourceDetail?.reason ?? t("settings.note.hostUnavailable"),
+			}),
+		}
+	}
 	if (document !== undefined && document.writable === false) {
 		return { local: false, host: false, reason: t("settings.writable.readOnlyDoc") }
 	}
 	return { local: true, host: true }
+}
+
+/**
+ * B1 S6 — source-aware success hint. A host-wired write is already live in the
+ * running host (volatile commit); a local-file degraded write only touched a
+ * file the host does not read, so it needs a restart. Pure + i18n-backed so the
+ * modal's flash and the tests share one wording path.
+ */
+export function settingsWriteStatus(source: SeamSettingsSource | undefined, label: string): string {
+	if (source === "local-file") return t("settings.status.savedLocalFile", { label })
+	if (source === "host") return t("settings.status.savedLive", { label })
+	// Legacy documents without a source keep the pre-B1 wording.
+	return t("settings.status.saved", { label })
 }
 
 export interface SettingsLinesInput {

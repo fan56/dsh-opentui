@@ -235,6 +235,8 @@ export interface AgentLimitsRow {
 	key: "maxRounds" | "background" | "maxActiveSubagents" | "maxDepth"
 	editable: boolean
 	value: string
+	/** B1 S5 — why an official cap is n/a (host unavailable); rendered beside it. */
+	note?: string
 }
 
 /** The per-key description (read-time `t()` — design §6 getter law). */
@@ -259,10 +261,16 @@ export function agentLimitsRows(agent: SeamAgentRow | undefined, caps: SeamAgent
 			value: agent.background === true ? t("panel.agents.value.on") : t("panel.agents.value.off"),
 		})
 	}
+	const capsUnavailable = caps?.source === "unavailable"
+	// B1 S5 — a reason line for the host-unavailable case (never local numbers).
+	const capsNote = capsUnavailable && caps?.reason
+		? t("panel.agents.capsUnavailable", { reason: caps.reason })
+		: undefined
 	rows.push({
 		key: "maxActiveSubagents",
 		editable: false,
 		value: caps?.maxActiveSubagents === undefined ? t("panel.agents.value.na") : String(caps.maxActiveSubagents),
+		...(capsNote !== undefined ? { note: capsNote } : {}),
 	})
 	rows.push({
 		key: "maxDepth",
@@ -278,7 +286,7 @@ export function agentLimitsItem(row: AgentLimitsRow): ListItem<AgentLimitsRow["k
 		label: row.key,
 		value: row.key,
 		...(row.editable ? { badge: "✎" } : { tone: "muted" as const }),
-		cells: { value: `${row.value} · ${limitDescription(row.key)}` },
+		cells: { value: `${row.value} · ${limitDescription(row.key)}${row.note !== undefined ? ` · ${row.note}` : ""}` },
 	}
 }
 
@@ -698,6 +706,12 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	 * said "edit them in /settings" with no way to get there).
 	 */
 	function openSettingsRow(key: "maxActiveSubagents" | "maxDepth") {
+		// B1 S5 — with no host settings document the /settings rows are read-only
+		// n/a; jumping there would dead-end the user. Explain instead (no jump).
+		if (caps()?.source === "unavailable") {
+			setStatus(t("panel.agents.status.capsUnavailable"))
+			return
+		}
 		panels.closeAll()
 		setTimeout(() => openSettingsPanel(officialCapSettingsRow(key)), 3)
 	}

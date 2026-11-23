@@ -33,6 +33,7 @@
 import type {
 	BridgeLinkStatus,
 	SeamAccountState,
+	SeamAgentOfficialCaps,
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
@@ -60,6 +61,10 @@ import type {
 	SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
+	SeamSettingsDocument,
+	SeamSettingsMutateResult,
+	SeamSettingsOp,
+	SeamSettingsSource,
 	SeamStatus,
 	SeamSubagentView,
 	SeamTranscriptRow,
@@ -117,6 +122,14 @@ import {
 // 026 web-mirror — hand-written SECOND whitelist for commands/execute
 // (jsonSchema:null blind-spot family; see bridge-permission.ts).
 import { projectPermissionSwitch } from "./bridge-permission.ts"
+// B1 S4/S5 — pure host-first settings route projection (field whitelist, caps, failure reasons).
+import {
+	hostMutateError,
+	officialCapsFromDocument,
+	projectHostMutateResult,
+	projectHostSettingsDocument,
+	settingsFailureReason,
+} from "./bridge-settings-route.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -1411,12 +1424,55 @@ export class BridgeSessionSeam implements SessionSeam {
 	// `present === true` premise (W5 prevention rule 2).
 	#goalsAvailable: boolean | undefined = undefined
 
-	/** S5 /settings host face — real local file I/O, field-level whitelist
-	 *  projection (oldfox S4 review §六.2). Never a `{}` degrade. */
+	// B1 S4 — the source of the LAST settings.describe. Not a long-term
+	// environment assertion: every describe re-probes the host; this only lets
+	// mutate decide "host vs local-file" without a second round-trip. Starts at
+	// local-file so a mutate before any describe refuses instead of assuming a host.
+	#settingsSource: SeamSettingsSource = "local-file"
+	#settingsSourceDetail: SeamSettingsDocument["sourceDetail"] | undefined = undefined
+
+	/**
+	 * B1 S4 — host-first settings describe. One shared resolver for the panel
+	 * and /agents caps (design §4.2(c): a single wire read, not two). Host wire
+	 * success → authoritative `source:"host"` document; any failure → local
+	 * patch file FOR RENDERING ONLY with `source:"local-file"` + a sanitized
+	 * reason (host rows will be read-only and show n/a — never local numbers).
+	 */
+	async #describeSettings(): Promise<SeamSettingsDocument> {
+		try {
+			const reply = await this.#transport.request("settings.describe")
+			const document = projectHostSettingsDocument(reply)
+			this.#settingsSource = "host"
+			this.#settingsSourceDetail = undefined
+			return document
+		} catch (error) {
+			const reason = settingsFailureReason(error)
+			this.#settingsSource = "local-file"
+			this.#settingsSourceDetail = { profile: this.#profile, reason }
+			const local = this.#settingsStore.describe()
+			return { ...local, source: "local-file", sourceDetail: this.#settingsSourceDetail }
+		}
+	}
+
+	/** B1 S4 /settings host face — host-first route with local-file degrade.
+	 *  Field-level whitelist lives in `projectHostSettingsDocument`; the local
+	 *  fallback is rendering-only (host rows read-only, numbers shown as n/a). */
 	settings: NonNullable<SessionSeam["settings"]> = {
-		describe: (): Promise<import("../../../tui-base/src/seams/session").SeamSettingsDocument> =>
-			Promise.resolve(this.#settingsStore.describe()),
-		mutate: (ns, ops, revision) => Promise.resolve(this.#settingsStore.mutate(ns, ops, revision)),
+		describe: (): Promise<SeamSettingsDocument> => this.#describeSettings(),
+		mutate: (ns: string, ops: SeamSettingsOp[], revision?: number): Promise<SeamSettingsMutateResult> => {
+			if (this.#settingsSource !== "host") {
+				// Honest refusal: in local-file mode we never write the local patch
+				// to fake a host success (design §4.2(b)); no new capability-error wording.
+				return Promise.resolve({
+					ok: false,
+					conflict: false,
+					error: `host settings unavailable (local-file mode); the write was not applied${this.#settingsSourceDetail?.reason ? `: ${this.#settingsSourceDetail.reason}` : ""}`,
+				})
+			}
+			return this.#transport
+				.request("settings.mutate", { ns, ops, expectedRevision: revision })
+				.then(projectHostMutateResult, hostMutateError)
+		},
 		identity: () => ({ profile: this.#profile, dshHome: this.#dshHome }),
 		// 025-w2-4 — real permissionPresets/catalog face. The old top-level
 		// permissionCatalog() (ADR-0011 one-shot notice) stays intact; this is a
@@ -1497,7 +1553,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		set: (name, field, value) => this.#localAgents.set(name, field, value),
 		body: (name) => this.#localAgents.body(name),
 		modelEfforts: (providerID, modelID) => this.#localAgents.modelEfforts(providerID, modelID),
-		officialCaps: () => this.#localAgents.officialCaps(),
+		// B1 S5 — caps come from the SAME host settings document as /settings.
+		// Never from LocalSettingsStore: local-file mode yields n/a + reason.
+		officialCaps: async (): Promise<SeamAgentOfficialCaps> => officialCapsFromDocument(await this.#describeSettings()),
 	}
 
 	/**
