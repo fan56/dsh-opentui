@@ -31,6 +31,18 @@
 - 范围（用户拍板）：只算斜杠命令与其输出（messageID=cmd 的行）。工具执行行、子代理状态行、notice relay 不动。
 - 实现：SeamRow 新增 kind:"system"，seam-rows.ts 把 cmd 行 upsert 为 system；transcript.tsx 颜色表加 system 项 + switch 加 case；用 <text> 纯文本渲染（不用 <markdown>，避免 #/* 被解释）。颜色先用 text.feedback.info.base（solarized/nord 都有值，零主题 JSON 改动）；USER-JUDGMENT 项，验收可调。
 
+## R7 子代理 settle 后立即消失
+- 用户原话：「子 agent 执行完毕，就消失，不要占位置。」
+- 改动前一手审计（逐面结论见 `.proof/r7-r8-subagent-brief/00-preregistered-expected.md` §一）：带框 scene A 代理列表、紧凑下半区、lastrequest-dock running-children、roster settled 条目的 D10 latch —— 四个面**已全部 running-only**，settle 后不再占位置。工具行（✔use_agent / ✔wait_agent）属工具区、不动；/subagents 详情查看器不在范围。
+- 定案：不留「已完成」代理行；`mergedRunningAgents()` 的 running-only 过滤是四面的单一不变量，加固注释 + 回归测试锁定，不做行为改动。
+
+## R8 subagent 简报（按批计时）
+- 用户原话：「subagent 像 todo 那样，也加个状态」→ 逐条拍板口径：文本 `subagent *{running} {elapsedSec}s`，**只写当前 running 数（* + 数字），不写分母**；**按批计时**——第一个子代理启动时起算，全部跑完块收起；中途新开的并入同一批、不重置；全部跑完后再开新批才从 0 计。
+- en/zh 键值相同、纯 ASCII（不用 emoji/CJK，避免弹窗后宽字符被吞）。
+- 省空间：todo 简报与 subagent 简报同处一行（`todo 2/4 178s  ·  subagent *3 12s`），只有其一时独占；置于代理列表上方。两种模式（带框 scene A / 紧凑下半区）都要有。
+- 数据层保持纯函数：锚点与 running 数由 widgets-dock 模块级计算（CLOSURE LAW，dock cleanup 清空），经 `MergedDockOptions.subagentBrief` 传入，merged-dock.ts 只负责出行；宽度律 fitLine/takeWidth，新增行计入 frameHeight/compactHeight，不打穿 80x24 transcript ≥6 行。
+- 实测偏差如实登记：scratch home 原 `motion:off`，elapsed 列只在 seam 行变更时重算（与既有 think/tool 同机制）；真机 a/c 取得、b 部分（未取得单个 settle 的 3→2 干净帧）、d 三次尝试模型未产生「归 0 后同 turn 再起批」序列 → 真机 NOT RUN，锚点语义由单测锁定；详见 `.proof/r7-r8-subagent-brief/report.md`。
+
 ## 流程纪律
 - 每切片实现前先写 .proof/<切片>/00-preregistered-expected.md（W5）。
 - oldfox 每刀评；门禁阶梯 bun test → check-capcontract → real-client-gate → pack 收口；真机抓帧由主 agent 做。

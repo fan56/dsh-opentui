@@ -39,6 +39,7 @@ import {
 	DOCK_HEIGHT_ANIM_MS,
 	dockHeightContentLines,
 	resetTodoBriefClock,
+	resetSubagentBriefClock,
 	activityDockTab,
 	setActivityDockTab,
 	resetActivityDockTab,
@@ -94,6 +95,7 @@ afterEach(() => {
 	resetMergedDockCursor()
 	resetDockHeight()
 	resetTodoBriefClock()
+	resetSubagentBriefClock()
 	// R5: the active-panel signal defaults to composer; reset it so a case
 	// that pinned "activity" for heavy border glyphs cannot leak into the next.
 	resetActivePanel()
@@ -786,12 +788,15 @@ describe("WidgetsDock on the real renderer", () => {
 			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			const occupied = lines.filter((l) => l.trim() !== "")
 			// B2c: compact terminals now carry the tab bar as the first row.
-			expect(occupied).toHaveLength(4) // 1 tab bar + 2 upper rule lines + 1 lower summary
+			// R8: with running subagents a combined brief row is pinned above the
+			// lower summary, so 4 → 5 occupied rows (asserted exactly, not relaxed).
+			expect(occupied).toHaveLength(5) // 1 tab bar + 2 upper rule lines + 1 R8 brief + 1 lower summary
 			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo") // compact tab bar (paddingLeft=3), main active marker
 			expect(occupied[1]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
 			expect(occupied[2]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
 			expect(occupied[2]!.includes("bash")).toBe(true)
-			expect(occupied[3]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
+			expect(occupied[3]!).toContain("subagent *12") // R8 per-batch brief row
+			expect(occupied[4]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
 			// No scroll indicators and no boxed title carrying N/M.
 			for (const line of occupied) {
 				expect(line.includes("▲")).toBe(false)

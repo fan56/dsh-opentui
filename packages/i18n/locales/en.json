@@ -700,6 +700,7 @@
   "overlay.widgets.activityTitle": "┃ activity",
   "overlay.widgets.activityWithThink": "┃ activity · {text}",
   "overlay.widgets.frameTitle": "activity",
+  "overlay.widgets.subagentBrief": "subagent *{running} {elapsedSec}s",
   "overlay.widgets.tab.main": "1 main",
   "overlay.widgets.tab.todo": "2 todo",
   "overlay.widgets.taskColumn": "Task",

@@ -103,6 +103,8 @@ import type { HueScale } from "@opencode/theme/tui"
 import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
 import {
 	MERGED_DOCK_TOTAL_LINES,
+	combineBriefText,
+	fittedBriefLine,
 	mergedDockLines,
 	mergedPositionSuffix,
 	mergedTitle,
@@ -802,6 +804,57 @@ export function todoBriefLine(todos: readonly Todo[], now: number = Date.now(), 
  * into the next session). */
 export function resetTodoBriefClock(): void {
 	todoSetFirstSeen.clear()
+}
+
+// ------------------------------------------- R8 subagent brief (per-batch timer)
+// `subagent *{running} {elapsedSec}s` — running count ONLY, no denominator
+// (user 2026-11-23 拍板). The clock is PER BATCH: anchor at the 0→N transition,
+// hold the SAME anchor through N→M while M>0 (a late child joins the batch
+// without resetting it), clear it when running returns to 0 so the next batch
+// starts from 0. Module scope keeps the CLOSURE LAW (the dock is a per-app
+// singleton); the dock's unmount cleanup resets it, like `resetTodoBriefClock`.
+
+/** Wall clock of the current batch's FIRST running child (undefined = idle). */
+let subagentBatchStartedAt: number | undefined
+/** Previous running count — the 0/N gate that starts/clears a batch. */
+let prevSubagentRunning = 0
+
+/** Feed one running-count reading; returns the current batch anchor. Pure apart
+ * from the module state (mirrors `todoSetStartedAt`'s first-seen map): 0→N
+ * records a fresh anchor, N→M>0 keeps it, →0 clears it. */
+export function subagentBatchAnchor(running: number, now: number = Date.now()): number | undefined {
+	if (running === 0) {
+		subagentBatchStartedAt = undefined
+	} else if (prevSubagentRunning === 0) {
+		subagentBatchStartedAt = now
+	}
+	prevSubagentRunning = running
+	return subagentBatchStartedAt
+}
+
+/** Session-switch / unmount hook: drop the batch anchor (no batch survives into
+ * the next session). */
+export function resetSubagentBriefClock(): void {
+	subagentBatchStartedAt = undefined
+	prevSubagentRunning = 0
+}
+
+/** The brief's text (pure apart from i18n): `subagent *{running} {elapsedSec}s`.
+ * running=0 → "" (no brief row). en/zh share the same ASCII value so the
+ * wide-char swallow behind modal dialogs cannot eat it. */
+export function subagentBriefText(running: number, elapsedSec: number): string {
+	if (running === 0) return ""
+	return t("overlay.widgets.subagentBrief", { running, elapsedSec })
+}
+
+/** Dock-facing: feed the running count, derive elapsed from the batch anchor,
+ * return the brief text ("" while idle). Called on every dock render getter so
+ * the shared `dockSpin` tick advances the seconds column. */
+export function subagentBriefLine(running: number, now: number = Date.now()): string {
+	const anchor = subagentBatchAnchor(running, now)
+	if (running === 0 || anchor === undefined) return ""
+	const elapsedSec = Math.max(0, Math.floor((now - anchor) / 1000))
+	return subagentBriefText(running, elapsedSec)
 }
 
 /** The Todos table's box width for a `terminalColumns`-wide terminal.
@@ -1607,7 +1660,16 @@ export function mergedThinkRows(rows: readonly SeamRow[], now: number, decorated
 		})
 }
 
-/** Running subagents from the live `subagents` seam row (D15 / D7 source). */
+/**
+ * Running subagents from the live `subagents` seam row (D15 / D7 source).
+ * R7 (user 2026-11-23): this running-only filter is the SINGLE invariant that
+ * makes a settled child leave EVERY dock face at once — the framed scene-A
+ * list, `mergedLowerHasContent`'s D10 latch, `dockTurnActive` and
+ * `dockNeedsClock` all read this (or the same `status === "running"` test).
+ * The roster row itself keeps settled children for the /subagents viewer; only
+ * the dock faces drop them. Never widen this to "non-settled" or "all" — that
+ * would re-open the "已完成 still occupies a slot" bug R7 closes.
+ */
 export function mergedRunningAgents(rows: readonly SeamRow[]): SeamSubagentView[] {
 	const tree = [...rows].reverse().find((row) => row.kind === "subagents")
 	return tree?.kind === "subagents" ? tree.children.filter((child) => child.status === "running") : []
@@ -1649,6 +1711,22 @@ export function mergedCompactLowerLines(rows: readonly SeamRow[]): MergedDockLin
 		return summary === "" ? [] : [{ kind: "todo", segments: [{ text: summary, tone: "muted" }] }]
 	}
 	return tree
+}
+
+/**
+ * R8: the compact-terminal brief row — the SAME combined text the framed
+ * scene A pins above its agent list, placed at the head of the compact lower
+ * zone. Only emitted while a subagent is actually running: when idle it adds
+ * NO row, so the 80x24 transcript floor is untouched in the common case. The
+ * running count + per-batch anchor come from `subagentBriefLine` (module state,
+ * CLOSURE LAW); the todo half reuses `todoBriefLine`'s text-signature clock.
+ * Fitted by `fittedBriefLine`'s `takeWidth` path — never a clipToWidth re-crop.
+ */
+export function mergedCompactBriefLines(rows: readonly SeamRow[], now: number, innerWidth: number): MergedDockLine[] {
+	const subagent = subagentBriefLine(mergedRunningAgents(rows).length, now)
+	if (subagent === "") return []
+	const text = combineBriefText(todoBriefLine(latestTodos(rows), now), subagent)
+	return [fittedBriefLine(text, innerWidth)]
 }
 
 /** The dock. Mounted by the v2-entry page as the transcript's `widgets`
@@ -1786,6 +1864,10 @@ export function WidgetsDock(props: {
 			totalLines: MERGED_DOCK_TOTAL_LINES,
 			thinkLines: thinkCap(),
 			cursor: mergedDockCursor(),
+			// R8: dock owns the anchor + running count (CLOSURE LAW); the data
+			// layer only places the pre-formed text. `data.agents` is running-only
+			// so its length IS the `*{running}` count.
+			subagentBrief: subagentBriefLine(data.agents.length, now),
 		}
 		return { lines: mergedDockLines(data, options), info: mergedWindowInfo(data, options) }
 	}
@@ -1811,6 +1893,9 @@ export function WidgetsDock(props: {
 		// Session switch / unmount: no task-text signature may survive into the
 		// next session's brief clock, and the tab choice does not leak either.
 		resetTodoBriefClock()
+		// R8: the per-batch subagent clock is module state too — drop the anchor
+		// so a later session's first running child starts a fresh batch at 0.
+		resetSubagentBriefClock()
 		resetActivityDockTab()
 		// R5-2 (oldfox): the activity panel's heavy focus frame is cross-session
 		// state (pane-focus.tsx). Without this reset the old session's active
@@ -1981,11 +2066,18 @@ export function WidgetsDock(props: {
 		return { kind: "tool", segments: [{ text: `${bar.mainLabel}${bar.between}${bar.todoLabel}`, tone: "muted" }] }
 	}
 	const compactLower = () => mergedCompactLowerLines(props.rows)
-	// main keeps the 2 rule lines + the lower zone; todo shows the pure todo
-	// tree via the SAME builder the framed todo tab uses. When the tree is
-	// empty both return no content rows — the empty state is the tab bar alone.
+	// R8: the brief row heads the main tab's lower zone (above the todo tree),
+	// replacing the framed scene-A pinned brief on compact terminals. Only
+	// present while a subagent runs; `compactHeight()` counts it via
+	// `compactContent().length`, so the added row is always budgeted.
+	const compactBrief = () => mergedCompactBriefLines(props.rows, Date.now(), width())
+	// main keeps the 2 rule lines + the brief + the lower zone; todo shows the
+	// pure todo tree via the SAME builder the framed todo tab uses. When the tree
+	// is empty both return no content rows — the empty state is the tab bar alone.
 	const compactContent = () =>
-		activityDockTab() === "main" ? compactLower() : todoTabLines(props.rows, width(), mergedDockCursor())
+		activityDockTab() === "main"
+			? [...compactBrief(), ...compactLower()]
+			: todoTabLines(props.rows, width(), mergedDockCursor())
 	const compactRuleCount = () => (activityDockTab() === "main" ? 2 : 0)
 	// +1 for the new tab-bar row.
 	const compactHeight = () => 1 + compactRuleCount() + compactContent().length

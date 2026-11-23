@@ -131,6 +131,12 @@ export interface MergedDockOptions {
 	 * controls since 2026-11-19): 1/5/7/10, `all`=10. Defaults to 1 (the
 	 * legacy single think line). Tool/todo never read this. */
 	thinkLines?: number
+	/** R8: the fully-formed subagent brief text (e.g. `subagent *3 12s`),
+	 * computed by the dock from the running count + the per-batch anchor.
+	 * The data layer only PLACES this text — it never computes the anchor or
+	 * counts agents (CLOSURE LAW / pure-data law). Empty/undefined → no
+	 * subagent half of the combined brief. */
+	subagentBrief?: string
 }
 
 /** The lower-zone window geometry, computed once by `assembleZones` and shared
@@ -213,6 +219,30 @@ export function mergedTitle(parts: { tool: boolean; subagent: boolean; think: bo
  * M = `total` = total lower-zone items. */
 export function mergedPositionSuffix(info: MergedWindowInfo): string | null {
 	return info.overflow ? `${info.position}/${info.total}` : null
+}
+
+/**
+ * R8 space-saving rule: the todo brief and the subagent brief share ONE line.
+ * Both present → `todo …  ·  subagent …` (two spaces around the middle dot,
+ * matching the `mergedTitle` ` · ` family); only one present → that one alone;
+ * neither → empty (no row). Pure string composition — no clock, no counting,
+ * no layout; the caller supplies both fully-formed texts. Both texts are
+ * ASCII-safe on the subagent side (en/zh locales share the same value), so the
+ * separator survives the width law's `takeWidth` crop.
+ */
+export function combineBriefText(todoBrief: string, subagentBrief: string): string {
+	if (todoBrief === "" && subagentBrief === "") return ""
+	if (subagentBrief === "") return todoBrief
+	if (todoBrief === "") return subagentBrief
+	return `${todoBrief}  ·  ${subagentBrief}`
+}
+
+/** R8: wrap a pre-composed brief text in a single dock line fitted by the same
+ * `fitLine`/`takeWidth` path as every other merged line (no second crop pass).
+ * Used by compact terminals, which bypass `buildMergedDock` but must obey the
+ * identical width law. */
+export function fittedBriefLine(text: string, innerWidth: number): MergedDockLine {
+	return fitLine({ kind: "todo", segments: [{ text, tone: "running" }] }, innerWidth)
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +511,10 @@ function buildMergedDock(
 		upperLines = thinkRow === undefined ? [] : thinkLinesFor(thinkRow, now, spin, 1).slice(0, 1)
 		const latest = tools.length > 0 ? tools[tools.length - 1]! : undefined
 		if (latest !== undefined) upperLines.push(coexistenceToolLine(latest, now, spin))
-		const brief = todoBriefLine(data.todos, now, data.todoStartedAt)
+		// R8: the todo brief and the subagent brief SHARE one pinned line above
+		// the agent list (space-saving). `options.subagentBrief` is a pre-formed
+		// text — this layer only composes/places it; the dock owns the timer.
+		const brief = combineBriefText(todoBriefLine(data.todos, now, data.todoStartedAt), options.subagentBrief ?? "")
 		if (brief !== "") upperLines.push({ kind: "todo", segments: [{ text: brief, tone: "running" }] })
 		// The subagent list takes ALL remaining lines under the existing scroll
 		// clipping. No parent todo row: the todo is the brief above.

@@ -700,6 +700,7 @@
   "overlay.widgets.activityTitle": "┃ 活动",
   "overlay.widgets.activityWithThink": "┃ 活动 · {text}",
   "overlay.widgets.frameTitle": "活动",
+  "overlay.widgets.subagentBrief": "subagent *{running} {elapsedSec}s",
   "overlay.widgets.tab.main": "1 主面板",
   "overlay.widgets.tab.todo": "2 待办",
   "overlay.widgets.taskColumn": "任务",
