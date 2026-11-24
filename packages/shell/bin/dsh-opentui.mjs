@@ -6,8 +6,8 @@
  * Startup chain:
  *   0. Bin-level flags — `--version` prints `dsh-opentui <version>` and
  *      exits 0 BEFORE anything else (no provision, no TUI); `--force` and
- *      `--yes` are still parsed and user-visible but have NO side effect —
- *      their kill implementation is wired in a follow-up (T12).
+ *      `--yes` remain reserved and parsed in this in-process-only build, but
+ *      currently do not kill or reset anything. Their implementation is T12.
  *      `--repair-bridge` is a terminal
  *      maintenance command: it clears this profile's stale instances (TERM
  *      then KILL), runs the in-process bridge self-heal (T7), and exits before
@@ -77,9 +77,9 @@ function capture(cmd, args) {
 }
 
 // --- 0. Bin-level flags: --version short-circuits; --force/--yes parsed -----
-// --force / --yes are consumed here but currently have NO side effect: their
-// implementation lived in the retired host-launch bundle (step 6a) and is
-// wired in T12/follow-up. Parsing stays so the flags remain user-visible.
+// --force / --yes remain reserved and consumed in this in-process-only build.
+// They currently have no kill/reset side effect; T12 will replace the retired
+// host-launch behavior. Parsing stays so the flags remain user-visible.
 const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
@@ -90,6 +90,13 @@ if (versionFlag) {
   }
   console.log(`dsh-opentui ${version}`)
   process.exit(0)
+}
+
+// Warn once on non-version invocations carrying either reserved flag. The
+// repair command owns a real stale-process sweep, so do not claim that sweep
+// did nothing when --yes is merely tolerated beside that maintenance command.
+if (forceFlag || (yesFlag && !repairBridgeFlag)) {
+  console.error('dsh-opentui: --force/--yes is reserved but not wired in this build; no processes were killed or reset.')
 }
 
 // P3-3: make flag combinations that used to fall into dead corners explicit.
@@ -263,12 +270,10 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
-// --- 2.5 --force -----------------------------------------------------------
-// `--force` (with optional `--yes`) is parsed at step 0 and is deliberately
-// inert here: its old implementation lived in the retired host-launch bundle
-// (step 6a). Designed semantics remain "kill local dsh-opentui processes";
-// the kill path is wired in T12/follow-up. Keeping the flag parsed/no-op is
-// intentional — it must neither fail nor be forwarded to the client.
+// --- 2.5 reserved --force / --yes ------------------------------------------
+// Parsed and warned about at step 0, then deliberately inert here in this
+// in-process-only build: no process is killed or reset. T12 will implement the
+// reserved behavior before the client is provisioned or spawned.
 
 // --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
 // provision-opentui-profile.mjs is idempotent and understands

@@ -30,6 +30,7 @@ import { CLI_LAUNCH_FLAGS } from '../../tui-base/src/routes/session/auto-resume.
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const binPath = join(pkgRoot, 'bin', 'dsh-opentui.mjs')
 const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).version
+const RESERVED_FLAGS_WARNING = 'dsh-opentui: --force/--yes is reserved but not wired in this build; no processes were killed or reset.'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
@@ -402,6 +403,15 @@ describe('P3-3 flag-combination conflicts', () => {
     }
   })
 
+  test('bin integration: --yes alone warns once and keeps the existing usage exit code', () => {
+    const r = spawnSync('node', [binPath, '--yes'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('dsh-opentui: --yes is only meaningful together with --force.')
+    expect(r.stderr.split('\n').filter((line) => line === RESERVED_FLAGS_WARNING)).toHaveLength(1)
+    expect(r.stderr).not.toContain('[1/5]')
+  })
+
   test('bin integration: --repair-bridge with upgrade prints a skip notice, still runs upgrade help', () => {
     const r = spawnSync('node', [binPath, '--repair-bridge', 'upgrade', '--help'], { encoding: 'utf8', timeout: 30_000 })
     expect(r.status).toBe(0)
@@ -416,6 +426,7 @@ describe('formatUsage', () => {
     for (const flag of [
       '-v, --version',
       '--force',
+      '--yes',
       '--repair-bridge',
       '--boot-timeout <sec>',
       '--mux-timeout <sec>',
@@ -450,8 +461,11 @@ describe('formatUsage', () => {
     // env escape hatch (same assertion class as the --remote one).
     expect(usage).not.toContain('DSH_OPENTUI_INPROC')
     expect(usage).not.toContain('--remote')
-    // P3-3 ④: --force is documented as a no-op under --dry-run.
-    expect(usage).toContain('no-op under --dry-run')
+    // P1-A: the in-process-only build reserves these flags without promising
+    // the retired singleton-host reset or a dry-run-only exception.
+    expect(usage).not.toContain('reset the singleton host')
+    expect(usage).toContain('reserved in this in-process-only build; currently does not kill or reset anything')
+    expect(usage).toContain('currently does not confirm or perform any kill/reset')
     // Exit codes are honest: provisioning failures are WARNs, not exit 1, and
     // the client's own code is passed through.
     expect(usage).toContain('  1  launcher startup failure')
@@ -608,6 +622,8 @@ describe('bin integration: usage errors fail before provisioning', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(r.stdout).toContain('Usage: dsh-opentui [options] [-- <client args>]')
+    expect(r.stdout).toContain('reserved in this in-process-only build; currently does not kill or reset anything')
+    expect(r.stdout).not.toContain('reset the singleton host')
     expect(r.stdout).not.toContain('[1/5]')
   })
 
@@ -709,14 +725,27 @@ function makeAsyncLauncherHarness() {
   }
 }
 
-function runAsyncLauncher(h: ReturnType<typeof makeAsyncLauncherHarness>) {
-  return spawnSync('node', [h.launcherBin, '--dry-run'], { encoding: 'utf8', timeout: 30_000, env: h.env })
+function runAsyncLauncher(h: ReturnType<typeof makeAsyncLauncherHarness>, args: string[] = []) {
+  return spawnSync('node', [h.launcherBin, '--dry-run', ...args], { encoding: 'utf8', timeout: 30_000, env: h.env })
 }
 
 describe('bin integration: async client spawn maps child exit code / signal (PR B)', () => {
   let h: ReturnType<typeof makeAsyncLauncherHarness>
   beforeEach(() => { h = makeAsyncLauncherHarness() })
   afterEach(() => { rmSync(h.root, { recursive: true, force: true }) })
+
+  test('reserved --force/--yes warn once without changing the client exit code', () => {
+    h.setBunShim('exit 42')
+    // --yes is valid only with --force on the normal launch path. Supplying
+    // both (in either order) must still produce exactly one warning.
+    for (const args of [[], ['--force'], ['--force', '--yes'], ['--yes', '--force']]) {
+      const r = runAsyncLauncher(h, args)
+      expect(r.error).toBeUndefined()
+      expect(r.status).toBe(42)
+      const warnings = r.stderr.split('\n').filter((line) => line === RESERVED_FLAGS_WARNING)
+      expect(warnings).toHaveLength(args.length === 0 ? 0 : 1)
+    }
+  })
 
   test('launcher exits with the fake bun shim exit code', () => {
     h.setBunShim('exit 42')

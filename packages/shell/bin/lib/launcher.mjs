@@ -1,6 +1,6 @@
 /**
  * Launcher support for bin/dsh-opentui.mjs — the pure parts behind the
- * `--version` / `--force` flags.
+ * `--version` / reserved `--force` / `--yes` flags.
  *
  * WHY A SEPARATE MODULE: the bin is a top-level script (importing it would
  * RUN it — provision, spawn, exit). Everything here is a pure function over
@@ -10,9 +10,10 @@
  * The capabilities:
  *   1. `--version` — print `dsh-opentui <version>` and exit 0, BEFORE any
  *      provision/profile work (see the bin's step 0).
- *   2. `--force`   — reset the singleton host before starting (needs `--yes`
- *      when live clients are connected; ADR-0009). Stale-instance cleanup is a
- *      `--repair-bridge` maintenance action.
+ *   2. `--force` / `--yes` — reserved flags in this in-process-only build.
+ *      They are parsed but currently do not kill or reset anything; the host
+ *      cleanup behavior is scheduled for T12. Stale-instance cleanup remains
+ *      a `--repair-bridge` maintenance action.
  *   3. `upgrade`   — the positional upgrade subcommand: its argv is parsed
  *      here (pure) and dispatched by the bin to scripts/upgrade.mjs. The
  *      subcommand and its flags are consumed by the bin and NEVER forwarded
@@ -90,8 +91,8 @@ export function parseLauncherArgs(argv) {
 			repairBridge = true
 			continue
 		}
-		// `--yes` confirms a --force reset when live clients exist (ADR-0009 §7).
-		// Consumed by the bin, never forwarded to dsh/the client.
+		// Reserved alongside `--force`; currently has no kill/reset side effect
+		// (T12). Consumed by the bin, never forwarded to dsh/the client.
 		if (arg === '--yes') {
 			yes = true
 			continue
@@ -313,8 +314,8 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    reset the singleton host before starting (needs --yes if clients are live; no-op under --dry-run)',
-		'  --yes                      confirm a --force reset that would disconnect live clients',
+		'  --force                    reserved in this in-process-only build; currently does not kill or reset anything (T12)',
+		'  --yes                      reserved with --force in this in-process-only build; currently does not confirm or perform any kill/reset (T12)',
 		'  --repair-bridge            kill stale instances, repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
@@ -356,25 +357,6 @@ export function readLauncherVersion(pkgRoot) {
 	} catch {
 		return undefined
 	}
-}
-
-/**
- * Decide how a failed host pre-launch (step 6a) must be handled (P1-5).
- *
- * - `force-needs-yes` is a usage error: exit 2 (the user must confirm).
- * - with `--force`, ANY other failure is fatal: exit 1. A force reset that
- *   could not import/run the orchestration bundle did not happen, so quietly
- *   continuing would turn `--force` into a silent no-op (the bin-level force
- *   cleanup was removed in step 2.5). Never downgrade to a warning here.
- * - without `--force`, pre-launch is best-effort: warn and let the client
- *   retry host boot itself.
- *
- * @returns 'usage-error' | 'abort' | 'warn'
- */
-export function prelaunchFailurePolicy(err, force) {
-	if (err?.code === 'force-needs-yes') return 'usage-error'
-	if (force) return 'abort'
-	return 'warn'
 }
 
 /**
