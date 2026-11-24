@@ -559,20 +559,127 @@ function carryDisabled(cur, anc, next, templateDisabled, id, warns) {
   return c
 }
 
-function applyExt(shape, externalCarry, id, warns) {
-  if (!externalCarry || !isPlainObject(externalCarry.values)) return shape
-  const out = cloneValue(shape)
+// ---------------------------------------------------------------------------
+// external carry validation (R21/R22/R11 — 06 §4.5/§5.4/§7.3)
+// ---------------------------------------------------------------------------
+
+function reportExtDrop(path, reason, warnings, dropped) {
+  const entry = { path: String(path), reason: String(reason || 'invalid-value') }
+  dropped.push(entry)
+  warnings.push(`external-dropped: ${entry.path}: ${entry.reason}`)
+}
+
+/** Roles / paths one-shot migration may never write (R11, 06 §7.3). */
+function extForbiddenReason(id, parts) {
+  if (id === 'permission') {
+    return parts[1] === 'presets' ? 'sandbox-loosening-forbidden' : 'template-authority'
+  }
+  if (id === 'llm-pi-ai') return 'model-table-template-owned'
+  return undefined
+}
+
+/** A carry leaf must be a finite scalar of the field's expected type. */
+function extLeafValid(id, parts, value) {
+  if (isJsValue(value) || isTaggedValue(value)) return false
+  if (value === undefined || value === null || typeof value === 'object') return false
+  if (typeof value === 'number' && !Number.isFinite(value)) return false
+  const leaf = parts.join('.')
+  if (id === 'session-log-deepseek' && leaf === 'enabled') return typeof value === 'boolean'
+  if (id === 'subagent' && (leaf === 'maxActiveSubagents' || leaf === 'maxDepth')) {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 1
+  }
+  if (id === 'agent-default-model') return typeof value === 'string'
+  return true
+}
+
+function templateProviders(templateIndex) {
+  const block = templateIndex.rows.get('llm-pi-ai')
+  if (!block) return undefined
+  const cfg = shapeOf(block.node).config
+  return isPlainObject(cfg) ? cfg.providers : undefined
+}
+
+/** R22: provider/model required, reasoningEffort optional but checked if present. */
+function admGroupValid(values, providers) {
+  if (typeof values.provider !== 'string' || typeof values.model !== 'string') {
+    return { ok: false, reason: 'invalid-value' }
+  }
+  if (values.reasoningEffort !== undefined && typeof values.reasoningEffort !== 'string') {
+    return { ok: false, reason: 'invalid-value' }
+  }
+  if (!isPlainObject(providers) || !Object.prototype.hasOwnProperty.call(providers, values.provider)) {
+    return { ok: false, reason: 'model-id-not-in-template' }
+  }
+  const p = providers[values.provider]
+  const models = Array.isArray(p.models) ? p.models : []
+  const model = models.find((m) => isPlainObject(m) && m.id === values.model)
+  let found = !!model
+  if (!found && isPlainObject(p.modelOverrides)) {
+    found = Object.prototype.hasOwnProperty.call(p.modelOverrides, values.model)
+  }
+  if (!found) return { ok: false, reason: 'model-id-not-in-template' }
+  if (values.reasoningEffort !== undefined && model && isPlainObject(model.reasoningEfforts) &&
+      !Object.prototype.hasOwnProperty.call(model.reasoningEfforts, values.reasoningEffort)) {
+    return { ok: false, reason: 'invalid-value' }
+  }
+  return { ok: true }
+}
+
+/**
+ * Validate the one-shot migration input once per converge call. Returns a
+ * sanitized ext whose `values` hold only applicable leaf paths; every
+ * rejection is appended to `dropped` and `warnings` as `<rowId>.<dot.path>`.
+ */
+function prepareExternalCarry(externalCarry, templateIndex, warnings, dropped) {
+  if (!externalCarry || typeof externalCarry !== 'object') return undefined
+  if (Array.isArray(externalCarry.dropped)) {
+    for (const d of externalCarry.dropped) reportExtDrop(d && d.path, d && d.reason, warnings, dropped)
+  }
+  if (!isPlainObject(externalCarry.values)) return undefined
+  const providers = templateProviders(templateIndex)
+  const valid = {}
+  const adm = {}
+  const admPaths = {}
   for (const [path, value] of Object.entries(externalCarry.values)) {
+    const parts = String(path).split('.')
+    const id = parts[0]
+    const forbidden = extForbiddenReason(id, parts)
+    if (forbidden) { reportExtDrop(path, forbidden, warnings, dropped); continue }
+    if (parts.length < 2 || !templateIndex.rows.has(id) || roleOf(id) !== 'carry') {
+      reportExtDrop(path, 'invalid-value', warnings, dropped); continue
+    }
+    if (!extLeafValid(id, parts.slice(1), value)) {
+      reportExtDrop(path, 'invalid-value', warnings, dropped); continue
+    }
+    if (id === 'agent-default-model') {
+      if (parts.length !== 2) { reportExtDrop(path, 'invalid-value', warnings, dropped); continue }
+      adm[parts[1]] = value
+      admPaths[parts[1]] = path
+      continue
+    }
+    valid[path] = value
+  }
+  if (Object.keys(adm).length > 0) {
+    const verdict = admGroupValid(adm, providers)
+    if (verdict.ok) {
+      for (const [key, path] of Object.entries(admPaths)) valid[path] = adm[key]
+    } else {
+      for (const path of Object.values(admPaths)) reportExtDrop(path, verdict.reason, warnings, dropped)
+    }
+  }
+  return { source: externalCarry.source, values: valid }
+}
+
+/** Apply the sanitized ext to one carry row (leaf setIn); ancestor untouched. */
+function applyExt(shape, ext, id) {
+  if (!ext || !isPlainObject(ext.values)) return shape
+  const out = cloneValue(shape)
+  for (const [path, value] of Object.entries(ext.values)) {
     const parts = path.split('.')
     if (parts[0] !== id || parts.length < 2) continue
     if (out.config === ABSENT) out.config = {}
     if (!isPlainObject(out.config)) continue
     setIn(out.config, parts.slice(1), cloneValue(value))
-  }
-  if (Array.isArray(externalCarry.dropped)) {
-    for (const drop of externalCarry.dropped) {
-      if (String(drop.path).startsWith(`${id}.`)) warns.push(`external-dropped: ${drop.path}: ${drop.reason}`)
-    }
   }
   return out
 }
@@ -756,12 +863,11 @@ function applyEdits(base, list) {
   return result
 }
 
-function absentConverge({ template, templateIndex, revision, externalCarry, notes }) {
+function absentConverge({ template, templateIndex, revision, externalCarry, notes, warnings, dropped }) {
   const edits = []
-  const warnings = []
   for (const [id, tplBlock] of templateIndex.rows) {
     const shape = shapeOf(tplBlock.node)
-    const nextEff = applyExt(shape, externalCarry, id, warnings)
+    const nextEff = applyExt(shape, externalCarry, id)
     if (rowEq(nextEff, shape)) continue
     const expected = {
       id,
@@ -784,6 +890,7 @@ function absentConverge({ template, templateIndex, revision, externalCarry, note
     drift: [],
     notes,
     warnings,
+    dropped,
     sidecar: templateProjection(template, revision),
   }
 }
@@ -801,9 +908,11 @@ export function converge({ template, current, sidecar, templateRevision, externa
 
   const templateIndex = indexTemplate(template)
   const managed = managedIds(template)
+  const dropped = []
+  const ext = prepareExternalCarry(externalCarry, templateIndex, warnings, dropped)
 
   if (current === undefined || current === null || current === '') {
-    return absentConverge({ template, templateIndex, revision, sidecar, externalCarry, notes })
+    return absentConverge({ template, templateIndex, revision, sidecar, externalCarry: ext, notes, warnings, dropped })
   }
 
   const analysis = analyze(current, 'current')
@@ -818,6 +927,7 @@ export function converge({ template, current, sidecar, templateRevision, externa
       },
       notes,
       warnings,
+      dropped,
       backupPaths: [],
       paths,
     }
@@ -855,7 +965,7 @@ export function converge({ template, current, sidecar, templateRevision, externa
     const role = roleOf(id)
     const curShape = E.shape
     const nextShape = tplShape
-    const nextEff = applyExt(nextShape, externalCarry, id, warnings)
+    const nextEff = applyExt(nextShape, ext, id)
     const ancRow = stateRows ? stateRows[id] : undefined
     let expectedConfig
 
@@ -1177,6 +1287,7 @@ export function converge({ template, current, sidecar, templateRevision, externa
     droppedComments: notes.filter((n) => n.startsWith('foreign-comments:')),
     notes: notesOut,
     warnings,
+    dropped,
     missingRows,
     missingInserts,
     duplicates,

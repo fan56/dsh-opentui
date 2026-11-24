@@ -477,3 +477,222 @@ describe('R13 preamble on generated content', () => {
     expect(after).toContain('# model route')
   })
 })
+
+// ---------------------------------------------------------------------------
+// externalCarry validation / drop matrix (06 §4.5, §5.4, §7.3 — T8 第 1 刀)
+// ---------------------------------------------------------------------------
+
+const ADM_ROW = [
+  '- id: agent-default-model',
+  '  name: "@deepseek-ai/dsh-agent-default-model"',
+  '  config:',
+  '    provider: opencode-go',
+  '    model: deepseek-v4.1-flash',
+  '    reasoningEffort: high',
+].join('\n')
+const TEMPLATE_ADM = TEMPLATE.replace('- id: session-log-deepseek', `${ADM_ROW}\n- id: session-log-deepseek`)
+const sidecarAdm = () => templateProjection(TEMPLATE_ADM, REV)
+
+function absentRun(ext: Parameters<typeof converge>[0]['externalCarry'], template = TEMPLATE) {
+  return converge({
+    template,
+    current: undefined,
+    sidecar: template === TEMPLATE ? sidecar() : sidecarAdm(),
+    templateRevision: REV,
+    externalCarry: ext,
+  })
+}
+
+describe('externalCarry — old callers and idempotence', () => {
+  test('no externalCarry: byte-identical behavior, no drops, no ext warnings', () => {
+    // authority-row drift still writes and backs up, exactly as before
+    const changed = TEMPLATE.replace(
+      '- id: tool-bash\n  name: "@deepseek-ai/dsh-tool-bash"\n  config:\n    enabled: true',
+      '- id: tool-bash\n  name: "@deepseek-ai/dsh-tool-bash"\n  config:\n    enabled: false',
+    )
+    const out = run(changed)
+    expect(out.write).toBe(true)
+    expect(out.content).toContain('enabled: true')
+    expect(out.backupReason).toBe('drift')
+    expect(out.dropped).toEqual([])
+    expect(out.warnings.join(' ')).not.toContain('external-dropped')
+
+    // carry user value still survives with no write
+    const carried = run(TEMPLATE.replace('maxDepth: 1', 'maxDepth: 4'))
+    expect(carried.write).toBe(false)
+    expect(carried.content).toContain('maxDepth: 4')
+    expect(carried.dropped).toEqual([])
+
+    const same = run(TEMPLATE)
+    expect(same.write).toBe(false)
+    expect(same.content).toBe(TEMPLATE)
+    expect(same.dropped).toEqual([])
+  })
+
+  test('absent + ext: values written, ancestor stays the unmodified template projection', () => {
+    const ext = {
+      source: 'opentui-inproc' as const,
+      values: {
+        'subagent.maxActiveSubagents': 2,
+        'subagent.maxDepth': 3,
+        'session-log-deepseek.enabled': false,
+      },
+      dropped: [{ path: 'permission.defaultPreset', reason: 'template-authority' }],
+    }
+    const first = absentRun(ext)
+    expect(first.write).toBe(true)
+    expect(first.reason).toBe('absent')
+    expect(first.content).toContain('maxActiveSubagents: 2')
+    expect(first.content).toContain('maxDepth: 3')
+    expect(first.content).toContain('enabled: false')
+    // ancestor = template, never the ext values
+    expect(first.sidecar.rows.subagent.ancestor.config).toEqual({ maxActiveSubagents: 3, maxDepth: 1 })
+    expect(first.sidecar.rows['session-log-deepseek'].ancestor.config).toEqual({ enabled: true })
+    expect(first.dropped).toEqual([{ path: 'permission.defaultPreset', reason: 'template-authority' }])
+    expect(first.warnings.join(' ')).toContain('external-dropped: permission.defaultPreset: template-authority')
+
+    // marker exists -> caller passes undefined -> no-op
+    const withMarker = converge({
+      template: TEMPLATE,
+      current: first.content,
+      sidecar: first.sidecar,
+      templateRevision: REV,
+    })
+    expect(withMarker.write).toBe(false)
+    expect(withMarker.content).toBe(first.content)
+  })
+
+  test('crash re-entry: patch written with ext but marker missing -> same result, write:false', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: { 'subagent.maxActiveSubagents': 2, 'subagent.maxDepth': 3, 'session-log-deepseek.enabled': false },
+      dropped: [] as Array<{ path: string; reason: string }>,
+    }
+    const first = absentRun(ext)
+    const reentry = converge({
+      template: TEMPLATE,
+      current: first.content,
+      sidecar: first.sidecar,
+      templateRevision: REV,
+      externalCarry: ext, // marker was never written, so ext is recomputed
+    })
+    expect(reentry.write).toBe(false)
+    expect(reentry.content).toBe(first.content)
+    expect(reentry.dropped).toEqual(first.dropped)
+    expect(reentry.sidecar).toBeUndefined()
+  })
+})
+
+describe('externalCarry — validation and drops', () => {
+  test('invalid ext leaves are dropped and never written (!!js / wrong type / non-boolean)', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: {
+        'subagent.maxActiveSubagents': 2,
+        'subagent.maxDepth': 'oops',
+        'subagent.foo': { $js: 'evil' },
+        'session-log-deepseek.enabled': 'no',
+      },
+    }
+    const out = absentRun(ext)
+    expect(out.content).toContain('maxActiveSubagents: 2')
+    expect(out.content).toContain('maxDepth: 1')
+    expect(out.content).not.toContain('maxDepth: oops')
+    expect(out.content).not.toContain('foo:')
+    expect(out.content).toContain('enabled: true')
+    expect(out.dropped.map((d) => d.path).sort()).toEqual([
+      'session-log-deepseek.enabled', 'subagent.foo', 'subagent.maxDepth',
+    ])
+    expect(out.dropped.every((d) => d.reason === 'invalid-value')).toBe(true)
+    expect((out.warnings.join(' ').match(/external-dropped:/g) || []).length).toBe(3)
+  })
+
+  test('subagent capacity/depth reject 0 and negatives; 1 is the minimum accepted value', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: { 'subagent.maxActiveSubagents': 0, 'subagent.maxDepth': -1 },
+    }
+    const out = absentRun(ext)
+    expect(out.content).toContain('maxActiveSubagents: 3')
+    expect(out.content).toContain('maxDepth: 1')
+    expect(out.content).not.toContain('maxActiveSubagents: 0')
+    expect(out.content).not.toContain('maxDepth: -1')
+    expect(out.dropped).toEqual([
+      { path: 'subagent.maxActiveSubagents', reason: 'invalid-value' },
+      { path: 'subagent.maxDepth', reason: 'invalid-value' },
+    ])
+
+    const atOne = absentRun({ source: 'opentui' as const, values: { 'subagent.maxActiveSubagents': 1 } })
+    expect(atOne.content).toContain('maxActiveSubagents: 1')
+    expect(atOne.dropped).toEqual([])
+  })
+
+  test('permission.defaultPreset, permission.presets and llm-pi-ai.providers are rejected by role', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: {
+        'permission.defaultPreset': 'danger-full-access',
+        'permission.presets': { my: { sandbox: 'danger-full-access' } },
+        'llm-pi-ai.providers': { evil: { api: 'openai-completions' } },
+        'subagent.maxDepth': 2,
+      },
+    }
+    const out = absentRun(ext)
+    expect(out.content).toContain('maxDepth: 2')
+    expect(out.content).toContain('defaultPreset: !!js')
+    expect(out.content).not.toContain('defaultPreset: danger-full-access')
+    expect(out.content).not.toContain('my:')
+    expect(out.content).not.toContain('evil:')
+    expect(out.dropped).toEqual([
+      { path: 'permission.defaultPreset', reason: 'template-authority' },
+      { path: 'permission.presets', reason: 'sandbox-loosening-forbidden' },
+      { path: 'llm-pi-ai.providers', reason: 'model-table-template-owned' },
+    ])
+  })
+
+  test('agent-default-model: missing required leaf drops the whole group', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: { 'agent-default-model.provider': 'zai-coding-cn' }, // no model
+    }
+    const out = absentRun(ext, TEMPLATE_ADM)
+    expect(out.content).toContain('provider: opencode-go')
+    expect(out.content).not.toContain('provider: zai-coding-cn')
+    expect(out.dropped).toEqual([{ path: 'agent-default-model.provider', reason: 'invalid-value' }])
+  })
+
+  test('agent-default-model: model absent from the new template table drops the whole group', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: {
+        'agent-default-model.provider': 'opencode-go',
+        'agent-default-model.model': 'glm-5.4', // not in opencode-go.models
+        'agent-default-model.reasoningEffort': 'high',
+      },
+    }
+    const out = absentRun(ext, TEMPLATE_ADM)
+    expect(out.content).toContain('model: deepseek-v4.1-flash')
+    expect(out.content).not.toContain('glm-5.4')
+    expect(out.dropped).toEqual([
+      { path: 'agent-default-model.provider', reason: 'model-id-not-in-template' },
+      { path: 'agent-default-model.model', reason: 'model-id-not-in-template' },
+      { path: 'agent-default-model.reasoningEffort', reason: 'model-id-not-in-template' },
+    ])
+  })
+
+  test('agent-default-model: complete valid group is applied atomically', () => {
+    const ext = {
+      source: 'opentui' as const,
+      values: {
+        'agent-default-model.provider': 'zai-coding-cn',
+        'agent-default-model.model': 'glm-4.5',
+        'agent-default-model.reasoningEffort': 'medium',
+      },
+    }
+    const out = absentRun(ext, TEMPLATE_ADM)
+    expect(out.content).toContain('provider: zai-coding-cn')
+    expect(out.content).toContain('model: glm-4.5')
+    expect(out.content).toContain('reasoningEffort: medium')
+    expect(out.dropped).toEqual([])
+  })
+})
