@@ -191,7 +191,7 @@ const SHIM_REVISION_MARKER = '// shimRevision: '
 // body must be escaped (\`), otherwise it terminates the string and the
 // provisioner dies with a syntax error at runtime (the R2-3 maxDepth comment
 // hit exactly this). Keep template-body prose backtick-free or escaped.
-const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs — provider zai-coding-cn, key read by the host from ZAI_CODING_CN_API_KEY):
+const PATCH_TEMPLATE = `# model route (managed by provision-inproc-profile.mjs — provider zai-coding-cn, key read by the host from ZAI_CODING_CN_API_KEY):
 
 - id: llm-pi-ai
   name: "@deepseek-ai/dsh-llm-pi-ai"
@@ -581,7 +581,7 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
           edit: ask
           apply_patch: ask
 
-# MCP (managed by provision-opentui-profile.mjs — the adapter's mcp_list/mcp_call need a client row; context7 needs no key and a failed/offline connection is non-fatal):
+# MCP (managed by provision-inproc-profile.mjs — the adapter's mcp_list/mcp_call need a client row; context7 needs no key and a failed/offline connection is non-fatal):
 - insert:
     - id: mcp-context7
       name: '@deepseek-ai/dsh-mcp-client'

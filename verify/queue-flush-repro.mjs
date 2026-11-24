@@ -20,15 +20,16 @@
 // host is reaped through its scratch lock file.
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
-const PROFILE = 'opentui'
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 const IDLE = '提问，回车发送'
 const PLACEHOLDER = 'Type a message'
 const SESS = `queue-flush-${process.pid}`
@@ -55,10 +56,6 @@ for (const cmd of ['tmux', 'bun'])
 		console.error(`queue-flush: ${cmd} not on PATH`)
 		process.exit(2)
 	}
-if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
-	console.error(`queue-flush: profile '${PROFILE}' missing under ${REAL_HOME}`)
-	process.exit(2)
-}
 if (!existsSync(LAUNCHER)) {
 	console.error(`queue-flush: launcher missing: ${LAUNCHER}`)
 	process.exit(2)
@@ -69,11 +66,11 @@ if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-queue-flush-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-queue-flush-ws-'))
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
-	const from = join(REAL_HOME, rel)
-	if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
+try {
+  provisionScratchProfile({ home: HOME, repo: REPO })
+} catch (error) {
+  console.error(`queue-flush: ${error.message}`)
+  process.exit(2)
 }
 
 const LOCK = join(HOME, `opentui-host.${PROFILE}.json`)

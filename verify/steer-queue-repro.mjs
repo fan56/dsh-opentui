@@ -29,17 +29,18 @@
 // host is reaped through its scratch lock file.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
 const MOCK = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
-const PROFILE = 'opentui'
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 const IDLE = 'enter send'
 const PLACEHOLDER = 'Type a message'
 const SESS = `steer-queue-${process.pid}`
@@ -72,10 +73,6 @@ const mockBaseUrl = () => `http://127.0.0.1:${PORT}/v1`
 
 for (const cmd of ['tmux', 'bun', 'node'])
   if (sh('which', [cmd]).status !== 0) { console.error(`steer-queue: ${cmd} not on PATH`); process.exit(2) }
-if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
-  console.error(`steer-queue: profile '${PROFILE}' missing under ${REAL_HOME}`)
-  process.exit(2)
-}
 if (!existsSync(LAUNCHER) || !existsSync(MOCK)) {
   console.error(`steer-queue: launcher or mock missing (${LAUNCHER}, ${MOCK})`)
   process.exit(2)
@@ -86,17 +83,18 @@ if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-steer-queue-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-steer-queue-ws-'))
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
-  const from = join(REAL_HOME, rel)
-  if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
+let profileDir
+try {
+  profileDir = provisionScratchProfile({ home: HOME, repo: REPO })
+} catch (error) {
+  console.error(`steer-queue: ${error.message}`)
+  process.exit(2)
 }
 
 // Deterministic language: the harness asserts en copy, so pin the scratch
-// config's `lang` regardless of what the operator's real profile carries.
+// config's `lang` regardless of any migrated legacy preference.
 // (Distinct name — a past `profileConfigPath` redeclaration SyntaxError.)
-const pinLangConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+const pinLangConfigPath = join(profileDir, 'config.json')
 try {
   const cfg = JSON.parse(readFileSync(pinLangConfigPath, 'utf8'))
   cfg.lang = 'en'
@@ -110,7 +108,7 @@ try {
 // and that has already sent a real request when only one provider was
 // patched. A pre-existing baseURL means unclear routing; refuse rather than
 // silently reach a real endpoint.
-const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+const patchPath = join(profileDir, 'cordis.patch.yml')
 if (!existsSync(patchPath)) {
   console.error(`steer-queue: profile patch missing: ${patchPath}`)
   process.exit(2)

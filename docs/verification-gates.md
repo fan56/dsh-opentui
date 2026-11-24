@@ -36,10 +36,10 @@
 |---|---|
 | 适用面 | 命令面（`/xxx` 真打开）、面板挂载/层级/焦点、键位与 Keymap 冲突、入口装配的运行时结果、真实终端尺寸下的布局/溢出 |
 | 命令 | `node verify/agents-mount-repro.mjs`（默认 120x34；`--cols`/`--rows`/`--keep`）；或 env 门控单测：`cd packages/shell && DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts` |
-| 前置 | `tmux`、`bun`、全局 `dsh` CLI、`~/.dsh/profiles/opentui`（由 `dsh opentui --from-default-profile web --dump-config` 生成）、可用的 provider key；`DSH_HOME_REAL` 可指向非默认 home |
+| 前置 | `tmux`、`bun`、全局 `dsh` CLI、可解析的 `@deepseek-ai/dsh-client-connection`；门禁自己在 scratch HOME 跑 `packages/shell/scripts/provision-inproc-profile.mjs`，不读用户 profile |
 | 通过标准 | 退出码 0 且 stdout 每条都是 `PASS ...`；`verify/agents-mount-out/summary.json` 的 `results[].ok` 全为 true；`fallbackSeen: false` |
 | 失败长什么样 | `FAIL  <check> — <detail>`、`N/M checks passed`、退出码 1；退出码 2 = 环境问题（缺 tmux/bun/profile/launcher）。抓屏与日志留在 `verify/agents-mount-out/`（`*.ans`、`*.err.log`、`summary.json`），close 失败时另有 `05-close-frame.txt` |
-| 隔离 | 从 `~/.dsh` 只读复制 profile 到临时 `DSH_HOME`，不写真实 home；tmux session 单独命名并单独 kill，不 `kill-server` |
+| 隔离 | 在临时 `DSH_HOME` 跑真 inproc provisioner，不读也不写真实 home；tmux session 单独命名并单独 kill，不 `kill-server` |
 
 ---
 
@@ -102,10 +102,10 @@ through the slash host so /agents mounts"）。
 - **tmux**：`actions/runner-images` 的公开镜像清单（2026-11-10 查 `Ubuntu2404-Readme.md`、
   `macos-15-arm64-Readme.md`）**未列出 tmux**；即使临时 `apt-get/brew install tmux` 可装，
   也只是把不确定性往后挪。
-- **`~/.dsh` profile 无法离线造**：`packages/shell/scripts/provision-opentui-profile.mjs`
-  依赖全局 `dsh` CLI（`dsh opentui --from-default-profile web --dump-config`）生成 profile；
-  GitHub-hosted runner 没有全局 dsh（CI 注释与 stub 步骤都记录了这一点），profile 里的依赖
-  闭包也需要 registry。仓库内没有可离线复用的 fixture（profile 约 192 MB，且含本机 provider 路由）。
+- **`~/.dsh` profile 无法离线造**：真机门禁改为在 scratch HOME 运行
+  `packages/shell/scripts/provision-inproc-profile.mjs`，仍依赖全局 `dsh` CLI 与
+  registry；GitHub-hosted runner 没有全局 dsh，因此默认 CI 不跑 tmux 真机腿。
+  self-hosted `real-client` job 只需 `dsh` + `tmux`，不再要求预置用户 profile。
 - **还需要 provider key**：脚本要完成真实模型 turn，CI 无凭据。
 
 因此 CI 只跑**不依赖 `~/.dsh`** 的两类证据：
@@ -115,9 +115,9 @@ through the slash host so /agents mounts"）。
   - `cd packages/tui-base && bun test -t '^verify:'`（装配契约，锚定前缀）；
   - 原有的 `for p in packages/*/; do (cd "$p" && bun test); done`。
 - `real-client` job：需要仓库变量 `DSH_REAL_CLIENT_GATE=true` + 带 `dsh-profile` 标签的
-  self-hosted runner（已装 dsh、profile、provider key、tmux），且只允许 `workflow_dispatch`
+  self-hosted runner（已装 dsh、tmux），且只允许 `workflow_dispatch`
   或**同仓** PR（fork PR 会在 runner 上用真实凭据执行不可信代码，直接不调度）。job 内先跑
-  preflight（`command -v tmux`、`command -v dsh`、`test -d ~/.dsh/profiles/opentui`），缺项即
+  preflight（`command -v tmux`、`command -v dsh`），缺项即
   fail。默认跳过；**跳过不是通过**。
 
 已知取舍：GitHub-hosted CI 上没有真机证据。这条风险由 §2 的"本地必跑 + 谁跑谁贴"承担。

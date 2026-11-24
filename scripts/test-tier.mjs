@@ -15,11 +15,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { DEFAULT_PROFILE } from "../packages/shell/scripts/lib/profile-name.mjs"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const PKGS = join(ROOT, "packages")
 const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), ".dsh")
-const PROFILE = process.env.DSH_UI_PROFILE || "opentui"
+const PROFILE = process.env.DSH_UI_PROFILE || DEFAULT_PROFILE
 const LAUNCHER = join(ROOT, "dsh-opentui")
 const SHELL_SDK = join(ROOT, "packages/shell/node_modules/@deepseek-ai/dsh-client-connection")
 const NODE = process.env.NODE || process.execPath
@@ -136,8 +137,6 @@ const envMissing = (kind) => {
 		if (!commandExists(cmd)) missing.push(`${cmd} not on PATH`)
 	}
 	if (!existsSync(LAUNCHER)) missing.push(`launcher missing: ${LAUNCHER}`)
-	if (!existsSync(join(REAL_HOME, "profiles", PROFILE)))
-		missing.push(`profile '${PROFILE}' not provisioned under ${REAL_HOME} (run from a machine with a dsh install)`)
 	if (!existsSync(SHELL_SDK))
 		missing.push(
 			`${relative(ROOT, SHELL_SDK)} missing (needs a global dsh install or the CI stub; the client cannot boot without it)`,

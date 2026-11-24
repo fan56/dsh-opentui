@@ -12,16 +12,17 @@
 // Exit 0 = all six commands produced a non-unavailable, expected branch.
 // Exit 1 = at least one command still degraded / panicked. Exit 2 = env problem.
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
 const MOCK = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
-const PROFILE = 'opentui'
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 const IDLE = '提问，回车发送'
 const PLACEHOLDER = 'Type a message'
 const PORT = 19500 + (process.pid % 100) // distinct band from agents-mount (18900+pid%300)
@@ -34,27 +35,23 @@ const tmux = (...a) => sh('tmux', a)
 const tmuxOut = (...a) => (tmux(...a).status === 0 ? tmux(...a).stdout : '')
 
 if (!existsSync(LAUNCHER) || !existsSync(MOCK)) { console.error('w1a-six: launcher or mock missing'); process.exit(2) }
-if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) { console.error('w1a-six: opentui profile missing'); process.exit(2) }
 mkdirSync(OUT, { recursive: true })
 
 const HOME = mkdtempSync(join(tmpdir(), 'w1a-six-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'w1a-six-ws-'))
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
-const cfgPath = join(HOME, 'profiles', PROFILE, 'config.json')
+let profileDir
+try {
+  profileDir = provisionScratchProfile({ home: HOME, repo: REPO })
+} catch (error) {
+  console.error(`w1a-six: ${error.message}`)
+  process.exit(2)
+}
+const cfgPath = join(profileDir, 'config.json')
 try { const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')); cfg.lang = 'en'; writeFileSync(cfgPath, JSON.stringify(cfg, null, 2)) } catch {}
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
-  const from = join(REAL_HOME, rel); if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
-}
-{
-  const prov = join(REPO, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
-  const r = sh(process.execPath, [prov, '--repair'], { env: { ...process.env, DSH_HOME: HOME } })
-  if (r.status !== 0) { console.error('w1a-six: provision failed:\n' + (r.stderr || r.stdout)); process.exit(2) }
-}
 // Pin the default model route to the offline mock, and neutralise any real API
 // base URL so no operator env can send the /btw probe to the network.
-const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+const patchPath = join(profileDir, 'cordis.patch.yml')
 {
   let patch = readFileSync(patchPath, 'utf8')
   const withUrl = patch.replace(/(\n {6}zai-coding-cn:\n)/, `$1        baseURL: http://127.0.0.1:${PORT}/v1\n`)

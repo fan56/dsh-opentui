@@ -4,8 +4,8 @@
 //   DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts
 //
 // Runs verify/agents-mount-repro.mjs: the REAL `./dsh-opentui` launcher in a
-// tmux pane against a SCRATCH DSH_HOME (seeded from ~/.dsh; nothing is written
-// to the real home) and checks that
+// tmux pane against a SCRATCH DSH_HOME provisioned by the real in-process
+// provisioner (nothing is written to the real home) and checks that
 //   - `/agents` opens the manager panel (table, or the limits layer on an
 //     empty corpus) instead of "/agents: the manager panel is not mounted in
 //     this entry",
@@ -19,21 +19,17 @@
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 
 const RUN = process.env.DSH_AGENTS_E2E === "1"
 const REPO = join(import.meta.dir, "..", "..", "..")
 const SCRIPT = join(REPO, "verify", "agents-mount-repro.mjs")
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), ".dsh")
 
 function missingPrereqs(): string[] {
 	const out: string[] = []
 	if (!existsSync(SCRIPT)) out.push(`repro script missing: ${SCRIPT}`)
 	if (spawnSync("which", ["tmux"], { encoding: "utf8" }).status !== 0) out.push("tmux not on PATH")
 	if (spawnSync("which", ["bun"], { encoding: "utf8" }).status !== 0) out.push("bun not on PATH")
-	if (!existsSync(join(REAL_HOME, "profiles", "opentui")))
-		out.push(`profile 'opentui' not provisioned under ${REAL_HOME}`)
 	return out
 }
 

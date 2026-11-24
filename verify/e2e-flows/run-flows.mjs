@@ -7,8 +7,7 @@
 //   node verify/e2e-flows/run-flows.mjs --keep           # keep failed scratch homes
 //
 // Each scenario provisions a private DSH_HOME under the OS temp dir (never
-// touches ~/.dsh beyond READING the opentui profile as a template), boots
-// `./dsh-opentui --client` in a private tmux server (unique socket + session
+// touches ~/.dsh), boots `./dsh-opentui --client` in a private tmux server (unique socket + session
 // name), and drives the real UI. The only model in the scratch home is
 // `fake-gw`, an OpenAI-compatible SSE server started on an ephemeral port
 // (verify/e2e-flows/fake-model.mjs).
@@ -16,20 +15,19 @@
 // Assertions print `expected` / `actual` and a screen snippet. The process
 // exits 0 only when every scenario passes (SKIP is not a failure).
 //
-// Environment: bun, tmux and the global `dsh` must be on PATH, and the
-// `opentui` profile must exist under $DSH_HOME (or ~/.dsh) — the client's
-// normal first-run provisions it.
+// Environment: bun, tmux and the global `dsh` must be on PATH. Each scenario
+// runs the real in-process provisioner against its scratch HOME.
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../../packages/shell/scripts/lib/profile-name.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
-const PROFILE = 'opentui'
-const TEMPLATE_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 const GEOMETRY = { x: 120, y: 34 }
 const IDLE_MARKERS = ['提问，回车发送', 'Type a message']
 const FAKE_KEY = 'e2e-fake-key'
@@ -67,7 +65,6 @@ for (const cmd of ['bun', 'tmux', 'dsh']) {
   if (sh('which', [cmd]).status !== 0) missing.push(cmd)
 }
 if (!existsSync(LAUNCHER)) missing.push(`launcher ${LAUNCHER}`)
-if (!existsSync(join(TEMPLATE_HOME, 'profiles', PROFILE))) missing.push(`profile ${join(TEMPLATE_HOME, 'profiles', PROFILE)}`)
 if (missing.length > 0) {
   console.error(`e2e-flows: cannot run — missing: ${missing.join(', ')}`)
   process.exit(2)
@@ -515,7 +512,7 @@ try {
     const sess = `e2e-${s.name}-${process.pid}-${i}`
     console.log(`\n=== [${i + 1}/${selected.length}] ${s.name} — ${s.title}`)
 
-    const setup = sh('node', [join(HERE, 'setup-home.mjs'), '--home', home, '--workspace', ws, '--port', String(FAKE_PORT), '--template', TEMPLATE_HOME], { encoding: 'utf8' })
+    const setup = sh('node', [join(HERE, 'setup-home.mjs'), '--home', home, '--workspace', ws, '--port', String(FAKE_PORT)], { encoding: 'utf8' })
     if (setup.status !== 0) {
       console.log(`  FAIL scratch home — ${setup.stderr || setup.stdout}`)
       results.push({ name: s.name, ok: false, passes: 0, failures: 1, skips: [] })

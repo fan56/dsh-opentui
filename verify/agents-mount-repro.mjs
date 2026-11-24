@@ -4,7 +4,7 @@
 //   node verify/agents-mount-repro.mjs [--cols 120] [--rows 34] [--keep]
 //
 // What it proves (against the REAL launcher `./dsh-opentui`, a scratch
-// DSH_HOME seeded from the real home — all writes stay in scratch HOME):
+// DSH_HOME built by the real in-process provisioner — all writes stay in scratch HOME):
 //   1. `/agents` opens the panel-kit modal (title `Agents`, List columns
 //      NAME/MODEL/THINK/DEEP/LIMITS, one row per agent; the limits layer when
 //      the corpus is empty) instead of the fallback notice
@@ -36,17 +36,17 @@
 // survive. The scratch host is reaped through its scratch lock file.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
 const MOCK = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
-const PROFILE = 'opentui'
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 // The composer placeholder in this view stack (the old kit IDLE string is the
 // host's; the tui-base composer paints this one). Both are accepted so the
 // driver keeps working if the skin swaps the copy.
@@ -188,10 +188,6 @@ const settingsUp = (out) => out.includes(SETTINGS_SUBTITLE)
 
 for (const cmd of ['tmux', 'bun'])
   if (sh('which', [cmd]).status !== 0) { console.error(`agents-mount: ${cmd} not on PATH`); process.exit(2) }
-if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
-  console.error(`agents-mount: profile '${PROFILE}' missing under ${REAL_HOME}`)
-  process.exit(2)
-}
 if (!existsSync(LAUNCHER) || !existsSync(MOCK)) {
   console.error(`agents-mount: launcher or mock missing (${LAUNCHER}, ${MOCK})`)
   process.exit(2)
@@ -202,48 +198,32 @@ if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-agents-mount-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-agents-mount-ws-'))
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
+let profileDir
+try {
+  profileDir = provisionScratchProfile({ home: HOME, repo: REPO })
+} catch (error) {
+  console.error(`agents-mount: ${error.message}`)
+  process.exit(2)
+}
 
 // Deterministic language: the harness asserts en copy, so pin the scratch
-// config's `lang` regardless of what the operator's real profile carries.
-const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+// config's `lang` regardless of any migrated legacy preference.
+const profileConfigPath = join(profileDir, 'config.json')
 try {
   const cfg = JSON.parse(readFileSync(profileConfigPath, 'utf8'))
   cfg.lang = 'en'
   writeFileSync(profileConfigPath, JSON.stringify(cfg, null, 2))
 } catch {}
-
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
-  const from = join(REAL_HOME, rel)
-  if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
-}
-// 024 real-client runner fix: the scratch home must carry a PROVISIONED
-// in-process bridge host. Copying only the `opentui` profile leaves no
-// `opentui-inproc` profile (host: `profile "opentui-inproc" does not exist`),
-// and copying it from the real home carries a dangling bridge symlink
-// (host skips the bundle -> bridge.hello times out). Provision from THIS
-// installation with --repair: it creates the inproc profile, points the
-// bridge at this checkout's dist/bridge and grants the host-version
-// exemption. Idempotent; writes only to the scratch HOME.
-{
-  const prov = join(REPO, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
-  const r = sh(process.execPath, [prov, '--repair'], { env: { ...process.env, DSH_HOME: HOME } })
-  if (r.status !== 0) {
-    console.error('agents-mount: in-process profile provisioning failed:\n' + (r.stderr || r.stdout))
-    process.exit(2)
-  }
-}
 // Deterministic, offline model route (same pattern as ui-matrix.mjs): the
 // scratch patch's zai-coding-cn provider points at the local mock and the
-// default route is re-pinned to it. The operator's real profile may carry its
+// default route is re-pinned to it. A migrated legacy profile may carry its
 // own agent-default-model row pointing at a REAL provider/model, and the host
 // catalog default is not stable across environments — either state would send
 // the seed turn below to the network. So this key is never trusted from the
 // copy: EVERY agent-default-model entry is stripped first, then exactly one
 // pinned entry is appended. Immune to the operator's profile state by
 // construction.
-const profilePatchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+const profilePatchPath = join(profileDir, 'cordis.patch.yml')
 {
   let patch = readFileSync(profilePatchPath, 'utf8')
   const withUrl = patch.replace(/(\n {6}zai-coding-cn:\n)/, `$1        baseURL: http://127.0.0.1:${PORT}/v1\n`)
@@ -269,7 +249,7 @@ const profilePatchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
   }
   patch = kept.join('\n').replace(/\n*$/, '\n') + [
     '# agents-mount: pin the default route to the mocked provider (any',
-    '# agent-default-model row copied from the real profile was removed above).',
+    '# agent-default-model row carried by migration was removed above).',
     '- id: agent-default-model',
     '  name: "@deepseek-ai/dsh-agent-default-model"',
     '  config:',
@@ -682,7 +662,7 @@ try {
   // profile config.json, and the Host section: the four whitelist rows from
   // the live settings/describe plus a keyboard-selected row saved on Enter
   // (instant model, no commit key) into the scratch cordis.patch.yml.
-  const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+  const profileConfigPath = join(profileDir, 'config.json')
   const readProfile = () => {
     try { return JSON.parse(readFileSync(profileConfigPath, 'utf8')) } catch { return {} }
   }
@@ -820,7 +800,7 @@ try {
       `values: maxActiveSubagents=${/subagent\.maxActiveSubagents\s+(\S+)/.exec(hostPane.out)?.[1] ?? '?'} ` +
       `maxDepth=${/subagent\.maxDepth\s+(\S+)/.exec(hostPane.out)?.[1] ?? '?'} ` +
       `session-log-deepseek.enabled=${/session-log-deepseek\.enabled\s+(\S+)/.exec(hostPane.out)?.[1] ?? '?'}`])
-  record('/settings never lists dsh-tui (not part of the opentui profile)',
+  record('/settings never lists dsh-tui (not part of the active inproc profile)',
     !hostPane.out.includes('dsh-tui'),
     [!hostPane.out.includes('dsh-tui') ? 'absent' : 'dsh-tui leaked into the read-only list'])
   // A section longer than one page reports its window; the old three-zone

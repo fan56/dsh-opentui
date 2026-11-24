@@ -14,7 +14,7 @@
 |---|---|---|---|---|---|
 | **unit** | 纯函数 / 状态机 / 手造 ctx 的行为 | `bun run test:unit` | 只需 `bun` + 依赖装好 | `0 fail`，**且 0 skip**（env-gated 用例已从本层剔除） | `(fail) <describe> > <test>` + 断言 diff + `N pass / M fail` |
 | **ft** | 真实渲染器（`testRender` / `@opentui/core/testing`）或真实装配（entry→host 的 `verify:` 契约、composer/keymap/面板），不需要网络 | `bun run test:ft` | 只需 `bun` | 同上，0 fail | 同上；帧断言失败会带 `received` 帧内容 |
-| **ui** | 视觉/布局数值：tmux 抓屏 + ANSI 断言（行数、列宽、边框字符、SGR、对比度），几何矩阵 80×24 / 120×34 / 45×30 / 100×45 / 120×52 | `bun run test:ui` | `tmux`、`bun`、`dsh`、`~/.dsh/profiles/opentui`、可解析的 `@deepseek-ai/dsh-client-connection` | 每个几何的每条数值断言 `PASS`；退出码 0 | `FAIL <geom> <item> — <数值>`；抓屏留在 `verify/ui-matrix-out/`、`verify/agents-mount-out/`；退出码 1 = 断言失败，2 = 环境缺失 |
+| **ui** | 视觉/布局数值：tmux 抓屏 + ANSI 断言（行数、列宽、边框字符、SGR、对比度），几何矩阵 80×24 / 120×34 / 45×30 / 100×45 / 120×52 | `bun run test:ui` | `tmux`、`bun`、`dsh`、可解析的 `@deepseek-ai/dsh-client-connection`；scratch HOME 由真 inproc provisioner 生成 | 每个几何的每条数值断言 `PASS`；退出码 0 | `FAIL <geom> <item> — <数值>`；抓屏留在 `verify/ui-matrix-out/`、`verify/agents-mount-out/`；退出码 1 = 断言失败，2 = 环境缺失 |
 | **e2e** | 真客户端 + 真宿主（scratch `DSH_HOME`）+ 完整用户流程；本地 flows 腿用**假模型**，live 腿用真模型 | `bun run test:e2e` | `tmux`、`dsh`、profile；live 腿是显式 opt-in：`DSH_E2E_LIVE=1` + 有效 provider key | 本地 flows 10 场景全 `PASS`；live 腿默认 `SKIP` 并打印原因（不计为通过）；旧 podman 容器套件已在 025-w3-2 下线（NOT RUN，不计绿） | 退出码 1 + 失败项原始 detail；退出码 2 = 环境缺失；抓屏在 `verify/*-out/` |
 
 环境缺失时 **exit 2 并列出缺项**（`test:ui/e2e: environment missing — NOT RUN (this is not a pass)`）。

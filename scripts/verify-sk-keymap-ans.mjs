@@ -10,8 +10,8 @@
  *   paging  — panel open, PgUp/PgDn belongs to the panel pager (overlay tier)
  *   basic   — base key regression (composer accepts input, footer hints render)
  *
- * Isolation mirrors scripts/verify-s1-model-ans.mjs: scratch DSH_HOME seeded
- * from the real home, no writes to ~/.dsh. Each captured frame is written as
+ * Isolation mirrors scripts/verify-s1-model-ans.mjs: scratch DSH_HOME built by
+ * the real in-process provisioner, never reads or writes ~/.dsh. Each captured frame is written as
  * raw `capture-pane -e` output to <outDir>/*.ans and a plain view to *.log.
  *
  * Honesty contract (oldfox S2 review §四.1): if the TUI cannot reach the
@@ -21,15 +21,15 @@
  * (script ran, raw files landed, exit code honest) is machine-judged.
  */
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from '../verify/lib/scratch-profile.mjs'
 
 const ROOT = process.cwd()
 const LAUNCHER = join(ROOT, 'dsh-opentui')
-const REAL_HOME = join(homedir(), '.dsh')
-const PROFILE = 'opentui'
+const PROFILE = DEFAULT_PROFILE
 const OUT = process.argv[2] || join(ROOT, '.proof/024-sk-keymap')
 const BOOT_WAIT = Number(process.argv[3] || 90)
 const SESS = `sk-keymap-${process.pid}`
@@ -43,8 +43,8 @@ const capture = (ansi = true) => {
 }
 const log = (line) => { console.log(line); appendFileSync(join(OUT, '06-09-ans-run.log'), line + '\n') }
 
-if (!existsSync(LAUNCHER) || !existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
-  console.error('sk-ans: launcher or real profile missing'); process.exit(2)
+if (!existsSync(LAUNCHER)) {
+  console.error('sk-ans: launcher missing'); process.exit(2)
 }
 if (sh('which', ['tmux']).status !== 0) { console.error('sk-ans: tmux not on PATH'); process.exit(2) }
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
@@ -55,42 +55,22 @@ log(`env: launcher=${LAUNCHER} profile=${PROFILE} bootWait=${BOOT_WAIT}s`)
 
 const HOME = mkdtempSync(join(tmpdir(), 'sk-keymap-home-'))
 chmodSync(HOME, 0o700)
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
-// The in-process bridge host boots the `opentui-inproc` profile; seed it too
-// when the real home has it, so the gate fails only on a genuinely missing
-// renderable host rather than an under-provisioned scratch home.
-for (const extra of [DEFAULT_PROFILE, 'headless']) {
-  const from = join(REAL_HOME, 'profiles', extra)
-  if (existsSync(from)) cpSync(from, join(HOME, 'profiles', extra), { recursive: true })
-}
-// 024 real-client runner fix: repairing the in-process bridge host is REQUIRED
-// even after seeding opentui-inproc from the real home — that copy carries a
-// dangling bridge symlink (points at a removed worktree), so the host skips
-// the bundle and bridge.hello times out. Provision from THIS installation
-// with --repair (idempotent, scratch HOME only).
-{
-  const prov = join(ROOT, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
-  const r = spawnSync(process.execPath, [prov, '--repair'], { encoding: 'utf8', env: { ...process.env, DSH_HOME: HOME } })
-  if (r.status !== 0) {
-    console.error('sk-ans: in-process profile provisioning failed:\n' + (r.stderr || r.stdout))
-    process.exit(2)
-  }
-}
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'settings.yaml', 'workspace-presets.json']) {
-  const from = join(REAL_HOME, rel)
-  if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
+let profileDir
+try {
+  profileDir = provisionScratchProfile({ home: HOME, repo: ROOT })
+} catch (error) {
+  console.error(`sk-ans: ${error.message}`)
+  process.exit(2)
 }
 try {
-  const p = join(HOME, 'profiles', PROFILE, 'config.json')
+  const p = join(profileDir, 'config.json')
   const cfg = JSON.parse(readFileSync(p, 'utf8')); cfg.lang = 'zh-CN'
   writeFileSync(p, JSON.stringify(cfg, null, 2))
 } catch {}
-try { cpSync(join(REAL_HOME, 'profiles', 'node_modules'), join(HOME, 'profiles', 'node_modules'), { recursive: true }) } catch {}
 
 tmux('kill-session', '-t', SESS)
 const errLog = join(OUT, '06-09-ans.err.log')
-const env = [`DSH_HOME=${HOME}`, `NODE_PATH=${join(HOME, 'profiles', 'node_modules')}`, 'DSH_OPENTUI_DEBUG=1']
+const env = [`DSH_HOME=${HOME}`, 'DSH_OPENTUI_DEBUG=1']
 const boot = tmux('new-session', '-d', '-x', '120', '-y', '34', '-s', SESS, '-c', ROOT,
   `${env.join(' ')} ${LAUNCHER} --client 2>${errLog}`)
 if (boot.status !== 0) {
@@ -122,7 +102,7 @@ function blockedAll(reason) {
   writeFileSync(join(OUT, '08-ans-basic.ans'), '')
   for (const [id, , desc] of scenarios) log(`BLOCKED ${id}: ${desc} — ${reason}`)
   log('Reason: provisioned runner / renderable TUI host not available locally (same wall as S1/S2 verify70).')
-  log('Tried: tmux new-session + capture-pane -e with scratch DSH_HOME seeded from real profile; last pane saved to 06-ans-modal.ans; stderr to 06-09-ans.err.log.')
+  log('Tried: tmux new-session + capture-pane -e with scratch DSH_HOME built by the real in-process provisioner; last pane saved to 06-ans-modal.ans; stderr to 06-09-ans.err.log.')
   log('Excluded scope: render-frame ownership assertions for modal/esc/paging/basic; local-reachable script execution is machine-judged separately.')
   log('Remaining risk: key ownership at true rendered modality cannot be confirmed on this runner; register in 024-e2e-requirements.md B3/C4 channel.')
   tmux('kill-session', '-t', SESS)

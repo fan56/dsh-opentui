@@ -37,20 +37,20 @@ describe('parseLauncherArgs', () => {
     expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--model', 'x', '--force', 'prompt'])).toEqual({
+    expect(parseLauncherArgs(['--session', 'x', '--force', 'prompt'])).toEqual({
       version: false,
       force: true,
       repairBridge: false,
       yes: false,
-      rest: ['--model', 'x', 'prompt'],
+      rest: ['--session', 'x', 'prompt'],
       passthrough: [],
     })
   })
 
   test('consumes --yes (confirm flag) and never forwards it', () => {
     expect(parseLauncherArgs(['--force', '--yes'])).toEqual({ version: false, force: true, repairBridge: false, yes: true, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--yes', '--model', 'x'])).toEqual({
-      version: false, force: false, repairBridge: false, yes: true, rest: ['--model', 'x'], passthrough: [],
+    expect(parseLauncherArgs(['--yes', '--session', 'x'])).toEqual({
+      version: false, force: false, repairBridge: false, yes: true, rest: ['--session', 'x'], passthrough: [],
     })
     expect(parseLauncherArgs(['--yes', '--', '--yes']).passthrough).toEqual(['--yes'])
   })
@@ -61,12 +61,12 @@ describe('parseLauncherArgs', () => {
   })
 
   test('leaves unrelated arguments (including lookalikes) untouched', () => {
-    expect(parseLauncherArgs(['--model', '--version-like', '--forced'])).toEqual({
+    expect(parseLauncherArgs(['--session', '--version-like', '--forced'])).toEqual({
       version: false,
       force: false,
       repairBridge: false,
       yes: false,
-      rest: ['--model', '--version-like', '--forced'],
+      rest: ['--session', '--version-like', '--forced'],
       passthrough: [],
     })
     expect(parseLauncherArgs([])).toEqual({ version: false, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
@@ -81,12 +81,12 @@ describe('parseLauncherArgs', () => {
       rest: [],
       passthrough: [],
     })
-    expect(parseLauncherArgs(['--model', 'x', '--repair-bridge', 'prompt'])).toEqual({
+    expect(parseLauncherArgs(['--session', 'x', '--repair-bridge', 'prompt'])).toEqual({
       version: false,
       force: false,
       repairBridge: true,
       yes: false,
-      rest: ['--model', 'x', 'prompt'],
+      rest: ['--session', 'x', 'prompt'],
       passthrough: [],
     })
   })
@@ -104,10 +104,10 @@ describe('readLauncherVersion', () => {
 
 describe('parseProcessRows', () => {
   test('parses pid/ppid/command rows and skips non-row lines', () => {
-    const rows = parseProcessRows('  PID  PPID COMMAND\n 42 1 /sbin/launchd\nbad line\n 99 42 node dsh --profile opentui\n')
+    const rows = parseProcessRows('  PID  PPID COMMAND\n 42 1 /sbin/launchd\nbad line\n 99 42 node dsh --profile opentui-inproc\n')
     expect(rows).toEqual([
       { pid: 42, ppid: 1, command: '/sbin/launchd' },
-      { pid: 99, ppid: 42, command: 'node dsh --profile opentui' },
+      { pid: 99, ppid: 42, command: 'node dsh --profile opentui-inproc' },
     ])
   })
 
@@ -124,7 +124,7 @@ describe('parseProcessHomes', () => {
     const homes = parseProcessHomes(
       [
         '11 bun run thing DSH_HOME=/tmp/a',
-        '12 node dsh --profile opentui DSH_HOME=/tmp/b',
+        '12 node dsh --profile opentui-inproc DSH_HOME=/tmp/b',
         '13 node DSH_HOME=/cmd/line DSH_HOME=/the/env',
       ].join('\n'),
     )
@@ -134,29 +134,29 @@ describe('parseProcessHomes', () => {
   })
 
   test('a pid without DSH_HOME in its environment maps to undefined', () => {
-    const homes = parseProcessHomes('21 node dsh --profile opentui\n\nnot a row')
+    const homes = parseProcessHomes('21 node dsh --profile opentui-inproc\n\nnot a row')
     expect(homes.get(21)).toBeUndefined()
   })
 })
 
 describe('classifyProcess', () => {
   test('the opentui host in its real-world shapes', () => {
-    expect(classifyProcess('node /opt/homebrew/bin/dsh --profile opentui --no-open --port 50657')).toBe('host')
-    expect(classifyProcess('dsh --profile opentui')).toBe('host')
-    expect(classifyProcess('dsh --profile=opentui')).toBe('host')
-    expect(classifyProcess('bun /usr/local/bin/dsh --profile opentui --port 1')).toBe('host')
+    expect(classifyProcess('node /opt/homebrew/bin/dsh --profile opentui-inproc --no-open --port 50657')).toBe('host')
+    expect(classifyProcess('dsh --profile opentui-inproc')).toBe('host')
+    expect(classifyProcess('dsh --profile=opentui-inproc')).toBe('host')
+    expect(classifyProcess('bun /usr/local/bin/dsh --profile opentui-inproc --port 1')).toBe('host')
   })
 
   test('provision children, other profiles and mere mentions are NOT the host', () => {
-    expect(classifyProcess('node /opt/homebrew/bin/dsh plugin --profile opentui add @aiwayds/x')).toBeNull()
+    expect(classifyProcess('node /opt/homebrew/bin/dsh plugin --profile opentui-inproc add @aiwayds/x')).toBeNull()
     expect(classifyProcess('dsh opentui --dump-config')).toBeNull()
     expect(classifyProcess('dsh --profile default')).toBeNull()
     // a wrapper script that only MENTIONS dsh in its own argv
-    expect(classifyProcess('node wrapper.js dsh --profile opentui')).toBeNull()
+    expect(classifyProcess('node wrapper.js dsh --profile opentui-inproc')).toBeNull()
     // shells / tools whose command line references the profile
     expect(classifyProcess('zsh -c env DSH_HOME=/x dsh-opentui --force')).toBeNull()
-    expect(classifyProcess('grep --profile opentui logs.txt')).toBeNull()
-    expect(classifyProcess('tmux new-session -d -s x dsh --profile opentui')).toBeNull()
+    expect(classifyProcess('grep --profile opentui-inproc logs.txt')).toBeNull()
+    expect(classifyProcess('tmux new-session -d -s x dsh --profile opentui-inproc')).toBeNull()
   })
 
   test('clients: source entry and published bundle', () => {
@@ -167,10 +167,10 @@ describe('classifyProcess', () => {
 
 describe('selectStaleProcesses', () => {
   const rows = [
-    { pid: 10, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile opentui --no-open --port 1' },
+    { pid: 10, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile opentui-inproc --no-open --port 1' },
     { pid: 11, ppid: 1, command: 'bun /x/dist/client/index.js' },
     { pid: 12, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile other --no-open --port 2' },
-    { pid: 13, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile opentui --no-open --port 3' },
+    { pid: 13, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile opentui-inproc --no-open --port 3' },
     { pid: 14, ppid: 1, command: 'bun --preload p /repo/src/client-entry.tsx' },
   ]
 
@@ -268,7 +268,7 @@ describe('bin integration: --version short-circuits the startup chain', () => {
     ['--version'],
     ['-v'],
     ['--force', '--version'],
-    ['--model', 'm', '--version'],
+    ['--session', 'm', '--version'],
     ['-v', '--', '--whatever'],
   ]
   for (const args of cases) {
@@ -300,13 +300,13 @@ describe('bin integration: --version short-circuits the startup chain', () => {
 describe('parseLauncherArgs -- separator', () => {
   test('everything after the first standalone -- goes to passthrough verbatim', () => {
     expect(
-      parseLauncherArgs(['--model', 'm', '--', '--version', '--force', '--verison', 'plain']),
+      parseLauncherArgs(['--session', 'm', '--', '--version', '--force', '--verison', 'plain']),
     ).toEqual({
       version: false,
       force: false,
       repairBridge: false,
       yes: false,
-      rest: ['--model', 'm'],
+      rest: ['--session', 'm'],
       passthrough: ['--version', '--force', '--verison', 'plain'],
     })
   })
@@ -424,11 +424,6 @@ describe('formatUsage', () => {
       '--boot-timeout <sec>',
       '--mux-timeout <sec>',
       '--connect-timeout <sec>',
-      '--provider <name>',
-      '--model <name>',
-      '--reasoning-effort <level>',
-      '--plugins <tier>',
-      '--dry-run',
       '-h, --help',
     ]) {
       expect(usage).toContain(flag)
@@ -526,17 +521,8 @@ describe('parseLauncherOptions', () => {
 })
 
 describe('validateLauncherArgs', () => {
-  test('allowlisted provision and client flags plus values and positionals pass', () => {
+  test('allowlisted client flags plus values and positionals pass', () => {
     const result = validateLauncherArgs([
-      '--provider',
-      'p',
-      '--model',
-      'm',
-      '--reasoning-effort',
-      'high',
-      '--plugins',
-      'core',
-      '--dry-run',
       '--new',
       '--resume-last',
       '--session',
@@ -546,26 +532,22 @@ describe('validateLauncherArgs', () => {
     expect(result.unknown).toEqual([])
   })
 
-  test('inline --plugins= and --session= forms pass', () => {
-    expect(validateLauncherArgs(['--plugins=none', '--session=x']).unknown).toEqual([])
+  test('inline --session= form passes', () => {
+    expect(validateLauncherArgs(['--session=x']).unknown).toEqual([])
   })
 
-  test('inline --provider=, --model= and --reasoning-effort= forms pass', () => {
-    const result = validateLauncherArgs(['--provider=x', '--model=y', '--reasoning-effort=high'])
-    expect(result.unknown).toEqual([])
+  test('retired profile-provisioning flags are rejected', () => {
+    for (const flag of ['--provider=x', '--model=y', '--reasoning-effort=high', '--plugins=none', '--dry-run']) {
+      expect(validateLauncherArgs([flag]).unknown).toEqual([flag])
+    }
   })
 
   test('a value-taking flag consumes the next token even when it starts with -', () => {
-    for (const flag of ['--session', '--provider', '--model', '--reasoning-effort', '--plugins']) {
-      expect(validateLauncherArgs([flag, '-x']).unknown).toEqual([])
-    }
+    expect(validateLauncherArgs(['--session', '-x']).unknown).toEqual([])
   })
 
   test('a known flag after a value-taking flag is not consumed as its value', () => {
     expect(validateLauncherArgs(['--session', '--new']).unknown).toEqual([])
-    // --plugins was validated on its own: it consumed its own -x value rather
-    // than being swallowed by --session (which would leave -x unknown).
-    expect(validateLauncherArgs(['--session', '--plugins', '-x']).unknown).toEqual([])
   })
 
   test('a single-character unknown flag is reported without a misleading suggestion', () => {
@@ -663,9 +645,8 @@ describe('bin integration: usage errors fail before provisioning', () => {
 // real host (and any dependence on a globally installed dsh), copy the bin +
 // its lib into a throwaway package root, stub the two filesystem gates
 // (dist/client/index.js and the SDK link), put a fake `dsh` and a controllable
-// fake `bun` first on PATH, and pass `--dry-run` (there is no HTTP host
-// pre-launch any more; the flag is simply forwarded). The subject under test
-// is the launcher's exit-code mapping of the child's outcome, so only the
+// fake `bun` first on PATH. There is no HTTP host pre-launch; the subject under
+// test is the launcher's exit-code mapping of the child's outcome, so only the
 // fake bun's exit code / signal death matters.
 function makeAsyncLauncherHarness() {
   const root = mkdtempSync(join(tmpdir(), 'dsh-launcher-async-'))
@@ -674,12 +655,12 @@ function makeAsyncLauncherHarness() {
   cpSync(binPath, join(tmpBinDir, 'dsh-opentui.mjs'))
   cpSync(join(pkgRoot, 'bin', 'lib', 'launcher.mjs'), join(tmpBinDir, 'lib', 'launcher.mjs'))
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@aiwayds/dsh-opentui', version: pkgVersion }))
-  // S6: provisioning is unconditional (no env hatch to skip it). Copy the
-  // scripts/ tree + a real dist/bridge so the launcher's step-3b provisioning
-  // passes; the subject (fake-bun exit-code mapping) is unchanged.
+  // S6: provisioning is unconditional. Copy the scripts/ tree + a real
+  // dist/bridge so the launcher's step-3 provisioning passes; the subject
+  // (fake-bun exit-code mapping) is unchanged.
   cpSync(join(pkgRoot, 'scripts'), join(root, 'scripts'), { recursive: true })
   cpSync(join(pkgRoot, 'dist', 'bridge'), join(root, 'dist', 'bridge'), { recursive: true })
-  // Step 6 existsSync gate — fake bun ignores the bundle contents.
+  // Step 5 existsSync gate — fake bun ignores the bundle contents.
   mkdirSync(join(root, 'dist', 'client'), { recursive: true })
   writeFileSync(join(root, 'dist', 'client', 'index.js'), '')
   // ensureClientConnectionSdk() returns early when this package.json exists.
@@ -687,7 +668,7 @@ function makeAsyncLauncherHarness() {
   mkdirSync(sdkDir, { recursive: true })
   writeFileSync(join(sdkDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-client-connection', version: '0.0.0' }))
   // The copied scripts/ tree imports `yaml` and `@deepseek-ai/cordis`; link
-  // them from this package's installed node_modules so step-3b provisioning
+  // them from this package's installed node_modules so step-3 provisioning
   // resolves them (the throwaway root has no manifest deps of its own).
   symlinkSync(join(pkgRoot, 'node_modules', 'yaml'), join(root, 'node_modules', 'yaml'), 'dir')
   symlinkSync(join(pkgRoot, 'node_modules', '@deepseek-ai', 'cordis'), join(root, 'node_modules', '@deepseek-ai', 'cordis'), 'dir')
@@ -725,7 +706,7 @@ function makeAsyncLauncherHarness() {
 }
 
 function runAsyncLauncher(h: ReturnType<typeof makeAsyncLauncherHarness>, args: string[] = []) {
-  return spawnSync('node', [h.launcherBin, '--dry-run', ...args], { encoding: 'utf8', timeout: 30_000, env: h.env })
+  return spawnSync('node', [h.launcherBin, ...args], { encoding: 'utf8', timeout: 30_000, env: h.env })
 }
 
 describe('bin integration: async client spawn maps child exit code / signal (PR B)', () => {

@@ -17,10 +17,11 @@
  *
  * SCOPE (requirement: never touch another profile's instances):
  * a candidate is "ours" only when BOTH hold:
- *   - the command line is the host/client shape of the `opentui` profile
- *     (`node <...>/dsh --profile opentui ...` for the host; a bun process
- *     running the client entry for the client). A `dsh plugin --profile
- *     opentui add ...` provision child is NOT a host and never matches.
+ *   - the command line is the host/client shape of the active in-process
+ *     profile (`node <...>/dsh --profile opentui-inproc ...` for the host; a
+ *     bun process running the client entry for the client). A `dsh plugin
+ *     --profile opentui-inproc add ...` provision child is NOT a host and
+ *     never matches.
  *   - the process resolves to the SAME dsh home as this launcher (DSH_HOME
  *     from the process environment, defaulting to ~/.dsh). The profile
  *     instance is identified by (dsh home, profile) — the same key the
@@ -34,9 +35,10 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { DEFAULT_PROFILE } from '../../scripts/lib/profile-name.mjs'
 
-/** The one product profile (ADR-0005 decision 3). */
-export const PROFILE = 'opentui'
+/** The one active in-process host profile (shared with the provisioner). */
+export const PROFILE = DEFAULT_PROFILE
 
 /** The default dsh home when DSH_HOME is unset. */
 export function defaultDshHome() {
@@ -105,17 +107,8 @@ export function parseLauncherArgs(argv) {
  */
 export const LAUNCHER_TIMEOUT_FLAGS = ['--boot-timeout', '--mux-timeout', '--connect-timeout']
 
-/** Allowed argv tokens/patterns: profile provisioning forwards + client launch. */
+/** Allowed argv tokens/patterns: client launch. */
 export const KNOWN_CLIENT_ARGS = [
-	'--provider',
-	'--provider=',
-	'--model',
-	'--model=',
-	'--reasoning-effort',
-	'--reasoning-effort=',
-	'--plugins',
-	'--plugins=',
-	'--dry-run',
 	'--new',
 	'--resume-last',
 	'--session',
@@ -247,7 +240,7 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 		skipped.some((s) => token === s || token.startsWith(`${s}=`)) ||
 		KNOWN_CLIENT_ARGS.some((known) => known.endsWith('=') && token.startsWith(known))
 	// Space-form flags whose immediately following token is always their value.
-	const valueTaking = ['--provider', '--model', '--reasoning-effort', '--plugins', '--session']
+	const valueTaking = ['--session']
 	const unknown = []
 	const args = Array.isArray(rest) ? rest : []
 	for (let i = 0; i < args.length; i++) {
@@ -316,11 +309,6 @@ export function formatUsage() {
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
 		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',
-		'  --provider <name>          forwarded to profile provisioning',
-		'  --model <name>             forwarded to profile provisioning',
-		'  --reasoning-effort <level> forwarded to profile provisioning',
-		'  --plugins <tier>           forwarded to profile provisioning',
-		'  --dry-run                  forwarded to profile provisioning',
 		'  -h, --help                 print this help and exit',
 		'',
 		'Environment:',
@@ -402,7 +390,7 @@ export function parseProcessHomes(psEwwOutput) {
  * Classify a process command line.
  *
  * @returns 'host' | 'client' | null
- *   host   — the resident dsh host of the opentui profile
+ *   host   — the resident dsh host of the active in-process profile
  *   client — a dsh-opentui client process (source tree entry or the
  *            published bundle)
  *   null   — anything else (the shell/tmux wrapper, a `dsh plugin ...`
@@ -416,20 +404,20 @@ export function classifyProcess(command) {
 
 	const exe = basename(tokens[0])
 	// Only a real runtime may be the process itself — a shell that merely
-	// mentions these paths (`sh -c "dsh --profile opentui"`, a tmux command
+	// mentions these paths (`sh -c "dsh --profile opentui-inproc"`, a tmux command
 	// line) is NOT the host.
 	if (exe !== 'node' && exe !== 'bun' && exe !== 'dsh') return null
 
 	// The host: the dsh binary IS the process or sits right after the
-	// runtime (node/bun + script), and is followed by `--profile opentui`.
+	// runtime (node/bun + script), and is followed by the active profile flag.
 	// Only the first two tokens may be the dsh binary — a wrapper script
-	// (`node wrapper.js dsh --profile opentui`) merely MENTIONS it.
+	// (`node wrapper.js dsh --profile opentui-inproc`) merely MENTIONS it.
 	for (let i = 0; i < Math.min(tokens.length, 2); i++) {
 		if (basename(tokens[i]) !== 'dsh') continue
 		const next = tokens[i + 1]
 		if (next === '--profile' && tokens[i + 2] === PROFILE) return 'host'
 		if (next === `--profile=${PROFILE}`) return 'host'
-		// `dsh plugin --profile opentui add ...` (provision) and
+		// `dsh plugin --profile <active> add ...` (provision) and
 		// `dsh opentui --dump-config` are not the host.
 		return null
 	}

@@ -21,12 +21,9 @@
 #
 # What it does (all writes to a FRESH scratch DSH_HOME; ~/.dsh is never touched):
 #   1. preflight — dsh / node / bun / tmux / launcher / shipped bridge present
-#   2. fresh scratch DSH_HOME — seed the `opentui` profile + account/model
-#      fixtures from the real home, then PROVISION the in-process host with
-#      --repair (this is the fix: the real home's bridge symlink dangles at a
-#      removed worktree, so the host skips the bundle and bridge.hello times
-#      out; provisioning points it at THIS checkout's dist/bridge and grants
-#      the exact host-version exemption)
+#   2. fresh scratch DSH_HOME — run the real in-process provisioner with
+#      --repair (no reads from ~/.dsh); it creates the active profile, copies
+#      THIS checkout's dist/bridge and grants the host-version exemption
 #   3. handshake smoke — spawn `dsh --profile opentui-inproc` with
 #      DSH_OPENTUI_BRIDGE_STDIO=1, send bridge.hello, require a framed reply
 #   4. tmux boot the TUI against that scratch home, wait until the composer
@@ -41,15 +38,15 @@
 #      non-zero.
 #
 # Idempotent: safe to re-run; each run uses a new scratch home/session and
-# overwrites only its --out directory. CI-reusable: no interactive prompts,
-# no dependency on the operator's ~/.dsh state beyond read-only fixtures.
+# overwrites only its --out directory. CI-reusable: no dependency on the
+# operator's ~/.dsh state.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCHER="$REPO/dsh-opentui"
 PROVISIONER="$REPO/packages/shell/scripts/provision-inproc-profile.mjs"
 BRIDGE_DIR="$REPO/packages/shell/dist/bridge"
-REAL_HOME="${DSH_HOME_REAL:-$HOME/.dsh}"
+PROFILE="opentui-inproc"
 OUT="$REPO/.proof/real-client-gate"
 BOOT_TIMEOUT=90
 KEEP=0
@@ -122,8 +119,8 @@ env_probe() {
     printf '%s\n' "--- dsh-jev-mcp (excluded, untouched; pattern-based) ---"
     jev_lines="$(pgrep -fl 'dsh-jev-mcp' 2>/dev/null | sed 's/^/EXCLUDED /')"
     if [ -n "$jev_lines" ]; then printf '%s\n' "$jev_lines"; else printf '%s\n' "(none)"; fi
-    printf '%s\n' "--- orphan dsh --profile opentui --no-open (PID-verified, self-filtered) ---"
-    orphans="$(env_orphan_pids 'dsh --profile opentui --no-open')"
+    printf '%s\n' "--- orphan dsh --profile $PROFILE (PID-verified, self-filtered) ---"
+    orphans="$(env_orphan_pids "dsh --profile $PROFILE")"
     [ -n "$orphans" ] && printf '%s\n' "$orphans" || printf '%s\n' "none"
     printf '%s\n' "--- orphan mock-llm.mjs (PID-verified, self-filtered) ---"
     orphans="$(env_orphan_pids 'mock-llm.mjs')"
@@ -153,7 +150,7 @@ wait_host_idle_out() {
   while [ "$tick" -lt "$IDLE_OUT_MAX_TICKS" ]; do
     # Reuse the very same PID-verified detectors the postcheck uses, so "host
     # gone" means exactly what the orphan verdict will see.
-    if [ -z "$(env_orphan_pids 'dsh --profile opentui --no-open')$(env_orphan_pids 'mock-llm.mjs')" ]; then
+    if [ -z "$(env_orphan_pids "dsh --profile $PROFILE")$(env_orphan_pids 'mock-llm.mjs')" ]; then
       return 0
     fi
     tick=$((tick + 1))
@@ -167,7 +164,7 @@ SCRATCH=""
 HOST_PID=""
 dump_diagnostics() {
   log "----- diagnostics -----"
-  log "env: DSH_HOME=$SCRATCH REAL_HOME=$REAL_HOME OUT=$OUT"
+  log "env: DSH_HOME=$SCRATCH OUT=$OUT"
   log "dsh=$(dsh --version 2>&1) node=$(node --version 2>&1) bun=$(bun --version 2>&1) tmux=$(tmux -V 2>&1)"
   log "--- last pane (plain) ---"
   tmux capture-pane -p -t "$SESS" 2>/dev/null | tee -a "$RUN_LOG" || true
@@ -178,8 +175,8 @@ dump_diagnostics() {
   log "--- host probe stderr ---"
   cat "$OUT/host-probe.err.log" 2>/dev/null | tail -60 | tee -a "$RUN_LOG" || true
   log "--- bridge symlink state ---"
-  ls -la "$SCRATCH/profiles/opentui-inproc/node_modules/@aiwayds/" 2>/dev/null | tee -a "$RUN_LOG" || true
-  readlink "$SCRATCH/profiles/opentui-inproc/node_modules/@aiwayds/dsh-opentui-bridge" 2>/dev/null | tee -a "$RUN_LOG" || true
+  ls -la "$SCRATCH/profiles/$PROFILE/node_modules/@aiwayds/" 2>/dev/null | tee -a "$RUN_LOG" || true
+  readlink "$SCRATCH/profiles/$PROFILE/node_modules/@aiwayds/dsh-opentui-bridge" 2>/dev/null | tee -a "$RUN_LOG" || true
   log "----- end diagnostics -----"
 }
 cleanup() {
@@ -221,18 +218,12 @@ done
 for f in "$LAUNCHER" "$PROVISIONER" "$BRIDGE_DIR/index.js" "$BRIDGE_DIR/bundle-fingerprint.json"; do
   if [ -e "$f" ]; then pass "preflight: $f"; else fail "preflight: missing $f"; PRE=1; fi
 done
-[ -d "$REAL_HOME/profiles/opentui" ] || { fail "preflight: real profile $REAL_HOME/profiles/opentui missing"; PRE=1; }
 if [ "$PRE" -ne 0 ]; then dump_diagnostics; exit 2; fi
 
 # ------------------------------------------------- 2. fresh scratch + provision
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/rc-gate-home-XXXXXX")"
 chmod 700 "$SCRATCH"
 mkdir -p "$SCRATCH/profiles"
-cp -a "$REAL_HOME/profiles/opentui" "$SCRATCH/profiles/" 2>/dev/null
-for rel in .credentials.yaml models-store.json model-profiles.json settings.yaml workspace-presets.json agents themes; do
-  [ -e "$REAL_HOME/$rel" ] && cp -a "$REAL_HOME/$rel" "$SCRATCH/" 2>/dev/null
-done
-[ -d "$REAL_HOME/profiles/node_modules" ] && cp -a "$REAL_HOME/profiles/node_modules" "$SCRATCH/profiles/" 2>/dev/null
 log "scratch home: $SCRATCH"
 DSH_HOME="$SCRATCH" node "$PROVISIONER" --repair >"$OUT/provision.log" 2>&1
 if [ "$?" -eq 0 ] && grep -q '^dsh-opentui(inproc): PASS' "$OUT/provision.log"; then
@@ -240,7 +231,7 @@ if [ "$?" -eq 0 ] && grep -q '^dsh-opentui(inproc): PASS' "$OUT/provision.log"; 
 else
   fail "provision: see $OUT/provision.log"; dump_diagnostics; exit 2
 fi
-LINK="$SCRATCH/profiles/opentui-inproc/node_modules/@aiwayds/dsh-opentui-bridge"
+LINK="$SCRATCH/profiles/$PROFILE/node_modules/@aiwayds/dsh-opentui-bridge"
 # S6 symlink-debt retirement: the bridge is now a REAL DIRECTORY COPY, never
 # an absolute symlink. Assert a real dir (not a link) with the shipped files,
 # and that its index.js hash matches this install's fingerprint.
@@ -260,7 +251,7 @@ fi
 cat > "$OUT/bridge-probe.mjs" <<'PROBE'
 import { spawn } from 'node:child_process'
 const home = process.argv[2]
-const child = spawn('dsh', ['--profile', 'opentui-inproc'], {
+const child = spawn('dsh', ['--profile', process.argv[3]], {
   env: { ...process.env, DSH_HOME: home, DSH_OPENTUI_BRIDGE_STDIO: '1' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
@@ -275,7 +266,7 @@ setTimeout(() => {
   process.exit(ok ? 0 : 1)
 }, 6000)
 PROBE
-node "$OUT/bridge-probe.mjs" "$SCRATCH" >"$OUT/host-probe.out.log" 2>"$OUT/host-probe.err.log"
+node "$OUT/bridge-probe.mjs" "$SCRATCH" "$PROFILE" >"$OUT/host-probe.out.log" 2>"$OUT/host-probe.err.log"
 PROBE_RC=$?
 if [ "$PROBE_RC" -eq 0 ]; then pass "handshake: bridge.hello replied in framed JSON"
 else fail "handshake: bridge.hello no reply (see $OUT/host-probe.*.log)"; dump_diagnostics; exit 2; fi

@@ -18,21 +18,12 @@
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
  *      config load); no `dsh` on PATH → install guidance, exit 1.
- *   3. Profile bootstrap — runs scripts/provision-opentui-profile.mjs on
- *      EVERY start. The script is idempotent and prints five progress steps
- *      (profile, model route, plugins, bundles, verify); with nothing to do
- *      it is a sub-second local pass. It transparently forwards
- *      --provider/--model/--reasoning-effort and
- *      --plugins=core|recommended|none (--dry-run prints the commands without
- *      executing them). A non-zero exit is a WARN: the client still starts
- *      with the profile as-is.
- *   4. One-time migration notice — a pre-retirement profile at
- *      $DSH_HOME/profiles/dsh-opentui is detected once, its theme /
- *      config.json preferences are conservatively copied into the opentui
- *      profile (only keys the target does not already have), a marker file
- *      ($DSH_HOME/.dsh-opentui-migrated) makes the step once-only. The old
- *      profile is kept untouched.
- *   5. dsh-client-connection resolution guarantee — the client bundle
+ *   3. In-process profile bootstrap — runs
+ *      scripts/provision-inproc-profile.mjs on EVERY start. The script is
+ *      idempotent and prints seven progress steps (host, manifest, patch,
+ *      bridge-copy, companions, verify, shim). A non-zero exit is fatal because
+ *      the client cannot use its in-process bridge without this profile.
+ *   4. dsh-client-connection resolution guarantee — the client bundle
  *      imports `@deepseek-ai/dsh-client-connection/client` at runtime, but
  *      that SDK is NOT on the public npm registry (it exists only inside a
  *      globally-installed dsh's node_modules closure, and it must NEVER be
@@ -43,7 +34,7 @@
  *      the SDK inside the global dsh closure. Idempotent: skipped whenever
  *      the link already resolves; if no global dsh closure can be located,
  *      install guidance is printed and the launch aborts (exit 1).
- *   6. Exec `bun <package root>/dist/client/index.js` with the user's
+ *   5. Exec `bun <package root>/dist/client/index.js` with the user's
  *      arguments forwarded verbatim, then exits with the client's status.
  *      There is no HTTP-host pre-launch: the launcher only provisions and
  *      spawns the bun client; the client owns its in-process stdio bridge and
@@ -57,7 +48,7 @@
  * `dist/locales/`.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs'
 import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -170,7 +161,7 @@ if (validation.unknown.length > 0) {
 // --- 0.7 --repair-bridge: terminal in-process bridge self-heal (T7) ---------
 // This is a maintenance command, not a launch. It invokes the SAME provisioner
 // the default startup path uses, in its repair mode. It deliberately exits here
-// — before the bun/dsh checks, the default `opentui` profile bootstrap, the
+// — before the bun/dsh checks, the in-process profile bootstrap, the
 // client-connection link, and the bun client launch — so it never starts a TUI
 // and never changes the default seam (that is M2's job). The provisioner owns
 // the lock, the repair logic and the T5 identity guard; its exit status is ours.
@@ -230,48 +221,11 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
 // in-process-only build: no process is killed or reset. T12 will implement the
 // reserved behavior before the client is provisioned or spawned.
 
-// --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
-// provision-opentui-profile.mjs is idempotent and understands
-// --provider/--model/--reasoning-effort --plugins/--dry-run (both space and
-// `=` forms); forward those, ignore the rest. With nothing to do this is a
-// local, sub-second pass.
-const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
-{
-  const provisionFlags = []
-  for (const name of ['provider', 'model', 'reasoning-effort']) {
-    const inline = userArgs.find((arg) => arg.startsWith(`--${name}=`))
-    if (inline) {
-      provisionFlags.push(inline)
-      continue
-    }
-    const i = userArgs.indexOf(`--${name}`)
-    if (i >= 0 && userArgs[i + 1]) provisionFlags.push(`--${name}`, userArgs[i + 1])
-  }
-  const pluginsInline = userArgs.find((arg) => arg.startsWith('--plugins='))
-  if (pluginsInline) {
-    provisionFlags.push(pluginsInline)
-  } else {
-    const i = userArgs.indexOf('--plugins')
-    if (i >= 0 && userArgs[i + 1]) provisionFlags.push('--plugins', userArgs[i + 1])
-  }
-  if (userArgs.includes('--dry-run')) provisionFlags.push('--dry-run')
-  const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-opentui-profile.mjs'), ...provisionFlags], {
-    stdio: 'inherit',
-  })
-  if (r.error) {
-    console.error(`dsh-opentui: profile provisioning failed: ${r.error.message}`)
-    process.exit(1)
-  }
-  if (r.status !== 0) {
-    console.error(`dsh-opentui: profile provisioning exited ${r.status}; continuing with the profile as-is.`)
-  }
-}
-
-// --- 3b. In-process bridge profile provisioning ----------------------------
-// S6: the bridge is the sole seam, so this runs on EVERY launch. The script
-// provisions ONLY the `opentui-inproc` profile: bundle manifest + the shipped
-// dist/bridge artifact (real directory copy). A non-zero exit is fatal here
-// (the bridge cannot work without it), unlike the best-effort path above.
+// --- 3. In-process bridge profile provisioning ------------------------------
+// The bridge is the sole seam, so this runs on EVERY launch. The script
+// provisions ONLY the active in-process profile: bundle manifest + the shipped
+// dist/bridge artifact (real directory copy). A non-zero exit is fatal because
+// the client cannot use its in-process bridge without this profile.
 {
   const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs')], {
     stdio: 'inherit',
@@ -286,88 +240,7 @@ const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
   }
 }
 
-// --- 4. One-time migration notice from the pre-retirement profile ----------
-const legacyProfileDir = join(dshHome, 'profiles', 'dsh-opentui')
-const migrationMarker = join(dshHome, '.dsh-opentui-migrated')
-if (existsSync(legacyProfileDir) && !existsSync(migrationMarker)) {
-  console.log('dsh-opentui: found a legacy profiles/dsh-opentui profile (pre-retirement plugin mode).')
-  console.log('dsh-opentui: the client now uses the \'opentui\' profile; the legacy profile is kept, not deleted.')
-  try {
-    migrateLegacyPreferences()
-  } catch (err) {
-    console.warn(`dsh-opentui: preference migration skipped (${err?.message ?? err}); the legacy profile is untouched.`)
-  }
-  try {
-    writeFileSync(migrationMarker, new Date().toISOString() + '\n')
-  } catch (err) {
-    console.warn(`dsh-opentui: could not write ${migrationMarker} (${err?.message ?? err}).`)
-  }
-}
-
-/** Best-effort copy of legacy preferences into the opentui profile.
- *  Merge-only: a key already present in the target config.json wins; the
- *  legacy profile files are only ever read, never modified. */
-function migrateLegacyPreferences() {
-  const legacyConfigPath = join(legacyProfileDir, 'config.json')
-  const targetConfigPath = join(opentuiProfileDir, 'config.json')
-
-  let target = {}
-  try {
-    target = JSON.parse(readFileSync(targetConfigPath, 'utf8'))
-  } catch {
-    /* missing or unparsable → start from an empty object */
-  }
-
-  // (a) top-level keys from the legacy profile config.json (e.g.
-  //     retentionDays): copied only when the target does not have them.
-  let legacyConfig = {}
-  try {
-    legacyConfig = JSON.parse(readFileSync(legacyConfigPath, 'utf8'))
-  } catch {
-    /* no legacy config.json — nothing to copy from here */
-  }
-  if (typeof legacyConfig !== 'object' || legacyConfig === null || Array.isArray(legacyConfig)) legacyConfig = {}
-
-  // (b) the theme preference lived in the legacy plugin patch (the retired
-  //     `dsh-opentui` plugin's config block), not in config.json — pull it
-  //     out with a narrow scan of that block only.
-  let legacyTheme
-  try {
-    const patch = readFileSync(join(legacyProfileDir, 'cordis.patch.yml'), 'utf8')
-    const block = patch.match(/- id: dsh-opentui\b[^\n]*/)?.[0]
-    if (block) {
-      const tail = patch.slice(patch.indexOf(block))
-      legacyTheme = tail.match(/^[ \t]+theme:[ \t]*([^\s#]+)/m)?.[1]
-    }
-  } catch {
-    /* no legacy patch — no theme to copy */
-  }
-  if (legacyTheme) legacyTheme = legacyTheme.replace(/^['"]|['"]$/g, '')
-
-  const additions = {}
-  for (const [key, value] of Object.entries(legacyConfig)) {
-    if (!(key in target)) additions[key] = value
-  }
-  if (legacyTheme && target.theme === undefined) additions.theme = legacyTheme
-
-  const keys = Object.keys(additions)
-  if (keys.length === 0) {
-    console.log('dsh-opentui: no legacy preferences to carry over.')
-    return
-  }
-
-  mkdirSync(opentuiProfileDir, { recursive: true })
-  if (existsSync(targetConfigPath)) {
-    const backupPath = `${targetConfigPath}.bak-${Date.now()}`
-    renameSync(targetConfigPath, backupPath)
-    console.log(`dsh-opentui: backed up ${targetConfigPath} to ${backupPath}`)
-  }
-  const merged = { ...target, ...additions }
-  writeFileSync(targetConfigPath, JSON.stringify(merged, null, 2) + '\n')
-  console.log(`dsh-opentui: carried over legacy preference(s) [${keys.join(', ')}] into ${targetConfigPath}.`)
-}
-
-// --- 5. dsh-client-connection resolution guarantee --------------------------
+// --- 4. dsh-client-connection resolution guarantee --------------------------
 // The client bundle historically imported "@deepseek-ai/dsh-client-connection/client"
 // at runtime. That SDK is NOT on the public npm registry — it ships only inside a globally-installed dsh's own
 // node_modules closure, and it must NEVER be bundled into this public
@@ -444,7 +317,7 @@ function dshClientConnectionCandidates() {
   return candidates
 }
 
-// --- 6. Launch the client bundle under bun ---------------------------------
+// --- 5. Launch the client bundle under bun ---------------------------------
 const clientEntry = join(pkgRoot, 'dist', 'client', 'index.js')
 if (!existsSync(clientEntry)) {
   console.error(`dsh-opentui: client bundle not found at ${clientEntry}.`)

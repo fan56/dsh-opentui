@@ -83,14 +83,14 @@ jobs:
       # (e2e-live / e2e-fork) were removed with the plugin mode.
       # The real-machine tmux gate (verify/agents-mount-repro.mjs) is LOCAL
       # ONLY for GitHub-hosted runners: the published runner images do not
-      # ship tmux, and the script needs a `dsh` CLI to provision
-      # ~/.dsh/profiles/opentui + a provider key for the model turn. See the
-      # conditional `real-client` job below and docs/verification-gates.md §4.
+      # ship tmux, and the script needs a `dsh` CLI to run the real in-process
+      # provisioner against its scratch HOME. See the conditional `real-client`
+      # job below and docs/verification-gates.md §4.
 
   # Opt-in real-machine gate. Enable with the repository variable
   # DSH_REAL_CLIENT_GATE=true on a SELF-HOSTED runner labelled `dsh-profile`
-  # that already has: global `dsh` on PATH, a provisioned
-  # ~/.dsh/profiles/opentui, a provider API key in env, and tmux installed.
+  # that already has: global `dsh` on PATH and tmux installed. The gate runs the
+  # real provisioner against a fresh scratch HOME and never reads ~/.dsh.
   # GitHub-hosted runners cannot satisfy that offline, so the job is skipped
   # by default — absence of evidence here is NOT a pass; the local run is
   # mandatory before merging keymap/panel/command-surface changes.
@@ -125,12 +125,11 @@ jobs:
       # Fail fast with a named missing item. Without this, the test would
       # throw (DSH_AGENTS_E2E=1 makes a missing prerequisite a FAILURE, not a
       # skip) but the log would point at the test, not at the environment.
-      - name: preflight (tmux, dsh, opentui profile)
+      - name: preflight (tmux, dsh)
         run: |
           missing=0
           command -v tmux >/dev/null 2>&1 || { echo "::error::tmux not found on PATH"; missing=1; }
           command -v dsh >/dev/null 2>&1 || { echo "::error::dsh not found on PATH"; missing=1; }
-          test -d "$HOME/.dsh/profiles/opentui" || { echo "::error::~/.dsh/profiles/opentui is not provisioned"; missing=1; }
           exit "$missing"
       - name: real client tmux gate (/agents mount + slash palette)
         run: DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts

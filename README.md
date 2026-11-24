@@ -68,105 +68,27 @@ SIGINT/SIGTERM/SIGHUP); the TUI starts the dsh host, which loads the bridge
 in-process. A boot handshake compares the client's expected capability surface
 with the bridge and degrades honestly on a mismatch.
 
-Every launch provisions two profiles:
+Every launch provisions one profile:
 
-- **`opentui-inproc`** — the bridge profile, provisioned synchronously (a
+- **`opentui-inproc`** — the only session host, provisioned synchronously (a
   failure here is fatal): a real directory copy of this installation's bundled
   bridge, the session shim, a host-version compatibility exemption, the
-  approval gate and an inproc-only cordis patch. The copy converges on every
-  launch; `--repair-bridge` is accepted but is a no-op.
-- **`opentui`** — provisioned on EVERY launch, best-effort (a no-op pass is
-  sub-second). Pass `--provider` / `--model` / `--reasoning-effort` to pin a
-  different default model (default `zai-coding-cn/glm-5.3-flash/high`).
-  Provisioning also handles:
-  - **Default plugins** — the first run installs the plugin set below into the
-    profile and prints its progress (`[3/5] plugins …`). Later runs only repair
-    what is missing: nothing is reinstalled when the dependency, the installed
-    version and the bundle entry already agree. `--dry-run` (or
-    `DSH_PROVISION_DRY_RUN=1`) prints the commands without executing them.
-  - **Legacy migration** — a pre-retirement `profiles/dsh-opentui` profile is
-    detected once and its theme / config preferences are conservatively copied
-    into the `opentui` profile (only keys the target does not already have).
-    The legacy profile is kept, never deleted.
-  - **SDK closure link** — the client still imports
-    `@deepseek-ai/dsh-client-connection` at runtime (host label/lifecycle).
-    That SDK is not on the public npm registry; it ships inside the
-    globally-installed dsh's own `node_modules` closure, and the launcher
-    symlinks it into the installed package's `node_modules` (idempotent). This
-    is why the dsh CLI is a hard prerequisite.
+  approval gate, the inproc-only cordis patch and the companion set declared by
+  `scripts/lib/companion-policy.mjs`. The bridge copy converges on every launch;
+  `--repair-bridge` is accepted but is a no-op. Companion versions resolve to
+  the registry `latest` within each catalog range and are never downgraded.
+- **SDK closure link** — the client still imports
+  `@deepseek-ai/dsh-client-connection` at runtime (host label/lifecycle). That
+  SDK is not on the public npm registry; it ships inside the globally-installed
+  dsh's own `node_modules` closure, and the launcher symlinks it into the
+  installed package's `node_modules` (idempotent). This is why the dsh CLI is a
+  hard prerequisite.
 
-### Default plugins
-
-The live session runs on the `opentui-inproc` profile, whose cordis patch
-registers the tool, ask-user and MCP rows directly. The `opentui` profile below
-is still provisioned on every launch, but its plugin set is not loaded by the
-in-process host. Every launch converges it to this set (pinned versions):
-
-| Tier | Package | Why |
-|---|---|---|
-| core | `@aiwayds/dsh-ask-router` | owns the ask surface; loads before every other UI/ask bundle |
-| core | `@aiwayds/dsh-subagent-registry` | subagent discovery and registration |
-| core | `@aiwayds/dsh-llm-net-retry` | retries transient provider/network failures |
-| core | `@aiwayds/dsh-web-search-anysearch` | web search without a per-provider key |
-| core | `@aiwayds/dsh-mcp-adapter` | MCP catalog/dispatch meta-tools (`mcp_list` / `mcp_call`) |
-| core | `@aiwayds/dsh-approval-policy` | tool-approval policy |
-| core | `@aiwayds/dsh-model-sync` | keeps the model list in sync with the provider catalog |
-| recommended | `@aiwayds/dsh-llm-stats` | token/cost accounting (usage limits) |
-| recommended | `@aiwayds/dsh-topics-memory` | cross-session topic memory |
-| recommended | `@aiwayds/dsh-cron` | scheduled prompts |
-| recommended | `@aiwayds/dsh-workflow` | dynamic workflow runs |
-| recommended | `@aiwayds/dsh-vault` | secret storage used by the companions |
-
-`recommended` is the default and includes `core`. Use `--plugins=core` to
-install only the core set. These are deliberately not installed:
-`dsh-tui-pi` (takes over stdout/stdin), `dcp` (web-app-preset isolated),
-`feishu` (claims the ask surface), `web-search-tavily` (needs a key),
-`agent-dispatch`, `self-improve`, `llm-proxy`, `profile-switch`.
-
-`anysearch` needs no API key: provisioning also re-enables the `tool-web` row
-(the `dsh-web-app` bundle ships it `disabled: true`) and pins
-`web.searchProvider` to `anysearch`, so the model gets `web_search`/`web_fetch`
-on a fresh profile. Both rows are written for every tier — including
-`--plugins=none`, because the tools must be visible regardless of whether the
-anysearch bundle is installed.
-
-MCP ships as a pair: the adapter above only catalogs tools that the official
-`@deepseek-ai/dsh-mcp-client` registered, so provisioning also inserts one
-client row (`mcp-context7`, transport `streamable-http`, endpoint
-`https://mcp.context7.com/mcp`). `context7` is read-only documentation lookup,
-needs no API key, and starts fast over HTTP. `mcp_list` / `mcp_call` then
-appear in the model tool catalog, and `/mcp` shows the same catalog. A failed
-or offline connection is non-fatal: `mcp-client` logs the error, the host
-still boots, and the server's tools are simply absent until it reconnects.
-An existing `mcp-context7` row (for example one the user edited) is never
-rewritten or duplicated. Under `--plugins=none` neither the adapter nor this
-row is written — the client alone would expose unfolded `mcp__*` schemas,
-which is not the promised setup.
-
-A plugin counts as installed only when all three agree: it is in the profile
-`dependencies`, the installed `node_modules` version satisfies the pin, and its
-name is in `dsh.profile.bundles`. Missing pieces are repaired with one
-`dsh plugin --profile opentui add …`; a failing package is retried once on its
-own after approving pnpm's build scripts, then reported as a WARN without
-blocking the launch. The retired `@aiwayds/dsh-opentui` plugin entry is removed
-from existing profiles (it has no `dsh.bundle` and only produced boot warnings).
-
-### Skipping the default plugins
-
-Pass `--plugins=none` on launch to provision the profile without installing any
-plugin (`--plugins=core` narrows the set instead). To make that permanent for
-every launch, set it in the environment:
-
-```bash
-DSH_OPENTUI_PLUGINS=none dsh-opentui
-```
-
-The profile is still created/kept, the model route still written (including the
-`tool-web` / `web` rows), and the retired-entry cleanup still runs; only plugin
-installation, managed-bundle appends and the default MCP server row are
-skipped (an existing `mcp-context7` row is left untouched). You can always manage
-plugins yourself afterwards with `dsh plugin --profile opentui add <pkg>`.
-`--dry-run` prints every command provisioning would run without executing it.
+The retired `opentui` profile is no longer provisioned or seeded. Existing
+`opentui` / `opentui-inproc` directories remain untouched as migration sources
+and rollback material. The old `--provider`, `--model`, `--reasoning-effort`,
+`--plugins` and `--dry-run` launcher options are retired; manage companions with
+`dsh plugin --profile opentui-inproc` when manual intervention is needed.
 
 **Config reuse**: the Shell reads your existing dsh config — model defaults
 from the host, provider baseUrls and API keys from `$DSH_HOME`. A
@@ -208,7 +130,7 @@ that variable for normal use. See `docs/adr/0011-ask-permission-bridge-channel.m
 session. To reopen the newest non-empty session from the launch workspace that
 was active within the last 7 days — with a `resumed <title> · <time ago>`
 notice — set `"autoResume": "last"` in
-`$DSH_HOME/profiles/opentui/config.json` (change the window with
+`$DSH_HOME/profiles/opentui-inproc/config.json` (change the window with
 `"autoResumeDays": N`), or pass `--resume-last` for one launch (it overrides
 the config). `--new` always starts fresh and wins over both; `--session <id>`
 pins a specific session.

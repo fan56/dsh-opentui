@@ -9,7 +9,8 @@
 #      box / EXIT-status file), never inferred from an elapsed timeout.
 #   3. Negative cases use fault injection (unwired CapIR id, ALREADY_OPEN,
 #      signal kill) — never an assertion weakened to make red go green.
-#   4. All state lives in a FRESH scratch DSH_HOME; ~/.dsh is read-only seed.
+#   4. All state lives in a FRESH scratch DSH_HOME provisioned by the real
+#      in-process provisioner; ~/.dsh is never read or written.
 #   5. Frames are numeric `tmux capture-pane -e -p` (.ans) — no PNG, no visual
 #      model.
 set -uo pipefail
@@ -17,7 +18,6 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 LAUNCHER="$REPO/dsh-opentui"
 PROVISIONER="$REPO/packages/shell/scripts/provision-inproc-profile.mjs"
-REAL_HOME="${DSH_HOME_REAL:-$HOME/.dsh}"
 
 # Single source of truth for every wall-clock budget (seconds unless noted).
 E2E_TICK="${E2E_TICK:-1}"                 # poll cadence
@@ -29,19 +29,13 @@ FAMILY_FAIL=0
 fpass() { FAMILY_PASS=$((FAMILY_PASS + 1)); printf 'PASS %s\n' "$*"; }
 ffail() { FAMILY_FAIL=$((FAMILY_FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
-# Provision a fresh scratch home seeded from the real home (read-only), using
-# the S6 real-directory-copy recipe. No writes to ~/.dsh.
+# Provision a fresh scratch home with the S6 real-directory-copy recipe.
+# No reads from or writes to ~/.dsh.
 make_scratch_home() {
   local h
   h="$(mktemp -d "${TMPDIR:-/tmp}/e2e-family-home-XXXXXX")"
   chmod 700 "$h"
   mkdir -p "$h/profiles"
-  cp -a "$REAL_HOME/profiles/opentui" "$h/profiles/" 2>/dev/null || true
-  local rel
-  for rel in .credentials.yaml models-store.json model-profiles.json settings.yaml workspace-presets.json agents themes; do
-    [ -e "$REAL_HOME/$rel" ] && cp -a "$REAL_HOME/$rel" "$h/" 2>/dev/null || true
-  done
-  [ -d "$REAL_HOME/profiles/node_modules" ] && cp -a "$REAL_HOME/profiles/node_modules" "$h/profiles/" 2>/dev/null || true
   DSH_HOME="$h" node "$PROVISIONER" --repair >"$h/provision.log" 2>&1 || { printf '%s\n' "$h"; return 1; }
   grep -q '^dsh-opentui(inproc): PASS' "$h/provision.log" || { printf '%s\n' "$h"; return 1; }
   printf '%s\n' "$h"

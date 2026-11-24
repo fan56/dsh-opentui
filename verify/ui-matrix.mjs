@@ -42,16 +42,17 @@
 // environment problem. Captures land in verify/ui-matrix-out/ (gitignored).
 
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
 const MOCK = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
-const PROFILE = 'opentui'
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 const PLACEHOLDER = 'Type a message'
 const IDLE = '提问，回车发送'
 const OUT = join(REPO, 'verify', 'ui-matrix-out')
@@ -99,10 +100,6 @@ for (const cmd of ['tmux', 'bun', 'node']) {
     console.error(`ui-matrix: ${cmd} not on PATH`)
     process.exit(2)
   }
-}
-if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
-  console.error(`ui-matrix: profile '${PROFILE}' missing under ${REAL_HOME}`)
-  process.exit(2)
 }
 if (!existsSync(LAUNCHER) || !existsSync(MOCK)) {
   console.error(`ui-matrix: launcher or mock missing (${LAUNCHER}, ${MOCK})`)
@@ -268,22 +265,22 @@ const WS = mkdtempSync(join(tmpdir(), 'dsh-ui-matrix-ws-'))
 const WS_DEEP = join(WS, 'a-very-long-directory-name-for-left-truncation', 'another-deeply-nested-segment-name', 'workspace-tail-uim')
 mkdirSync(WS_DEEP, { recursive: true })
 
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
+let profileDir
+try {
+  profileDir = provisionScratchProfile({ home: HOME, repo: REPO })
+} catch (error) {
+  console.error(`ui-matrix: ${error.message}`)
+  process.exit(2)
+}
 
 // Deterministic language: the harness asserts en copy, so pin the scratch
-// config's `lang` regardless of what the operator's real profile carries.
-const pinLangConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+// config's `lang` regardless of any migrated legacy preference.
+const pinLangConfigPath = join(profileDir, 'config.json')
 try {
   const cfg = JSON.parse(readFileSync(pinLangConfigPath, 'utf8'))
   cfg.lang = 'en'
   writeFileSync(pinLangConfigPath, JSON.stringify(cfg, null, 2))
 } catch {}
-
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
-  const from = join(REAL_HOME, rel)
-  if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
-}
 // Deterministic, offline model: point the pinned provider route at the local
 // mock and give the model a real context window so the 🧠 segment can paint
 // the compact `(x.x%)` form.
@@ -293,8 +290,8 @@ mkdirSync(fixtureDir, { recursive: true })
 writeFileSync(join(fixtureDir, 'SKILL.md'),
   `---\nname: ${FIXTURE_SKILL}\ndescription: ui-matrix fixture skill (italic palette row)\n---\n\n# ${FIXTURE_SKILL}\n`)
 
-const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
-const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+const profileConfigPath = join(profileDir, 'config.json')
+const patchPath = join(profileDir, 'cordis.patch.yml')
 {
   let patch = readFileSync(patchPath, 'utf8')
   const withUrl = patch.replace(/(\n {6}zai-coding-cn:\n)/, `$1        baseURL: http://127.0.0.1:${PORT}/v1\n`)
@@ -312,7 +309,7 @@ const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
     process.exit(2)
   }
   // Deterministic route: re-pin the default model selection to the mocked
-  // provider inside the SCRATCH patch. The operator's real profile may carry
+  // provider inside the SCRATCH patch. A migrated legacy profile may carry
   // its own agent-default-model row pointing at a REAL provider/model (e.g.
   // written by a model switch on the host), and the host catalog default is
   // not stable across environments either — either state would send real
@@ -344,7 +341,7 @@ const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
   }
   patch += [
     '# ui-matrix: pin the default route to the mocked provider (any',
-    '# agent-default-model row copied from the real profile was removed above).',
+    '# agent-default-model row carried by migration was removed above).',
     '- id: agent-default-model',
     '  name: "@deepseek-ai/dsh-agent-default-model"',
     '  config:',

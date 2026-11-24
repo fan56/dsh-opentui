@@ -48,10 +48,12 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
+import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 import { findKeyLeaks, keyShapedTokens, loadDictionary, stripAnsi } from './text-leak-core.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -63,8 +65,7 @@ let MOCK_PORT = Number(process.env.TEXT_LEAK_MOCK_PORT || 0) // 0 = pick a free 
 const mockBaseUrl = () => `http://127.0.0.1:${MOCK_PORT}/v1`
 const TPS_TRIGGER = 'E2E_TPS_TRIGGER'
 const ASK_TRIGGER = 'E2E_ASK_TRIGGER'
-const PROFILE = 'opentui'
-const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const PROFILE = DEFAULT_PROFILE
 const OUT = process.env.TEXT_LEAK_OUT || join(REPO, 'verify', 'text-leak-out')
 const SESS = (lang) => `text-leak-${lang}-${process.pid}`
 const COLS = 120
@@ -131,10 +132,6 @@ const tmuxOut = (...a) => (tmux(...a).status === 0 ? tmux(...a).stdout : '')
 for (const cmd of ['tmux', 'bun']) {
   if (sh('which', [cmd]).status !== 0) { console.error(`text-leak: ${cmd} not on PATH`); process.exit(2) }
 }
-if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
-  console.error(`text-leak: profile '${PROFILE}' missing under ${REAL_HOME}`)
-  process.exit(2)
-}
 if (!existsSync(LAUNCHER)) { console.error(`text-leak: launcher missing (${LAUNCHER})`); process.exit(2) }
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 
@@ -189,11 +186,12 @@ const classifyRun = (run, lang) => {
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-text-leak-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-text-leak-ws-'))
-mkdirSync(join(HOME, 'profiles'), { recursive: true })
-cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
-  const from = join(REAL_HOME, rel)
-  if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
+let profileDir
+try {
+  profileDir = provisionScratchProfile({ home: HOME, repo: REPO })
+} catch (error) {
+  console.error(`text-leak: ${error.message}`)
+  process.exit(2)
 }
 // DSH_AGENTS_HOME pin (skills-source precedence): the palette reads ONLY this
 // scratch root, so the reconciliation never depends on the user's corpus.
@@ -205,7 +203,7 @@ mkdirSync(join(AGENTS_HOME, 'skills'), { recursive: true })
 // (stdlib-only server, phases keyed on the request body): the scratch
 // profile's provider route gets a baseURL pointing at it, so no real
 // provider is ever contacted and the turn never costs anything.
-const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+const patchPath = join(profileDir, 'cordis.patch.yml')
 /** A free TCP port (the fixed default collided with unrelated listeners). */
 const freePort = async () =>
   new Promise((res, rej) => {
@@ -241,7 +239,7 @@ const startMock = async () => {
 }
 let MOCK = null
 
-const CONFIG_PATH = join(HOME, 'profiles', PROFILE, 'config.json')
+const CONFIG_PATH = join(profileDir, 'config.json')
 const writeLang = (lang) => {
   let config = {}
   try { config = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } catch { /* fresh profile */ }
