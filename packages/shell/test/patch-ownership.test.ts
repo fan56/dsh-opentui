@@ -1,0 +1,479 @@
+/**
+ * T3 — pure patch ownership / convergence (design 06, §8.1 #7/#12/#27/#32 +
+ * the T3 extra matrix). No fs, no clock, no env reads: every test drives the
+ * pure module with inline text fixtures.
+ */
+import { describe, expect, test } from 'bun:test'
+import {
+  converge,
+  managedIds,
+  providersMerge,
+  splitPatch,
+  templateProjection,
+} from '../scripts/lib/patch-ownership.mjs'
+
+const REV = 'aaaaaaaaaaaaaaaa'
+const REV2 = 'bbbbbbbbbbbbbbbb'
+
+const JS_PRESET = `!!js process.env.DSH_OPENTUI_APPROVAL_GATE === 'off' && 'danger-full-access' || 'workspace-write'`
+
+/** A template with one row per role, one insert block, and a user-region gap. */
+const TEMPLATE = [
+  '# dsh-opentui inproc profile patch — GENERATED',
+  `# profileRevision: ${REV}`,
+  '# model route (managed):',
+  '',
+  '- id: llm-pi-ai',
+  '  name: "@deepseek-ai/dsh-llm-pi-ai"',
+  '  config:',
+  '    providers:',
+  '      zai-coding-cn:',
+  '        api: openai-completions',
+  '        apiKeyEnv: ZAI_CODING_CN_API_KEY',
+  '        models:',
+  '          - id: glm-4.5',
+  '            name: glm-4.5',
+  '      opencode-go:',
+  '        api: openai-completions',
+  '        apiKeyEnv: OPENCODE_API_KEY',
+  '        models:',
+  '          - id: deepseek-v4.1-flash',
+  '            name: deepseek-v4.1-flash',
+  '  # a trailing comment inside the managed row',
+  '',
+  '# USER REGION — blank line above and below must survive byte-for-byte',
+  '- id: foreign-row',
+  '  config:',
+  '    mine: keep-me',
+  '',
+  '- id: subagent',
+  '  name: "@deepseek-ai/dsh-subagent"',
+  '  config:',
+  '    maxActiveSubagents: 3',
+  '    maxDepth: 1',
+  '- insert:',
+  '    - id: tool-ask-user',
+  "      name: '@aiwayds/dsh-tool-ask-user'",
+  '- id: permission',
+  '  name: "@deepseek-ai/dsh-permission-presets"',
+  '  config:',
+  '    presets:',
+  '      sandbox-loosening-forbidden:',
+  '        sandbox: danger-full-access',
+  `    defaultPreset: ${JS_PRESET}`,
+  '- id: session-log-deepseek',
+  '  name: "@deepseek-ai/dsh-session-log-deepseek"',
+  '  config:',
+  '    enabled: true',
+  '- id: tool-bash',
+  '  name: "@deepseek-ai/dsh-tool-bash"',
+  '  config:',
+  '    enabled: true',
+  '',
+].join('\n')
+
+function sidecar(text = TEMPLATE, revision = REV) {
+  return templateProjection(text, revision)
+}
+
+function run(current: string | undefined, extra: Partial<Parameters<typeof converge>[0]> = {}) {
+  return converge({ template: TEMPLATE, current, sidecar: sidecar(), templateRevision: REV, ...extra })
+}
+
+// ---------------------------------------------------------------------------
+// split / managedIds / templateProjection basics
+// ---------------------------------------------------------------------------
+
+describe('splitPatch / managedIds / templateProjection', () => {
+  test('splits top-level blocks with byte ranges, kind, id and insert ids', () => {
+    const blocks = splitPatch(TEMPLATE)
+    const rows = blocks.filter((b) => b.kind === 'row')
+    const inserts = blocks.filter((b) => b.kind === 'insert')
+    expect(rows.map((b) => b.id)).toEqual([
+      'llm-pi-ai', 'foreign-row', 'subagent', 'permission', 'session-log-deepseek', 'tool-bash',
+    ])
+    expect(inserts.length).toBe(1)
+    expect(inserts[0].insertIds).toEqual(['tool-ask-user'])
+    for (const b of blocks) {
+      expect(TEMPLATE.slice(b.range[0], b.range[1])).toBe(b.raw)
+      expect(b.raw.startsWith('- ')).toBe(true)
+    }
+  })
+
+  test('managedIds = top-level row ids ∪ insert nested ids (foreign rows never declared in template)', () => {
+    const noForeign = TEMPLATE.replace(
+      "# USER REGION — blank line above and below must survive byte-for-byte\n- id: foreign-row\n  config:\n    mine: keep-me\n\n",
+      '',
+    )
+    const ids = managedIds(noForeign)
+    expect(ids.has('subagent')).toBe(true)
+    expect(ids.has('tool-ask-user')).toBe(true)
+    expect(ids.has('foreign-row')).toBe(false)
+  })
+
+  test('N9: ancestor never contains name or disabled; js marker is JSON-safe', () => {
+    const state = sidecar()
+    expect(state.rows.subagent.ancestor).not.toHaveProperty('name')
+    expect(state.rows.subagent.ancestor).not.toHaveProperty('disabled')
+    expect(JSON.parse(JSON.stringify(state.rows.permission.ancestor)).config.defaultPreset.$js).toContain('APPROVAL_GATE')
+    expect(state.rows['llm-pi-ai'].ancestor.providers).toBeTruthy()
+    expect(state.rows['llm-pi-ai'].ancestor.restSha256).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #7 — ancestor is the TEMPLATE projection, not what was written
+// ---------------------------------------------------------------------------
+
+describe('#7 — carry leaf maxDepth=2 is stable across three rounds', () => {
+  test('ancestor records 1; round 2 no write; round 3 still 2', () => {
+    const state = sidecar()
+    expect(state.rows.subagent.ancestor.config.maxDepth).toBe(1)
+
+    const current = TEMPLATE.replace('maxDepth: 1', 'maxDepth: 2')
+    const first = run(current)
+    // The file already holds the user's value; converge must not revert it.
+    expect(first.write).toBe(false)
+    expect(first.content).toContain('maxDepth: 2')
+
+    const second = run(first.content, { sidecar: first.sidecar ?? state })
+    expect(second.write).toBe(false)
+    expect(second.content).toContain('maxDepth: 2')
+
+    const third = run(second.content, { sidecar: second.sidecar ?? state })
+    expect(third.write).toBe(false)
+    expect(third.content).toContain('maxDepth: 2')
+    expect(third.content).not.toContain('maxDepth: 1')
+  })
+
+  test('template default change with current==base adopts the NEW template value', () => {
+    const newTemplate = TEMPLATE.replace(`# profileRevision: ${REV}`, `# profileRevision: ${REV2}`)
+      .replace('maxDepth: 1', 'maxDepth: 9')
+    const out = converge({
+      template: newTemplate,
+      current: TEMPLATE,
+      sidecar: sidecar(), // ancestor = old template projection
+      templateRevision: REV2,
+    })
+    expect(out.write).toBe(true)
+    expect(out.content).toContain('maxDepth: 9')
+    expect(out.sidecar.rows.subagent.ancestor.config.maxDepth).toBe(9)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #12 / P0-4 — user-added entries inside a managed insert block
+// ---------------------------------------------------------------------------
+
+describe('#12 — managed insert block with a user-added entry', () => {
+  const USER_ENTRY = [
+    '    - id: my-custom-entry',
+    "      name: 'my.custom/plugin'",
+    '      config:',
+    '        note: keep-me',
+  ].join('\n')
+  const withUserEntry = TEMPLATE.replace(
+    "      name: '@aiwayds/dsh-tool-ask-user'",
+    `      name: '@aiwayds/dsh-tool-ask-user'\n${USER_ENTRY}`,
+  )
+
+  test('template entries unchanged → no write, user entry preserved byte-for-byte', () => {
+    const out = run(withUserEntry)
+    expect(out.write).toBe(false)
+    expect(out.content).toBe(withUserEntry)
+    expect(out.content).toContain('note: keep-me')
+  })
+
+  test('template entry changed → block rewritten, user entry appended after it + WARN', () => {
+    const newTemplate = TEMPLATE.replace(
+      "      name: '@aiwayds/dsh-tool-ask-user'",
+      "      name: '@aiwayds/dsh-tool-ask-user'\n      config:\n        enabled: true",
+    ).replace(`# profileRevision: ${REV}`, `# profileRevision: ${REV2}`)
+    const out = converge({
+      template: newTemplate,
+      current: withUserEntry,
+      sidecar: sidecar(newTemplate, REV2),
+      templateRevision: REV2,
+    })
+    expect(out.write).toBe(true)
+    expect(out.content).toContain('enabled: true')
+    expect(out.content).toContain('note: keep-me')
+    // template entry precedes the user entry
+    expect(out.content.indexOf('enabled: true')).toBeLessThan(out.content.indexOf('note: keep-me'))
+    expect(out.warnings.join(' ')).toContain('insert-user-entry-moved')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #27 — absent file + externalCarry
+// ---------------------------------------------------------------------------
+
+describe('#27 — absent file + externalCarry', () => {
+  const ext = {
+    source: 'opentui-inproc' as const,
+    values: {
+      'subagent.maxActiveSubagents': 5,
+      'subagent.maxDepth': 3,
+      'session-log-deepseek.enabled': false,
+    },
+    dropped: [{ path: 'permission.defaultPreset', reason: 'template-authority' }],
+  }
+
+  test('ext written; ancestor is unmodified template; marker round no-op; no-marker round idempotent', () => {
+    const first = converge({
+      template: TEMPLATE,
+      current: undefined,
+      sidecar: sidecar(),
+      templateRevision: REV,
+      externalCarry: ext,
+    })
+    expect(first.write).toBe(true)
+    expect(first.reason).toBe('absent')
+    expect(first.content).toContain('maxActiveSubagents: 5')
+    expect(first.content).toContain('maxDepth: 3')
+    expect(first.content).toContain('enabled: false')
+    // ancestor stores the TEMPLATE values, not the ext values
+    expect(first.sidecar.rows.subagent.ancestor.config.maxDepth).toBe(1)
+    expect(first.sidecar.rows.subagent.ancestor.config.maxActiveSubagents).toBe(3)
+    expect(first.warnings.join(' ')).toContain('external-dropped')
+
+    // marker exists → ext gone → no-op
+    const withMarker = converge({
+      template: TEMPLATE,
+      current: first.content,
+      sidecar: first.sidecar,
+      templateRevision: REV,
+    })
+    expect(withMarker.write).toBe(false)
+
+    // marker lost → ext recomputed on the same content → identical, no-op
+    const noMarker = converge({
+      template: TEMPLATE,
+      current: first.content,
+      sidecar: first.sidecar,
+      templateRevision: REV,
+      externalCarry: ext,
+    })
+    expect(noMarker.write).toBe(false)
+    expect(noMarker.content).toBe(first.content)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #32 — providers sub-key merge
+// ---------------------------------------------------------------------------
+
+describe('#32 — llm-pi-ai.providers merge', () => {
+  test('user-added provider kept, user-edited template provider kept, deleted template provider restored', () => {
+    const current = TEMPLATE
+      .replace('apiKeyEnv: ZAI_CODING_CN_API_KEY', 'apiKeyEnv: MY_PRIVATE_REF')
+      .replace(/      opencode-go:\n        api: openai-completions\n        apiKeyEnv: OPENCODE_API_KEY\n        models:\n          - id: deepseek-v4\.1-flash\n            name: deepseek-v4\.1-flash\n/, '')
+      .replace(
+        '      zai-coding-cn:',
+        "      my-gateway:\n        api: openai-completions\n        apiKeyEnv: MY_GATEWAY_KEY\n      zai-coding-cn:",
+      )
+    const out = run(current)
+    expect(out.write).toBe(true)
+    expect(out.content).toContain('apiKeyEnv: MY_PRIVATE_REF')
+    expect(out.content).toContain('my-gateway')
+    expect(out.content).toContain('opencode-go')
+    expect(out.warnings.join(' ')).toContain('provider-restored')
+  })
+
+  test('base-unknown: template providers authoritative, user additions kept', () => {
+    const current = TEMPLATE
+      .replace('apiKeyEnv: ZAI_CODING_CN_API_KEY', 'apiKeyEnv: MY_PRIVATE_REF')
+      .replace('      zai-coding-cn:', '      my-gateway:\n        apiKeyEnv: MY_GATEWAY_KEY\n      zai-coding-cn:')
+    const out = run(current, { sidecar: undefined })
+    expect(out.backupReason).toBe('base-unknown')
+    expect(out.content).not.toContain('MY_PRIVATE_REF')
+    expect(out.content).toContain('ZAI_CODING_CN_API_KEY')
+    expect(out.content).toContain('my-gateway')
+    expect(out.warnings.join(' ')).toContain('provider-template-authority')
+  })
+
+  test('user-corrupted api/models → whole provider restored to template + WARN', () => {
+    const current = TEMPLATE
+      .replace('api: openai-completions\n        apiKeyEnv: ZAI_CODING_CN_API_KEY', 'api: bogus-protocol\n        apiKeyEnv: ZAI_CODING_CN_API_KEY')
+    const out = run(current)
+    expect(out.content).toContain('api: openai-completions')
+    expect(out.content).not.toContain('bogus-protocol')
+    expect(out.warnings.join(' ')).toContain('provider-api-invalid')
+  })
+
+  test('providersMerge unit: template id authority / user additions / field merge', () => {
+    const anc = { a: { api: 'openai-completions', apiKeyEnv: 'OLD' } }
+    const cur = { a: { api: 'openai-completions', apiKeyEnv: 'NEW' }, b: { apiKeyEnv: 'B' } }
+    const nxt = { a: { api: 'openai-completions', apiKeyEnv: 'OLD' }, c: { apiKeyEnv: 'C' } }
+    const warnings: string[] = []
+    const out = providersMerge(anc, cur, nxt, 'llm-pi-ai', warnings)
+    expect(out.a.apiKeyEnv).toBe('NEW') // user field change survives
+    expect(out.b.apiKeyEnv).toBe('B') // user addition survives
+    expect(out.c.apiKeyEnv).toBe('C') // new template provider restored
+    expect(warnings.join(' ')).toContain('provider-restored')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T3 extras — format normalization, duplicates, user bytes, N1, fatal
+// ---------------------------------------------------------------------------
+
+describe('format normalization is a no-op (R8)', () => {
+  test('!!js folded by host, trailing-comment spacing normalized → write:false', () => {
+    const folded = [
+      `    defaultPreset: !!js process.env.DSH_OPENTUI_APPROVAL_GATE === 'off' &&`,
+      "      'danger-full-access' || 'workspace-write'  # normalized spacing",
+    ].join('\n')
+    const current = TEMPLATE.replace(`    defaultPreset: ${JS_PRESET}`, folded)
+    const out = run(current)
+    expect(out.write).toBe(false)
+    expect(out.content).toBe(current) // user bytes preserved, no rewrite
+  })
+
+  test('CRLF input + equivalent values → write:false', () => {
+    const current = TEMPLATE.replace(/\n/g, '\r\n')
+    const out = run(current)
+    expect(out.write).toBe(false)
+  })
+
+  test('long line folded around !!js does not trigger carry or backup', () => {
+    const longLine = `    defaultPreset: !!js process.env.DSH_OPENTUI_APPROVAL_GATE === 'off' &&\n      'danger-full-access' || 'workspace-write'`
+    const current = TEMPLATE.replace(`    defaultPreset: ${JS_PRESET}`, longLine)
+    const out = run(current)
+    expect(out.write).toBe(false)
+    expect(out.backupReason).toBeUndefined()
+    expect(out.warnings.join(' ')).not.toContain('carry-conflict')
+  })
+
+  test('tag participates in projection: plain override carried, !!js in current rejected', () => {
+    // A plain scalar replacing the template !!js is a real user value and is
+    // carried (06:1145); its text alone does not make it equal to the tag.
+    const plain = TEMPLATE.replace(JS_PRESET, `'danger-full-access'`)
+    const plainOut = run(plain)
+    expect(plainOut.content).toContain(`defaultPreset: 'danger-full-access'`)
+    expect(plainOut.content).not.toContain(JS_PRESET)
+    // Conversely a host-written !!js leaf cannot be carried: template wins.
+    const jsCurrent = TEMPLATE.replace(JS_PRESET, `!!js some.other.expression`)
+    const jsOut = run(jsCurrent)
+    expect(jsOut.write).toBe(true)
+    expect(jsOut.content).toContain(JS_PRESET)
+    expect(jsOut.warnings.join(' ')).toContain('carry-js-rejected')
+  })
+})
+
+describe('duplicate ids, user region bytes, disabled carry', () => {
+  test('duplicate managed id: value is per-key last-wins, position first, rest deleted', () => {
+    const current = TEMPLATE.replace(
+      '    maxDepth: 1\n- insert:',
+      '    maxDepth: 2\n- id: subagent\n  name: "@deepseek-ai/dsh-subagent"\n  disabled: true\n- insert:',
+    )
+    const out = run(current)
+    expect(out.write).toBe(true)
+    expect(out.backupReason).toBe('duplicates')
+    expect(out.content).toContain('maxDepth: 2')
+    expect(out.content).toContain('disabled: true')
+    const count = (out.content.match(/^- id: subagent$/gm) || []).length
+    expect(count).toBe(1)
+  })
+
+  test('user region (blank lines, foreign comments, foreign row) preserved byte-for-byte', () => {
+    const current = TEMPLATE
+      .replace('maxDepth: 1', 'maxDepth: 4')
+      .replace('# USER REGION', '# USER REGION (edited by hand)\n\n# extra hand-written note')
+      .replace(
+        '- id: tool-bash\n  name: "@deepseek-ai/dsh-tool-bash"\n  config:\n    enabled: true',
+        '- id: tool-bash\n  name: "@deepseek-ai/dsh-tool-bash"\n  config:\n    enabled: false  # hand note',
+      )
+    const out = run(current)
+    expect(out.write).toBe(true)
+    // R10 priority: foreign-comments outranks drift when both occur.
+    expect(out.backupReason).toBe('foreign-comments')
+    expect(out.notes.join(' ')).toContain('drift:')
+    expect(out.content).toContain('# USER REGION (edited by hand)\n\n# extra hand-written note')
+    expect(out.content).toContain('    mine: keep-me')
+    expect(out.content).toContain('maxDepth: 4')
+    // A trailing comment inside a rewritten authority row is reported.
+    expect(out.droppedComments.join(' ')).toContain('hand note')
+    // The foreign row was outside any managed span, so its bytes survived.
+    expect(out.content).toContain('    mine: keep-me\n')
+  })
+
+  test('disabled: /plugin true survives; false ≡ absent; no spurious disabled:false emitted', () => {
+    const disabledTrue = TEMPLATE.replace('    maxDepth: 1', '    maxDepth: 1\n  disabled: true')
+    const outTrue = run(disabledTrue)
+    expect(outTrue.write).toBe(false)
+    expect(outTrue.content).toContain('disabled: true')
+    // Explicit `false` is semantically equal to absence (R8/R20): no rewrite,
+    // and we never emit a meaningless `disabled: false` into a fresh row.
+    const disabledFalse = TEMPLATE.replace('    maxDepth: 1', '    maxDepth: 1\n  disabled: false')
+    expect(run(disabledFalse).write).toBe(false)
+    expect(run(TEMPLATE).content).not.toContain('disabled: false')
+    // A template `!!js` disabled leaf stays authoritative if the host writes a plain bool.
+    const jsTpl = TEMPLATE.replace(
+      '  config:\n    enabled: true\n',
+      '  disabled: !!js process.platform === \'win32\'\n  config:\n    enabled: true\n',
+    )
+    const jsCur = jsTpl.replace("disabled: !!js process.platform === 'win32'", 'disabled: false')
+    const outJs = converge({ template: jsTpl, current: jsCur, sidecar: templateProjection(jsTpl, REV), templateRevision: REV })
+    expect(outJs.write).toBe(true)
+    expect(outJs.content).toContain("disabled: !!js process.platform === 'win32'")
+    expect(outJs.warnings.join(' ')).toContain('disabled-js-overwritten')
+  })
+})
+
+describe('N1 sidecar self-heal and fatal parse errors', () => {
+  test('sidecar missing + file equals template → write:false, writeSidecarOnly:true', () => {
+    const out = run(TEMPLATE, { sidecar: undefined })
+    expect(out.write).toBe(false)
+    expect(out.writeSidecarOnly).toBe(true)
+    expect(out.sidecar.version).toBe(1)
+    expect(out.sidecar.templateRevision).toBe(REV)
+  })
+
+  test('sidecar corrupt (version != 1) → self-heal', () => {
+    const out = run(TEMPLATE, { sidecar: { version: 2, rows: {} } })
+    expect(out.write).toBe(false)
+    expect(out.writeSidecarOnly).toBe(true)
+  })
+
+  test('sidecar revision stale + otherwise converged → self-heal', () => {
+    const stale = sidecar(TEMPLATE, '0000000000000000')
+    const out = run(TEMPLATE, { sidecar: stale })
+    expect(out.write).toBe(false)
+    expect(out.writeSidecarOnly).toBe(true)
+    expect(out.sidecar.templateRevision).toBe(REV)
+  })
+
+  test('parse failure → structured error with line:col, write:false, no content write', () => {
+    const out = run('- id: [unclosed\n  config: {')
+    expect(out.write).toBe(false)
+    expect(out.error).toBeTruthy()
+    expect(out.error.code).toBe('parse')
+    expect(typeof out.error.line).toBe('number')
+    expect(typeof out.error.col).toBe('number')
+  })
+
+  test('`- # comment` on a separate line → shape error, write:false (R28)', () => {
+    const broken = '- # note\n  id: subagent\n  config:\n    maxDepth: 1\n'
+    const out = run(broken)
+    expect(out.write).toBe(false)
+    expect(out.error.code).toBe('shape')
+    expect(typeof out.error.line).toBe('number')
+  })
+})
+
+describe('R13 preamble on generated content', () => {
+  test('generated content survives document.delete(0) (header + first comment stay)', async () => {
+    const { parseDocument, isSeq } = await import('yaml')
+    const out = run(undefined)
+    expect(out.write).toBe(true)
+    const doc = parseDocument(out.content, {
+      customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (v: string) => v }],
+    })
+    expect(isSeq(doc.contents)).toBe(true)
+    doc.delete(0)
+    const after = String(doc)
+    expect(after).toContain('# profileRevision:')
+    expect(after).toContain('# model route')
+  })
+})

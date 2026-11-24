@@ -158,9 +158,12 @@ describe('batch-gate — session-log-deepseek.enabled survives provisioner re-ru
 })
 
 describe('B1 S3 E3 — ledger-evidenced template line numbers do not shift', () => {
-  test('provision-inproc-profile.mjs:566-578 stays byte-for-byte anchored', () => {
+  // R13 inserted one blank line after the template's first comment (source
+  // line 194), shifting this ledger-anchored block by +1. D2 appended the
+  // approval-policy insert at the END of the template, so it does not move it.
+  test('provision-inproc-profile.mjs:567-579 stays byte-for-byte anchored', () => {
     const src = readFileSync(SCRIPT, 'utf8').split('\n')
-    const block = src.slice(565, 578).join('\n')
+    const block = src.slice(566, 579).join('\n')
     expect(block).toBe([
       '# Read-only tools (read/search/glob/...) are untouched and pass via next().',
       '# Escape hatch: DSH_OPENTUI_APPROVAL_GATE=off sets enabled=false (and reverts the',
