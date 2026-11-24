@@ -1,0 +1,25 @@
+PASS  1. CapIR reproducibility — capir --check: byte-identical (artifacts=43 methods=257) -> /Users/qingguee/repo/wt-release-0272/capir/capir.json
+PASS  2. capcontract reproducibility — gen-capcontract --check: byte-identical (3 files, 257 methods)
+PASS  3. self-consistency (types.ts) — 257 unique ids == CapIR set (1585 literal occurrences)
+PASS  3. self-consistency (dispatch.ts) — 257 unique ids == CapIR set (257 literal occurrences)
+PASS  3. self-consistency (binder.ts) — no duplicated id literals; consumes generated set via import
+PASS  3. self-consistency (totals) — {"artifacts":43,"methods":257,"unary":226,"stream":31,"endpoints_session_controller":27}
+PASS  4. reference integrity — 6 imported names resolve
+PASS  5. @deepseek-ai import scan — zero host-package imports
+PASS  6. declaration-line coverage — 4/4 generated files (capcontract .ts × 3 + ledger.md)
+PASS  7. no bare ctx.<service> access — all ctx services covered by inject declarations
+PASS  8b. wired_manual == 0 — no hand-copied host-call wire lines (@manual count source is empty)
+PASS  8a. wired_protocol name set — bridge hand-wired names == ledger wired_protocol.methods (10 protocol frames)
+PASS  9. host-face provenance — generated dispatch/binder + template free of local.invoke/local.stream/*Face/inject decl; CapHostInvoke present
+PASS  10. dispatch executability — shipped bridge imports binder + wired registry reconciles with ledger in_wired (28/257) + resident dataflow test present
+PASS  11. PARAMS table presence — 257 rows == 257 methods
+PASS  12. PARAMS names match capir.json — 257 methods name-order identical
+PASS  13. SERVICE table complete — 257 rows, all service/implementation non-empty, cancel matches capir
+PASS  14. deny-list families absent — account/credentials/settings absent from adapters (31) + wire (237)
+PASS  15. PROJECTED_BY_HAND exact — 10 ids == static sensitive-key scan
+PASS  16. generic wire table — 237 unique bidirectional rows; adapters=31 (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 + W2-6 1 = 31)
+PASS  17. W2-3 confirm gate set — 8 write ids, all released/unary/non-denied
+PASS  18. SCOPE table matches capir scope blocks — 34 rows (7 goals), context/wire non-empty & wire in params
+
+summary: PASS=22 NOT_RUN=0 FAIL=0
+capcontract integrity gate: GREEN

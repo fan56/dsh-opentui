@@ -1,0 +1,75 @@
+$ tsc --noEmit
+src/app.tsx(228,30): error TS18046: 'response' is of type 'unknown'.
+src/app.tsx(231,21): error TS18046: 'location' is of type 'unknown'.
+src/app.tsx(1370,57): error TS18048: 'active' is possibly 'undefined'.
+src/component/dialog-model-free.tsx(42,9): error TS2345: Argument of type 'unknown[]' is not assignable to parameter of type '{ value: { providerID: string; modelID: string; }; }[]'.
+  Type 'unknown' is not assignable to type '{ value: { providerID: string; modelID: string; }; }'.
+src/component/dialog-model-free.tsx(57,7): error TS2322: Type '{ value: { providerID: string; modelID: string; }; }[]' is not assignable to type 'DialogSelectOption<{ providerID: string; modelID: string; }>[]'.
+  Property 'title' is missing in type '{ value: { providerID: string; modelID: string; }; }' but required in type 'DialogSelectOption<{ providerID: string; modelID: string; }>'.
+src/component/dialog-model.tsx(121,36): error TS2339: Property 'name' does not exist on type '{}'.
+src/component/dialog-model.tsx(153,37): error TS2339: Property 'name' does not exist on type '{}'.
+src/component/dialog-model.tsx(157,93): error TS2339: Property 'name' does not exist on type '{}'.
+src/component/dialog-model.tsx(185,9): error TS2345: Argument of type '{ providerID?: string | undefined; providerName?: string | undefined; free?: boolean | undefined; }[]' is not assignable to parameter of type '{ value: { providerID: string; modelID: string; }; }[]'.
+  Property 'value' is missing in type '{ providerID?: string | undefined; providerName?: string | undefined; free?: boolean | undefined; }' but required in type '{ value: { providerID: string; modelID: string; }; }'.
+src/component/dialog-model.tsx(194,72): error TS2339: Property 'providerName' does not exist on type '{ value: { providerID: string; modelID: string; }; }'.
+src/component/dialog-model.tsx(200,49): error TS2339: Property 'category' does not exist on type '{ providerID?: string | undefined; providerName?: string | undefined; free?: boolean | undefined; }'.
+src/component/dialog-model.tsx(201,49): error TS2339: Property 'category' does not exist on type '{ providerID?: string | undefined; providerName?: string | undefined; free?: boolean | undefined; }'.
+src/component/dialog-model.tsx(210,18): error TS2339: Property 'name' does not exist on type '{}'.
+src/component/dialog-model.tsx(214,54): error TS2339: Property 'value' does not exist on type '{ value: { providerID: string; modelID: string; }; } | { providerID?: string | undefined; providerName?: string | undefined; free?: boolean | undefined; } | { key: ModelPreferenceModel; ... 7 more ...; onSelect: () => void; }'.
+src/component/dialog-model.tsx(217,7): error TS2322: Type '{ value: { providerID: string; modelID: string; }; }[] | ({ providerID?: string | undefined; providerName?: string | undefined; free?: boolean | undefined; } | { key: ModelPreferenceModel; ... 7 more ...; onSelect: () => void; })[]' is not assignable to type 'DialogSelectOption<any>[]'.
+  Type '{ value: { providerID: string; modelID: string; }; }[]' is not assignable to type 'DialogSelectOption<any>[]'.
+    Property 'title' is missing in type '{ value: { providerID: string; modelID: string; }; }' but required in type 'DialogSelectOption<any>'.
+src/component/dialog-shell-output.tsx(60,14): error TS18048: 'cursor' is possibly 'undefined'.
+src/component/prompt/index.tsx(1340,59): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/component/prompt/index.tsx(1447,9): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/component/usage.tsx(40,45): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'LimitedProvider | undefined'.
+src/component/usage.tsx(51,53): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'LimitedProvider | undefined'.
+src/component/usage.tsx(55,23): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'LimitedProvider | undefined'.
+src/component/usage.tsx(111,43): error TS2769: No overload matches this call.
+  Overload 1 of 4, '(value: (prev: string | undefined) => string | undefined): string | undefined', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type '(prev: string | undefined) => string | undefined'.
+  Overload 2 of 4, '(value: string | undefined): string | undefined', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'string | undefined'.
+  Overload 3 of 4, '(value: string | ((prev: string | undefined) => string | undefined) | undefined): string | undefined', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'string | ((prev: string | undefined) => string | undefined) | undefined'.
+src/context/event.ts(21,22): error TS2536: Type 'T' cannot be used to index type 'OpenCodeEventMap'.
+src/context/event.ts(23,28): error TS2345: Argument of type 'T' is not assignable to parameter of type 'string | number | symbol'.
+src/feature-plugins/system/diff-viewer.tsx(99,34): error TS2347: Untyped function calls may not accept type arguments.
+src/feature-plugins/system/diff-viewer.tsx(159,43): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/mini/demo.ts(1026,34): error TS18046: 'input' is of type 'unknown'.
+src/mini/demo.ts(1027,19): error TS18046: 'input' is of type 'unknown'.
+src/mini/demo.ts(1031,24): error TS18046: 'input' is of type 'unknown'.
+src/mini/demo.ts(1034,9): error TS18046: 'input' is of type 'unknown'.
+src/mini/demo.ts(1035,33): error TS18046: 'input' is of type 'unknown'.
+src/mini/permission.shared.ts(82,29): error TS2339: Property 'decision' does not exist on type 'unknown'.
+src/mini/runtime.ts(670,66): error TS18048: 'state.defaultModel' is possibly 'undefined'.
+src/mini/stream-v2.image.ts(15,47): error TS2339: Property 'data' does not exist on type 'ProjectedFile'.
+  Property 'data' does not exist on type 'Readonly<{ mime: string; source: { type: string; }; name?: string | undefined; description?: string | undefined; mention?: { text: string; } | undefined; } & { uri: string; }>'.
+src/mini/stream-v2.subagent.ts(592,22): error TS2345: Argument of type 'any' is not assignable to parameter of type 'never'.
+src/mini/stream-v2.subagent.ts(597,43): error TS2339: Property 'id' does not exist on type 'never'.
+src/mini/stream-v2.subagent.ts(599,22): error TS2339: Property 'agent' does not exist on type 'never'.
+src/mini/stream-v2.subagent.ts(599,65): error TS2339: Property 'agent' does not exist on type 'never'.
+src/mini/stream-v2.subagent.ts(600,32): error TS2339: Property 'title' does not exist on type 'never'.
+src/mini/stream-v2.subagent.ts(601,31): error TS2339: Property 'time' does not exist on type 'never'.
+src/mini/stream-v2.transport.ts(782,61): error TS2345: Argument of type 'Wait | undefined' is not assignable to parameter of type 'Wait'.
+  Type 'undefined' is not assignable to type 'Wait'.
+src/mini/stream-v2.transport.ts(793,54): error TS18048: 'state.shellWait' is possibly 'undefined'.
+src/mini/stream-v2.transport.ts(819,65): error TS18048: 'state.shellWait' is possibly 'undefined'.
+src/mini/stream-v2.transport.ts(919,77): error TS18046: 'error' is of type 'unknown'.
+src/mini/stream-v2.transport.ts(1147,39): error TS18048: 'wait' is possibly 'undefined'.
+src/mini/stream-v2.transport.ts(1182,18): error TS18048: 'wait' is possibly 'undefined'.
+src/plugin/api.tsx(184,33): error TS2571: Object is of type 'unknown'.
+src/plugin/api.tsx(387,28): error TS2315: Type 'DialogSelectOptions' is not generic.
+src/plugin/context.tsx(681,21): error TS18046: 'source' is of type 'unknown'.
+src/plugin/context.tsx(684,17): error TS18046: 'source' is of type 'unknown'.
+src/plugin/render.tsx(109,49): error TS2345: Argument of type 'Path' is not assignable to parameter of type 'string'.
+src/plugin/render.tsx(112,36): error TS2345: Argument of type 'Path' is not assignable to parameter of type 'string'.
+src/plugin/render.tsx(115,48): error TS2345: Argument of type 'Path' is not assignable to parameter of type 'string'.
+src/plugin/render.tsx(140,28): error TS2322: Type 'Path' is not assignable to type 'string | undefined'.
+src/routes/session/index.tsx(832,39): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/routes/session/index.tsx(842,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/routes/session/index.tsx(1539,38): error TS2322: Type 'unknown' is not assignable to type 'number | undefined'.
+src/routes/session/index.tsx(1543,39): error TS2322: Type 'unknown' is not assignable to type '"steer" | "queue" | undefined'.

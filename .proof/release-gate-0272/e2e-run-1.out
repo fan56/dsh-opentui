@@ -1,0 +1,18 @@
+=== 024 unified E2E start 2026-11-24T02:00:58Z ===
+head: 7c85d1540711f1bccf03663f8cb2c37a3c9d891b
+=== family: pack ===
+FAMILY pack PASS
+=== family: capdomains ===
+FAMILY capdomains PASS
+=== family: model-domain ===
+FAMILY model-domain FAIL (see /Users/qingguee/repo/.scratch-release-0272-gate/e2e-real-1/model-domain)
+=== family: account-credentials-domain ===
+FAMILY account-credentials-domain FAIL (see /Users/qingguee/repo/.scratch-release-0272-gate/e2e-real-1/account-credentials-domain)
+=== family: exit-code ===
+FAMILY exit-code PASS
+=== family: keymap-modality ===
+FAMILY keymap-modality PASS
+=== family: verify-gate (real-client-gate.sh reuse) ===
+FAMILY verify-gate FAIL (see /Users/qingguee/repo/.scratch-release-0272-gate/e2e-real-1/verify-gate)
+=== unified verdict: FAILED_FAMILIES=3 ===
+E2E UNIFIED: FAIL
