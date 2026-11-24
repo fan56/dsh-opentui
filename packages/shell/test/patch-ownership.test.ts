@@ -778,3 +778,137 @@ describe('externalCarry — P1-1 whitelist and prototype-pollution defense', () 
     expect(out.dropped).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// nested insert ext — dsh-approval-policy.config.windowSeconds
+// ---------------------------------------------------------------------------
+
+const POLICY_INSERT = [
+  '- insert:',
+  '    - id: dsh-approval-policy',
+  "      name: '@aiwayds/dsh-approval-policy'",
+  '      config:',
+  '        windowSeconds: 300',
+].join('\n')
+const TEMPLATE_POLICY = TEMPLATE + POLICY_INSERT + '\n'
+
+function policyRun(current: string | undefined, ext: Parameters<typeof converge>[0]['externalCarry']) {
+  return converge({
+    template: TEMPLATE_POLICY,
+    current,
+    sidecar: sidecar(TEMPLATE_POLICY, REV),
+    templateRevision: REV,
+    externalCarry: ext,
+  })
+}
+
+function windowExt(value: unknown) {
+  return {
+    source: 'opentui-inproc' as const,
+    values: { 'dsh-approval-policy.config.windowSeconds': value },
+  }
+}
+
+describe('externalCarry — nested insert windowSeconds', () => {
+  test('absent: 600 lands in the insert config; ancestor stays the unmodified template (300)', () => {
+    const first = policyRun(undefined, windowExt(600))
+    expect(first.write).toBe(true)
+    expect(first.reason).toBe('absent')
+    expect(first.content).toContain('        windowSeconds: 600')
+    expect(first.content).not.toContain('windowSeconds: 300')
+    // Sidecar ancestor is the template projection WITHOUT ext.
+    expect(first.sidecar!.rows['dsh-approval-policy'].ancestor.config).toEqual({ windowSeconds: 300 })
+    expect(first.dropped).toEqual([])
+
+    // marker present -> no ext -> no-op on the written patch
+    const withMarker = converge({
+      template: TEMPLATE_POLICY,
+      current: first.content,
+      sidecar: first.sidecar,
+      templateRevision: REV,
+    })
+    expect(withMarker.write).toBe(false)
+    expect(withMarker.content).toBe(first.content)
+  })
+
+  test('existing file: ext overrides the template value and is not reported as drift', () => {
+    const out = policyRun(TEMPLATE_POLICY, windowExt(600))
+    expect(out.write).toBe(true)
+    expect(out.content).toContain('windowSeconds: 600')
+    expect(out.content).not.toContain('windowSeconds: 300')
+    expect(out.sidecar!.rows['dsh-approval-policy'].ancestor.config).toEqual({ windowSeconds: 300 })
+    expect(out.drift).toEqual([])
+  })
+
+  test('crash re-entry: current already 600, marker missing -> ext re-applied idempotently', () => {
+    const first = policyRun(undefined, windowExt(600))
+    const reentry = policyRun(first.content, windowExt(600))
+    expect(reentry.write).toBe(false)
+    expect(reentry.content).toBe(first.content)
+    expect(reentry.dropped).toEqual([])
+  })
+
+  test('boundaries 0 and 86400 are accepted; both are written verbatim', () => {
+    for (const boundary of [0, 86400]) {
+      const out = policyRun(undefined, windowExt(boundary))
+      expect(out.content).toContain(`windowSeconds: ${boundary}`)
+      expect(out.dropped).toEqual([])
+    }
+  })
+
+  test('invalid values drop as invalid-value and never widen the window', () => {
+    const invalid = [-1, 86401, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY,
+      '600', { $js: 'evil' }, {}, true, null] as unknown[]
+    for (const value of invalid) {
+      const out = policyRun(undefined, windowExt(value))
+      expect(out.content).toContain('windowSeconds: 300')
+      expect(out.dropped).toEqual([
+        { path: 'dsh-approval-policy.config.windowSeconds', reason: 'invalid-value' },
+      ])
+      expect(out.warnings.join(' ')).toContain('external-dropped: dsh-approval-policy.config.windowSeconds: invalid-value')
+    }
+  })
+
+  test('only the exact nested path is allowed: wrong depth/leaf/row are dropped', () => {
+    const out = policyRun(undefined, {
+      source: 'opentui' as const,
+      values: {
+        'dsh-approval-policy.windowSeconds': 600,
+        'dsh-approval-policy.config.foo': 600,
+        'dsh-approval-policy.config.windowSeconds.extra': 600,
+        'subagent.config.windowSeconds': 600,
+        'dsh-approval-policy.config.__proto__.polluted': 600,
+      },
+    })
+    expect(out.content).toContain('windowSeconds: 300')
+    expect(out.content).not.toContain('polluted')
+    expect(out.dropped).toEqual([
+      { path: 'dsh-approval-policy.windowSeconds', reason: 'invalid-value' },
+      { path: 'dsh-approval-policy.config.foo', reason: 'invalid-value' },
+      { path: 'dsh-approval-policy.config.windowSeconds.extra', reason: 'invalid-value' },
+      { path: 'subagent.config.windowSeconds', reason: 'invalid-value' },
+      { path: 'dsh-approval-policy.config.__proto__.polluted', reason: 'invalid-value' },
+    ])
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  test('nested ext composes with the row leaves and permission stays template-owned', () => {
+    const out = policyRun(undefined, {
+      source: 'opentui' as const,
+      values: {
+        'subagent.maxDepth': 2,
+        'dsh-approval-policy.config.windowSeconds': 600,
+        'permission.defaultPreset': 'danger-full-access',
+      },
+      dropped: [{ path: 'permission.presets', reason: 'sandbox-loosening-forbidden' }],
+    })
+    expect(out.content).toContain('maxDepth: 2')
+    expect(out.content).toContain('windowSeconds: 600')
+    expect(out.content).toContain('defaultPreset: !!js')
+    expect(out.content).not.toContain('defaultPreset: danger-full-access')
+    expect(out.dropped).toEqual([
+      { path: 'permission.presets', reason: 'sandbox-loosening-forbidden' },
+      { path: 'permission.defaultPreset', reason: 'template-authority' },
+    ])
+  })
+})

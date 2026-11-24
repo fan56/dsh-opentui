@@ -620,3 +620,131 @@ test('真实模板联调：两源旧 patch → planMigration → converge 全叶
   }
   expect(conv.content).not.toContain('maxActiveSubagents: 9')
 })
+
+// ---------------------------------------------------------------------------
+// 21. nested insert leaf — dsh-approval-policy.config.windowSeconds
+// ---------------------------------------------------------------------------
+
+const WINDOW = 'dsh-approval-policy.config.windowSeconds'
+const TEMPLATE_POLICY = TEMPLATE + `- insert:
+    - id: dsh-approval-policy
+      name: '@aiwayds/dsh-approval-policy'
+      config:
+        windowSeconds: 300
+`
+
+function approvalInsert(windowRaw: string): string {
+  return [
+    '- insert:',
+    '    - id: dsh-approval-policy',
+    "      name: '@aiwayds/dsh-approval-policy'",
+    '      config:',
+    `        windowSeconds: ${windowRaw}`,
+  ].join('\n')
+}
+
+const approvalInsertWithoutWindow = [
+  '- insert:',
+  '    - id: dsh-approval-policy',
+  "      name: '@aiwayds/dsh-approval-policy'",
+].join('\n')
+
+function planPolicy(overrides: Record<string, unknown> = {}) {
+  return planMigration({ templatePatchText: TEMPLATE_POLICY, markerExists: false, ...overrides })
+}
+
+test('windowSeconds: inproc insert 600 迁入 nested ext path 并进 marker.migrated', () => {
+  const result = planPolicy({ inprocPatchText: patch(approvalInsert('600')) })
+  expect(result.externalCarry!.values[WINDOW]).toBe(600)
+  expect(result.marker!.migrated).toContain(WINDOW)
+})
+
+test('windowSeconds: 0 与 86400 边界接受', () => {
+  for (const raw of ['0', '86400']) {
+    const result = planPolicy({ inprocPatchText: patch(approvalInsert(raw)) })
+    expect(result.externalCarry!.values[WINDOW]).toBe(Number(raw))
+    expect(result.externalCarry!.dropped).not.toContainEqual({ path: WINDOW, reason: 'invalid-value' })
+  }
+})
+
+test('windowSeconds: -1 / 86401 / NaN / Infinity / string / !!js / object 进 dropped，不影响其它合法叶', () => {
+  const invalid = ['-1', '86401', '.nan', '.inf', '-.inf', "'600'", '!!js 1 + 1', '{}']
+  for (const raw of invalid) {
+    const result = planPolicy({
+      inprocPatchText: patch(subagent('    maxActiveSubagents: 5'), approvalInsert(raw)),
+    })
+    expect(result.externalCarry!.values[WINDOW]).toBeUndefined()
+    expect(result.externalCarry!.dropped).toContainEqual({ path: WINDOW, reason: 'invalid-value' })
+    // 非法窗口不阻止其它合法叶迁移
+    expect(result.externalCarry!.values['subagent.maxActiveSubagents']).toBe(5)
+  }
+})
+
+test('windowSeconds: inproc 优先；inproc 缺该字段才回退 opentui', () => {
+  const both = planPolicy({
+    inprocPatchText: patch(approvalInsert('600')),
+    opentuiPatchText: patch(approvalInsert('900')),
+  })
+  expect(both.externalCarry!.values[WINDOW]).toBe(600)
+
+  const fallback = planPolicy({
+    inprocPatchText: patch(approvalInsertWithoutWindow),
+    opentuiPatchText: patch(approvalInsert('900')),
+  })
+  expect(fallback.externalCarry!.values[WINDOW]).toBe(900)
+})
+
+test('windowSeconds: 等于模板默认 300 不产生 ext；旧源无该 insert/字段不伪造', () => {
+  const same = planPolicy({ inprocPatchText: patch(approvalInsert('300')), opentuiPatchText: patch(approvalInsert('900')) })
+  expect(same.externalCarry!.values[WINDOW]).toBeUndefined()
+  expect(same.externalCarry!.source).toBe('opentui-inproc')
+
+  const absent = planPolicy({ inprocPatchText: patch(subagent('    maxActiveSubagents: 5')) })
+  expect(absent.externalCarry!.values[WINDOW]).toBeUndefined()
+  expect(absent.externalCarry!.dropped).not.toContainEqual({ path: WINDOW, reason: 'invalid-value' })
+})
+
+test('真实模板联调：windowSeconds 600 → converge nested insert；permission/providers 不被带出', () => {
+  const template = extractRealTemplate()
+  expect(template).toContain('windowSeconds: 300')
+
+  const planned = planMigration({
+    templatePatchText: template,
+    markerExists: false,
+    inprocPatchText: patch(
+      subagent('    maxActiveSubagents: 5'),
+      approvalInsert('600'),
+    ),
+    opentuiPatchText: patch(
+      subagent('    maxActiveSubagents: 9'),
+      '- id: permission\n  config:\n    defaultPreset: danger-full-access',
+      '- id: llm-pi-ai\n  config:\n    providers:\n      hand-added:\n        apiKeyEnv: HAND_ADDED_KEY',
+    ),
+  })
+  expect(planned.canWriteMarker).toBe(true)
+  const ext = planned.externalCarry!
+  expect(ext.values[WINDOW]).toBe(600)
+  expect(ext.values['subagent.maxActiveSubagents']).toBe(5)
+  for (const key of Object.keys(ext.values)) {
+    expect(key.startsWith('permission') || key.startsWith('llm-pi-ai') || key.startsWith('providers')).toBe(false)
+  }
+  expect(ext.dropped).toContainEqual({ path: 'permission.defaultPreset', reason: 'template-authority' })
+  expect(ext.dropped).toContainEqual({ path: 'llm-pi-ai.providers', reason: 'model-table-template-owned' })
+
+  const REV = 'aaaaaaaaaaaaaaaa'
+  const conv = converge({
+    template,
+    current: undefined,
+    sidecar: templateProjection(template, REV),
+    templateRevision: REV,
+    externalCarry: ext,
+  })
+  expect(conv.write).toBe(true)
+  expect(conv.content).toContain('        windowSeconds: 600')
+  expect(conv.content).not.toContain('windowSeconds: 300')
+  expect(conv.content).toContain('defaultPreset: !!js')
+  expect(conv.content).not.toContain('defaultPreset: danger-full-access')
+  expect(conv.content).toContain('apiKeyEnv: OPENCODE_GO_API_KEY')
+  expect(conv.content).not.toContain('apiKeyEnv: HAND_ADDED_KEY')
+  expect(conv.sidecar!.rows['dsh-approval-policy'].ancestor.config).toEqual({ windowSeconds: 300 })
+})

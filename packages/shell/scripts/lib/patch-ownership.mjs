@@ -38,7 +38,8 @@ const PROVIDER_ID_RE = /^[a-z][a-z0-9-]*$/
 const API_ENUM = new Set(['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'])
 const NO_REQUIRED_PATHS = new Set()
 
-// P1-1: one-shot migration may only write these exact two-segment leaves.
+// P1-1: one-shot migration may only write these exact leaves. Six are
+// two-segment row leaves; the single nested entry is an insert's config leaf.
 // Anything else (unknown row, unknown leaf, extra depth) is dropped.
 const EXT_ALLOWED_LEAVES = new Set([
   'subagent.maxActiveSubagents',
@@ -47,6 +48,7 @@ const EXT_ALLOWED_LEAVES = new Set([
   'agent-default-model.provider',
   'agent-default-model.model',
   'agent-default-model.reasoningEffort',
+  'dsh-approval-policy.config.windowSeconds',
 ])
 // Segment names that would escape onto Object.prototype / Function.prototype.
 const UNSAFE_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -596,7 +598,7 @@ function extForbiddenReason(id, parts) {
 }
 
 /** A carry leaf must be a finite scalar of the field's expected type.
- *  P1-1: unknown rows/leaves are invalid by default; only the six whitelisted
+ *  P1-1: unknown rows/leaves are invalid by default; only the whitelisted
  *  leaves can ever pass. */
 function extLeafValid(id, parts, value) {
   if (isJsValue(value) || isTaggedValue(value)) return false
@@ -611,7 +613,36 @@ function extLeafValid(id, parts, value) {
   if (id === 'agent-default-model' && (leaf === 'provider' || leaf === 'model' || leaf === 'reasoningEffort')) {
     return typeof value === 'string'
   }
+  // Nested insert config leaf: finite number within the policy's hard bounds.
+  // Strings, NaN/Infinity, !!js markers and objects are all rejected here.
+  if (id === 'dsh-approval-policy' && leaf === 'config.windowSeconds') {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 86400
+  }
   return false
+}
+
+/** Insert entries in the template that have carry rights (nested ext targets). */
+function templateCarryInsertIds(templateIndex) {
+  const ids = new Set()
+  for (const block of templateIndex.inserts) {
+    const seq = block.node.get('insert', true)
+    if (!seq || !isSeq(seq)) continue
+    for (const entry of seq.items) {
+      if (!isMap(entry) || !entry.has('id')) continue
+      const id = String(entry.get('id'))
+      if (roleOf(id) === 'carry') ids.add(id)
+    }
+  }
+  return ids
+}
+
+/** Config-relative leaf path of an ext key, or undefined for an unknown shape.
+ *  Two-segment row leaves map directly; the one nested insert leaf drops its
+ *  literal `config` segment so the value lands in the insert's config map. */
+function extConfigLeafPath(parts) {
+  if (parts.length === 2) return parts.slice(1)
+  if (parts.length === 3 && parts[1] === 'config') return parts.slice(2)
+  return undefined
 }
 
 function templateProviders(templateIndex) {
@@ -659,6 +690,7 @@ function prepareExternalCarry(externalCarry, templateIndex, warnings, dropped) {
   }
   if (!isPlainObject(externalCarry.values)) return undefined
   const providers = templateProviders(templateIndex)
+  const carryInserts = templateCarryInsertIds(templateIndex)
   const valid = {}
   const adm = {}
   const admPaths = {}
@@ -672,10 +704,15 @@ function prepareExternalCarry(externalCarry, templateIndex, warnings, dropped) {
     }
     const forbidden = extForbiddenReason(id, parts)
     if (forbidden) { reportExtDrop(path, forbidden, warnings, dropped); continue }
-    // P1-1: exact two-segment whitelist only. Unknown rows, unknown leaves and
-    // extra depth are dropped instead of being treated as legal by default.
-    if (parts.length !== 2 || !EXT_ALLOWED_LEAVES.has(path) ||
-        !templateIndex.rows.has(id) || roleOf(id) !== 'carry') {
+    // P1-1: exact whitelist only. Row leaves are two segments; the nested
+    // insert leaf is three segments with a literal `config`, and must target a
+    // carry insert that actually exists in the template. Any other depth or
+    // unknown row/leaf is dropped instead of being legal by default.
+    const nested = parts.length === 3 && parts[1] === 'config'
+    const known = nested
+      ? carryInserts.has(id)
+      : (parts.length === 2 && templateIndex.rows.has(id) && roleOf(id) === 'carry')
+    if (!EXT_ALLOWED_LEAVES.has(path) || !known || !extConfigLeafPath(parts)) {
       reportExtDrop(path, 'invalid-value', warnings, dropped); continue
     }
     if (!extLeafValid(id, parts.slice(1), value)) {
@@ -699,16 +736,19 @@ function prepareExternalCarry(externalCarry, templateIndex, warnings, dropped) {
   return { source: externalCarry.source, values: valid }
 }
 
-/** Apply the sanitized ext to one carry row (leaf setIn); ancestor untouched. */
+/** Apply the sanitized ext to one carry shape (row or insert entry); ancestor
+ *  is never touched — callers keep the template projection as the sidecar. */
 function applyExt(shape, ext, id) {
   if (!ext || !isPlainObject(ext.values)) return shape
   const out = cloneValue(shape)
   for (const [path, value] of Object.entries(ext.values)) {
     const parts = path.split('.')
-    if (parts[0] !== id || parts.length < 2) continue
+    if (parts[0] !== id) continue
+    const leaf = extConfigLeafPath(parts)
+    if (!leaf) continue
     if (out.config === ABSENT) out.config = {}
     if (!isPlainObject(out.config)) continue
-    setIn(out.config, parts.slice(1), cloneValue(value))
+    setIn(out.config, leaf, cloneValue(value))
   }
   return out
 }
@@ -906,6 +946,29 @@ function absentConverge({ template, templateIndex, revision, externalCarry, note
       extra: shape.extra,
     }
     edits.push({ start: tplBlock.range[0], end: tplBlock.range[1], text: renderRow(tplBlock, expected, '\n') })
+  }
+  // Nested insert leaves (e.g. dsh-approval-policy.config.windowSeconds) live
+  // in an insert block, not in a top-level row. With no current file, render
+  // the template insert block with ext applied; the sidecar below still uses
+  // the untouched template as the ancestor.
+  const eol = dominantEol(template)
+  for (const tplInsert of templateIndex.inserts) {
+    const seq = tplInsert.node.get('insert', true)
+    if (!seq || !isSeq(seq)) continue
+    let changed = false
+    const entries = seq.items.filter(isMap).map((entry) => {
+      const shape = shapeOf(entry)
+      const id = String(entry.get('id'))
+      const eff = applyExt(shape, externalCarry, id)
+      if (!eq(eff.config, shape.config) || !eq(eff.extra, shape.extra)) changed = true
+      return {
+        id,
+        name: shape.name === ABSENT ? undefined : shape.name,
+        config: eff.config === ABSENT ? undefined : cloneValue(eff.config),
+      }
+    })
+    if (!changed) continue
+    edits.push({ start: tplInsert.range[0], end: tplInsert.range[1], text: renderInsertBlock(tplInsert, undefined, entries, eol) })
   }
   const content = edits.length > 0 ? applyEdits(template, edits) : template
   return {
@@ -1193,11 +1256,14 @@ export function converge({ template, current, sidecar, templateRevision, externa
     }
     for (const [id, tplEntry] of tplEntryById) {
       const tplShape = entryShape(tplEntry)
+      // Ext is applied to the template-side value (the "next" of this nested
+      // carry row); the sidecar ancestor stays the raw template projection.
+      const effShape = applyExt(tplShape, ext, id)
       const curEntry = curEntryById.get(id)
       let entryValue = {
         id,
         name: tplShape.name === ABSENT ? undefined : tplShape.name,
-        config: tplShape.config === ABSENT ? undefined : cloneValue(tplShape.config),
+        config: effShape.config === ABSENT ? undefined : cloneValue(effShape.config),
       }
       // Insert nested entries with a ROLE get carry treatment (e.g. dsh-approval-policy).
       if (roleOf(id) !== 'authority' && curEntry && stateUsable) {
@@ -1216,6 +1282,13 @@ export function converge({ template, current, sidecar, templateRevision, externa
         }
       } else {
         needsRewrite = needsRewrite || !curEntry || !eq(projectNode(tplEntry), projectNode(curEntry))
+        // Without a usable sidecar the raw template is still the base, but an
+        // ext value must land in the nested config even when current equals
+        // that raw template.
+        if (roleOf(id) !== 'authority' && curEntry &&
+            !eq(entryValue.config, projectNode(tplEntry.get('config', true)))) {
+          needsRewrite = true
+        }
       }
       outEntries.push(entryValue)
     }
@@ -1259,10 +1332,11 @@ export function converge({ template, current, sidecar, templateRevision, externa
     if (!tplInsert) continue
     const entries = tplInsert.node.get('insert', true).items.filter(isMap).map((e) => {
       const shape = entryShape(e)
+      const eff = applyExt(shape, ext, String(shape.id))
       return {
         id: shape.id,
         name: shape.name === ABSENT ? undefined : shape.name,
-        config: shape.config === ABSENT ? undefined : cloneValue(shape.config),
+        config: eff.config === ABSENT ? undefined : cloneValue(eff.config),
       }
     })
     appended.push(renderInsertBlock(tplInsert, undefined, entries, fileEol))

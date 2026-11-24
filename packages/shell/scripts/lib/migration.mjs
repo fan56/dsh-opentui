@@ -68,6 +68,12 @@ const CARRY_LEAF_KEYS = {
   'agent-default-model': new Set(['provider', 'model', 'reasoningEffort']),
 }
 
+/** The one nested insert config leaf that is a migration candidate. Its ext
+ *  path carries the literal `config` segment so converge writes it to the
+ *  matching insert entry rather than to a top-level row. */
+const APPROVAL_POLICY_ID = 'dsh-approval-policy'
+const WINDOW_SECONDS_PATH = `${APPROVAL_POLICY_ID}.config.windowSeconds`
+
 // ---------------------------------------------------------------------------
 // value helpers (mirror patch-ownership projection, no fs/clock)
 // ---------------------------------------------------------------------------
@@ -149,7 +155,10 @@ function deepEqual(a, b) {
 // ---------------------------------------------------------------------------
 
 function emptyIndex() {
-  return { rows: new Map(), inserts: [] }
+  // insertRows holds the projected config of nested insert entries (keyed by
+  // entry id), so migration can read leaves such as the approval window that
+  // are not top-level rows.
+  return { rows: new Map(), inserts: [], insertRows: new Map() }
 }
 
 /**
@@ -180,7 +189,11 @@ function indexPatch(text) {
       for (const entry of insertNode.items) {
         if (isMap(entry)) {
           const id = scalarOf(entry.get('id', true))
-          if (id !== undefined && id !== null) ids.push(String(id))
+          if (id !== undefined && id !== null) {
+            const key = String(id)
+            ids.push(key)
+            index.insertRows.set(key, projectNode(entry.get('config', true)))
+          }
         }
       }
       const target = scalarOf(item.get('id', true))
@@ -259,6 +272,35 @@ function simpleDefault(path, sourceName, templateIndex) {
   const spec = SIMPLE_LEAVES.find((s) => s.path === path)
   const fromTemplate = spec ? leafFromConfig(templateIndex, spec.row, spec.leaf) : undefined
   return fromTemplate !== undefined ? fromTemplate : OPENTUI_DEFAULTS[path]
+}
+
+// ---------------------------------------------------------------------------
+// nested insert leaf: dsh-approval-policy.config.windowSeconds
+// ---------------------------------------------------------------------------
+
+/** Read windowSeconds from a source's dsh-approval-policy insert, if present. */
+function approvalWindow(index) {
+  if (!index || !index.insertRows.has(APPROVAL_POLICY_ID)) return undefined
+  const cfg = index.insertRows.get(APPROVAL_POLICY_ID)
+  return hasOwn(cfg, 'windowSeconds') ? cfg.windowSeconds : undefined
+}
+
+/** Per-leaf source priority: inproc first, fall back to opentui only when the
+ *  inproc insert has no such leaf (presence, not value, decides). */
+function pickApprovalWindow(inproc, opentui) {
+  // A leaf present as `null` is still a user value (an invalid one), not an
+  // absent leaf: approvalWindow returns null here, which this check keeps.
+  const value = approvalWindow(inproc)
+  if (value !== undefined) return { name: 'opentui-inproc', value }
+  const fromOpentui = approvalWindow(opentui)
+  if (fromOpentui !== undefined) return { name: 'opentui', value: fromOpentui }
+  return undefined
+}
+
+/** Policy hard bound: finite number in [0, 86400]. Strings, NaN/Infinity and
+ *  !!js markers are rejected so migration never widens the safety boundary. */
+function validWindowSeconds(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 86400
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +580,26 @@ export function planMigration({
     valueSource[spec.path] = picked.name
     migrated.push(spec.path)
     if (picked.name === 'opentui-inproc') carriedFromInproc = true
+  }
+
+  // Nested insert leaf. The source-side default is the template's own window
+  // (300 in the shipped template); only a source that actually carries the
+  // insert leaf is a user value. Invalid values are dropped per leaf and do
+  // not stop the other leaves from migrating.
+  const tplWindowCfg = templateIndex.insertRows.get(APPROVAL_POLICY_ID)
+  const tplWindow = hasOwn(tplWindowCfg, 'windowSeconds') ? tplWindowCfg.windowSeconds : undefined
+  if (tplWindow !== undefined) {
+    const picked = pickApprovalWindow(inproc, opentui)
+    if (picked) {
+      if (!validWindowSeconds(picked.value)) {
+        uniqueDropped.push({ id: picked.name, path: WINDOW_SECONDS_PATH, reason: 'invalid-value' })
+      } else if (!deepEqual(picked.value, tplWindow)) {
+        values[WINDOW_SECONDS_PATH] = cloneValue(picked.value)
+        valueSource[WINDOW_SECONDS_PATH] = picked.name
+        migrated.push(WINDOW_SECONDS_PATH)
+        if (picked.name === 'opentui-inproc') carriedFromInproc = true
+      }
+    }
   }
 
   const adm = planAdm(inproc, opentui, templateIndex)
