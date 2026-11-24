@@ -29,6 +29,7 @@ import {
   BRIDGE_APPEND_PRESET_NOTICE,
   BRIDGE_REPAIR_COMMAND,
 } from '../scripts/lib/bridge-failfast-text.mjs'
+import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
 const BRIDGE_PKG = '@aiwayds/dsh-opentui-bridge@0.1.0'
@@ -172,10 +173,10 @@ describe('provision-inproc-profile.mjs host gate', () => {
     try {
       const run = runProvision(root, { [HOST_VERSION_ENV]: '0.2.2-rc.4' })
       expect(run.status).toBe(0)
-      expect(run.stdout).toContain('[1/7] host')
+      expect(run.stdout).toContain('[1/8] host')
       expect(run.stdout).toContain('granted exact-version exemption')
       expect(run.stdout).toContain('PASS')
-      const compat = JSON.parse(readFileSync(join(root, 'profiles', 'opentui-inproc', COMPATIBILITY_FILENAME), 'utf8'))
+      const compat = JSON.parse(readFileSync(join(root, 'profiles', DEFAULT_PROFILE, COMPATIBILITY_FILENAME), 'utf8'))
       expect(compat[BRIDGE_PKG]).toContain('0.2.2-rc.4')
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -190,8 +191,8 @@ describe('provision-inproc-profile.mjs host gate', () => {
       assertThreeElements(run.stderr, 'expected >=0.2.2-rc.3 <0.3.0, actual 0.3.0')
       expect(run.stderr).toContain('BRIDGE_TIMEOUT')
       // Fail-fast happens before manifest/symlink work: no profile was created.
-      expect(existsSync(join(root, 'profiles', 'opentui-inproc', 'package.json'))).toBe(false)
-      expect(existsSync(join(root, 'profiles', 'opentui-inproc', COMPATIBILITY_FILENAME))).toBe(false)
+      expect(existsSync(join(root, 'profiles', DEFAULT_PROFILE, 'package.json'))).toBe(false)
+      expect(existsSync(join(root, 'profiles', DEFAULT_PROFILE, COMPATIBILITY_FILENAME))).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

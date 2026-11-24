@@ -25,6 +25,7 @@ import {
 	formatBridgeFailFastMessage,
 } from "../scripts/lib/bridge-failfast-text.mjs"
 import { HOST_VERSION_ENV } from "../scripts/lib/host-compat.mjs"
+import { DEFAULT_PROFILE } from "../scripts/lib/profile-name.mjs"
 import {
 	BridgeBootstrapError,
 	formatBridgeBootstrapMessage,
@@ -147,7 +148,7 @@ describe("fingerprint path fail-fast (ProvisionError)", () => {
 		const root = mkdtempSync(join(tmpdir(), "dsh-failfast-fp-"))
 		try {
 			const home = join(root, "home")
-			const profileDir = join(home, "profiles", "opentui-inproc")
+			const profileDir = join(home, "profiles", DEFAULT_PROFILE)
 			const linkDir = join(profileDir, "node_modules", "@aiwayds")
 			mkdirSync(home, { recursive: true })
 			mkdirSync(profileDir, { recursive: true })
@@ -155,7 +156,7 @@ describe("fingerprint path fail-fast (ProvisionError)", () => {
 			writeFileSync(
 				join(profileDir, "package.json"),
 				JSON.stringify({
-					name: "dsh-profile-opentui-inproc",
+					name: `dsh-profile-${DEFAULT_PROFILE}`,
 					private: true,
 					dsh: {
 						profile: {

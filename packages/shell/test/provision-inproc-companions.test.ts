@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { COMPANIONS } from '../scripts/lib/inproc-companions.mjs'
 import { DEFAULT_COMPANION_IDS } from '../scripts/lib/companion-policy.mjs'
+import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
 const REGISTRY = '@aiwayds/dsh-subagent-registry'
@@ -40,11 +41,11 @@ const fs = require('node:fs')
 const path = require('node:path')
 const args = process.argv.slice(2)
 if (process.env.DSH_STUB_LOG) fs.appendFileSync(process.env.DSH_STUB_LOG, args.join(' ') + '\\n')
-if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === 'opentui-inproc' && args[3] === 'add') {
+if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === ${JSON.stringify(DEFAULT_PROFILE)} && args[3] === 'add') {
   if (process.env.DSH_STUB_ADD_FAIL === '1') { console.error('ERR_PNPM_META_FETCH_FAIL stub'); process.exit(1) }
   const halfFail = process.env.DSH_STUB_ADD_HALF_FAIL === '1'
   const home = process.env.DSH_HOME
-  const dir = path.join(home, 'profiles', 'opentui-inproc')
+  const dir = path.join(home, 'profiles', ${JSON.stringify(DEFAULT_PROFILE)})
   const manifestPath = path.join(dir, 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   manifest.dependencies = manifest.dependencies || {}
@@ -136,13 +137,13 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const fx = fixture()
     const run = provision(fx)
     expect(run.exitCode).toBe(0)
-    expect(text(run.stdout)).toContain('[4/7] companions — installed 11 of 11')
-    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${DEFAULT_SPECS.join(' ')}`])
-    const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8'))
+    expect(text(run.stdout)).toContain('[5/8] companions — installed 11 of 11')
+    expect(stubCalls(fx)).toEqual([`plugin --profile ${DEFAULT_PROFILE} add ${DEFAULT_SPECS.join(' ')}`])
+    const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8'))
     for (const entry of DEFAULT_COMPANIONS) {
       expect(manifest.dependencies[entry.name]).toBe(LATEST_BY_NAME[entry.name])
       expect(manifest.dsh.profile.bundles).toContain(entry.name)
-      expect(existsSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...entry.name.split('/'), 'package.json'))).toBe(true)
+      expect(existsSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'node_modules', ...entry.name.split('/'), 'package.json'))).toBe(true)
     }
   })
 
@@ -150,12 +151,12 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const fx = fixture()
     expect(provision(fx).exitCode).toBe(0)
     const callsAfterFirst = stubCalls(fx).length
-    const manifestBefore = readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')
+    const manifestBefore = readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8')
     const second = provision(fx)
     expect(second.exitCode).toBe(0)
     expect(text(second.stdout)).toContain('already satisfied (11/11)')
     expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
-    expect(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')).toBe(manifestBefore)
+    expect(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8')).toBe(manifestBefore)
   })
 
   test('DSH_OPENTUI_COMPANION_LATEST=off skips the install but leaves an existing install alone', () => {
@@ -166,7 +167,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(off.exitCode).toBe(0)
     expect(text(off.stdout)).toContain('skipped (DSH_OPENTUI_COMPANION_LATEST=off)')
     expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
-    expect(JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')).dependencies[REGISTRY]).toBe('0.21.0')
+    expect(JSON.parse(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8')).dependencies[REGISTRY]).toBe('0.21.0')
   })
 
   test('a failed install is a WARN, not a boot blocker', () => {
@@ -198,10 +199,10 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(text(run.stderr)).toContain('no global `dsh`')
     expect(text(run.stderr)).toContain('Install dsh')
     expect(text(run.stderr)).toContain('DSH_OPENTUI_COMPANION_LATEST=off')
-    expect(text(run.stdout)).toContain('[4/7] companions — skipped (no global `dsh`')
+    expect(text(run.stdout)).toContain('[5/8] companions — skipped (no global `dsh`')
     // No add attempted, but the profile is fully provisioned and bootable.
     expect(stubCalls(fx)).toEqual([])
-    const profile = join(fx.home, 'profiles', 'opentui-inproc')
+    const profile = join(fx.home, 'profiles', DEFAULT_PROFILE)
     expect(existsSync(join(profile, 'node_modules', '@aiwayds', 'dsh-opentui-bridge', 'index.js'))).toBe(true)
     const manifest = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
     expect(manifest.dsh.profile.bundles).toContain('@aiwayds/dsh-opentui-bridge')
@@ -211,13 +212,13 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
   test('a half-written manifest from a failed add is dropped, not a boot blocker', () => {
     const fx = fixture()
     // The stub writes the dependency + bundle row but fails before installing
-    // node_modules — the exact half-write that used to hard-fail step [5/7].
+    // node_modules — the exact half-write that used to hard-fail step [6/8].
     const run = provision(fx, { DSH_STUB_ADD_HALF_FAIL: '1' })
     expect(run.exitCode).toBe(0)
     expect(text(run.stderr)).toContain('companions are optional')
     expect(text(run.stderr)).toContain('dropping stale declaration')
     expect(text(run.stdout)).toContain('profile stays usable')
-    const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8'))
+    const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8'))
     expect(manifest.dependencies?.[REGISTRY]).toBeUndefined()
     expect(manifest.dsh.profile.bundles).not.toContain(REGISTRY)
   })
@@ -225,7 +226,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
   test('a later offline start skips a stale declaration with a WARN and stays bootable', () => {
     const fx = fixture()
     expect(provision(fx).exitCode).toBe(0)
-    const profile = join(fx.home, 'profiles', 'opentui-inproc')
+    const profile = join(fx.home, 'profiles', DEFAULT_PROFILE)
     rmSync(join(profile, 'node_modules', ...REGISTRY.split('/')), { recursive: true, force: true })
     const callsAfterFirst = stubCalls(fx).length
     const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
@@ -244,9 +245,9 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const fx = fixture()
     // Provision once to materialise everything, then delete only the mounted
     // package while the manifest still declares it; disable the step so it
-    // cannot self-heal and step [5/7] is the one that reports the drift.
+    // cannot self-heal and step [6/8] is the one that reports the drift.
     expect(provision(fx).exitCode).toBe(0)
-    rmSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...REGISTRY.split('/')), { recursive: true, force: true })
+    rmSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'node_modules', ...REGISTRY.split('/')), { recursive: true, force: true })
     const run = provision(fx, { DSH_OPENTUI_COMPANION_LATEST: 'off' })
     expect(run.exitCode).toBe(1)
     expect(text(run.stderr)).toContain('companion drift')
@@ -258,7 +259,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
     expect(run.exitCode).toBe(0)
     const specs = DEFAULT_COMPANIONS.map((entry) => `${entry.name}@latest`)
-    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${specs.join(' ')}`])
+    expect(stubCalls(fx)).toEqual([`plugin --profile ${DEFAULT_PROFILE} add ${specs.join(' ')}`])
   })
 
   test('version mismatch produces ONE summary WARN naming every skipped companion in roster order', () => {
@@ -277,7 +278,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const fx = fixture()
     const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
     expect(run.exitCode).toBe(0)
-    expect(text(run.stdout)).toContain('[4/7] companions — installed 11 of 11')
+    expect(text(run.stdout)).toContain('[5/8] companions — installed 11 of 11')
     const summaryLines = text(run.stderr).split('\n').filter((line) =>
       line.includes('companion(s) skipped (version query failed or outside declared range)'))
     expect(summaryLines).toHaveLength(1)
@@ -309,7 +310,7 @@ test.skipIf(process.env.DSH_INPROC_COMPANION_LIVE !== '1')(
     const home = process.env.DSH_INPROC_COMPANION_HOME
     expect(home).toBeDefined()
     const run = Bun.spawnSync({
-      cmd: ['dsh', '--profile', 'opentui-inproc', '--dump-config'],
+      cmd: ['dsh', '--profile', DEFAULT_PROFILE, '--dump-config'],
       env: { ...process.env, DSH_HOME: home! },
       stdout: 'pipe',
       stderr: 'pipe',

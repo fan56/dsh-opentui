@@ -24,7 +24,7 @@
 #   2. fresh scratch DSH_HOME — run the real in-process provisioner with
 #      --repair (no reads from ~/.dsh); it creates the active profile, copies
 #      THIS checkout's dist/bridge and grants the host-version exemption
-#   3. handshake smoke — spawn `dsh --profile opentui-inproc` with
+#   3. handshake smoke — spawn `dsh --profile <DEFAULT_PROFILE>` with
 #      DSH_OPENTUI_BRIDGE_STDIO=1, send bridge.hello, require a framed reply
 #   4. tmux boot the TUI against that scratch home, wait until the composer
 #      input box paints (the .ans "输入框" readiness criterion)
@@ -46,7 +46,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCHER="$REPO/dsh-opentui"
 PROVISIONER="$REPO/packages/shell/scripts/provision-inproc-profile.mjs"
 BRIDGE_DIR="$REPO/packages/shell/dist/bridge"
-PROFILE="opentui-inproc"
+PROFILE="$(node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { DEFAULT_PROFILE } = await import(pathToFileURL(process.argv[1])); process.stdout.write(DEFAULT_PROFILE)' "$REPO/packages/shell/scripts/lib/profile-name.mjs")"
 OUT="$REPO/.proof/real-client-gate"
 BOOT_TIMEOUT=90
 KEEP=0

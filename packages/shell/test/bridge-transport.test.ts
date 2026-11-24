@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { PassThrough } from "node:stream"
+import { DEFAULT_PROFILE } from "../scripts/lib/profile-name.mjs"
 import {
 	BridgeProtocolError,
 	type BridgeEventFrame,
@@ -81,7 +82,7 @@ describe("StdioBridgeTransport wire contract", () => {
 		const p = t.request("bridge.ping")
 		expect(bridge.spawnCalls).toHaveLength(1)
 		expect(bridge.spawnCalls[0]?.command).toBe("dsh")
-		expect(bridge.spawnCalls[0]?.args).toEqual(["--profile", "opentui-inproc"])
+		expect(bridge.spawnCalls[0]?.args).toEqual(["--profile", DEFAULT_PROFILE])
 		expect(bridge.spawnCalls[0]?.env.DSH_OPENTUI_BRIDGE_STDIO).toBe("1")
 		expect(bridge.spawnCalls[0]?.env.DSH_HOME).toBe("/tmp/shared-home")
 		bridge.stdout.write('{"id":1,"ok":true,"result":{"protocolVersion":1}}\n')

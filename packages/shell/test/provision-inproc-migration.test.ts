@@ -24,9 +24,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
 const NEW_PROFILE = 'opentui-monday'
+const LEGACY_SOURCE_PROFILE = 'opentui-inproc'
 // Version authority: the same shell package.json the provisioner reads.
 const SHELL_VERSION = JSON.parse(
   readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
@@ -39,7 +41,7 @@ const path = require('node:path')
 const args = process.argv.slice(2)
 if (args[0] === 'plugin' && args[3] === 'add') {
   const home = process.env.DSH_HOME
-  const dir = path.join(home, 'profiles', process.env.DSH_OPENTUI_TEST_PROFILE_NAME || 'opentui-inproc')
+  const dir = path.join(home, 'profiles', process.env.DSH_OPENTUI_TEST_PROFILE_NAME || ${JSON.stringify(DEFAULT_PROFILE)})
   const manifestPath = path.join(dir, 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   manifest.dependencies = manifest.dependencies || {}
@@ -100,7 +102,7 @@ function fixture(): Fixture {
     home,
     profile: join(home, 'profiles', NEW_PROFILE),
     legacyA: join(home, 'profiles', 'opentui'),
-    legacyB: join(home, 'profiles', 'opentui-inproc'),
+    legacyB: join(home, 'profiles', LEGACY_SOURCE_PROFILE),
     bin,
   }
 }
@@ -152,9 +154,8 @@ const backup = (fx: Fixture, source: string, kind: string) => join(fx.profile, '
 const configPath = (fx: Fixture) => join(fx.profile, 'config.json')
 const newPatchPath = (fx: Fixture) => join(fx.profile, 'cordis.patch.yml')
 const readMarker = (fx: Fixture) => JSON.parse(readFileSync(markerPath(fx), 'utf8'))
-const DEFAULT_PROFILE = 'opentui-inproc'
 const OLD_TIME = new Date('2020-01-01T00:00:00.000Z')
-/** Source B == the target profile in production; route the test seam back to it. */
+/** Source B is the legacy in-process profile; route the test seam to the real default. */
 const runAsB = (fx: Fixture, extra: Record<string, string> = {}) =>
   run(fx, { DSH_OPENTUI_TEST_PROFILE_NAME: DEFAULT_PROFILE, ...extra })
 
@@ -222,9 +223,9 @@ describe('T8b migration wired into the provisioner', () => {
     expect(newPatch).toContain('maxActiveSubagents: 5')
     expect(newPatch).toContain('maxDepth: 3')
     expect(newPatch).toContain('enabled: false')
-    expect(readFileSync(backup(fx, 'opentui-inproc', 'cordis.patch.yml'), 'utf8')).toBe(oldPatch)
+    expect(readFileSync(backup(fx, LEGACY_SOURCE_PROFILE, 'cordis.patch.yml'), 'utf8')).toBe(oldPatch)
     const marker = readMarker(fx)
-    expect(marker.from).toEqual(['opentui-inproc'])
+    expect(marker.from).toEqual([LEGACY_SOURCE_PROFILE])
     expect(marker.migrated).toContain('subagent.maxDepth')
     expect(marker.migrated).toContain('session-log-deepseek.enabled')
     // no source A -> no config/keybindings notice
@@ -248,8 +249,8 @@ describe('T8b migration wired into the provisioner', () => {
     const newPatch = readFileSync(newPatchPath(fx), 'utf8')
     expect(newPatch).toContain('maxActiveSubagents: 5')
     expect(newPatch).not.toContain('maxActiveSubagents: 7')
-    expect(readMarker(fx).from).toEqual(['opentui-inproc', 'opentui'])
-    expect(existsSync(backup(fx, 'opentui-inproc', 'cordis.patch.yml'))).toBe(true)
+    expect(readMarker(fx).from).toEqual([LEGACY_SOURCE_PROFILE, 'opentui'])
+    expect(existsSync(backup(fx, LEGACY_SOURCE_PROFILE, 'cordis.patch.yml'))).toBe(true)
     expect(existsSync(backup(fx, 'opentui', 'cordis.patch.yml'))).toBe(true)
     expect(snapshot(join(fx.legacyA, 'cordis.patch.yml'))).toEqual(beforeA)
     expect(snapshot(join(fx.legacyB, 'cordis.patch.yml'))).toEqual(beforeB)
@@ -356,14 +357,14 @@ describe('T8b migration wired into the provisioner', () => {
 
     // If converge had run first, this backup would hold the generated template
     // instead of the pre-converge bytes — the assertion proves the ordering.
-    const backupPath = join(fx.legacyB, '.migrated-from', 'opentui-inproc-cordis.patch.yml')
+    const backupPath = join(fx.legacyB, '.migrated-from', `${LEGACY_SOURCE_PROFILE}-cordis.patch.yml`)
     expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
     const after = readFileSync(legacyPatch, 'utf8')
     expect(after).not.toBe(before.content)
     expect(after).toContain('maxDepth: 1')
     expect(after).toContain('maxActiveSubagents: 5')
     const marker = JSON.parse(readFileSync(join(fx.legacyB, '.migration.json'), 'utf8'))
-    expect(marker.from).toEqual(['opentui-inproc'])
+    expect(marker.from).toEqual([LEGACY_SOURCE_PROFILE])
     expect(marker.migrated).toContain('subagent.maxActiveSubagents')
   })
 
@@ -456,7 +457,7 @@ describe('T8b migration wired into the provisioner', () => {
     const oldPatch = patch(subagent('    maxActiveSubagents: 5'))
     seed(fx, 'B', 'cordis.patch.yml', oldPatch)
     expect(runAsB(fx).exitCode).toBe(0)
-    const backupPath = join(fx.legacyB, '.migrated-from', 'opentui-inproc-cordis.patch.yml')
+    const backupPath = join(fx.legacyB, '.migrated-from', `${LEGACY_SOURCE_PROFILE}-cordis.patch.yml`)
     expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
 
     // Simulate a crash after converge rewrote source B but before the marker

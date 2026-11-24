@@ -23,6 +23,7 @@ import { DEFAULT_PROFILE as MJS_DEFAULT_PROFILE } from "../scripts/lib/profile-n
 const PROFILE_CONSTANTS = fileURLToPath(new URL("../src/client/profile-constants.ts", import.meta.url))
 const PROVISIONER = fileURLToPath(new URL("../scripts/provision-inproc-profile.mjs", import.meta.url))
 const PROFILE_LITERAL_GUARD_SCRIPTS = [
+	"../../../scripts/real-client-gate.sh",
 	"../../../scripts/verify-bridge-handshake.mjs",
 	"../../../scripts/verify-capcontract-roundtrip.mjs",
 	"../../../scripts/verify-s1-model.mjs",
@@ -51,7 +52,7 @@ describe("profile name single source (P0-3 / T11 pin)", () => {
 		expect(source).not.toMatch(/\b(?:const|let|var)\s+DEFAULT_PROFILE\s*=/)
 	})
 
-	test("root verify/e2e scripts do not hard-code the active host profile", () => {
+	test("guarded scripts do not hard-code the active host profile", () => {
 		const forbiddenProfiles = new Set([MJS_DEFAULT_PROFILE, "opentui-inproc"])
 		const violations = PROFILE_LITERAL_GUARD_SCRIPTS.flatMap((file) => {
 			const code = readFileSync(file, "utf8")
@@ -64,6 +65,19 @@ describe("profile name single source (P0-3 / T11 pin)", () => {
 				.map((profile) => `${file}: hard-coded ${profile}`)
 		})
 		expect(violations).toEqual([])
+	})
+
+	test("real-client gate derives PROFILE from the shared profile-name module", () => {
+		const gate = fileURLToPath(new URL("../../../scripts/real-client-gate.sh", import.meta.url))
+		const source = readFileSync(gate, "utf8")
+		expect(source).not.toContain(MJS_DEFAULT_PROFILE)
+		expect(source).not.toContain("opentui-inproc")
+		const profileAssignment = source.split(/\r?\n/).find((line) => line.startsWith("PROFILE="))
+		expect(profileAssignment).toBeDefined()
+		expect(profileAssignment).toContain("node --input-type=module -e")
+		expect(profileAssignment).toContain("await import(pathToFileURL(process.argv[1]))")
+		expect(profileAssignment).toContain("DEFAULT_PROFILE")
+		expect(profileAssignment).toContain("packages/shell/scripts/lib/profile-name.mjs")
 	})
 })
 

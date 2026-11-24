@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { classifyLock, LOCK_CORRUPT_GRACE_MS } from '../scripts/lib/provision-run-lock.mjs'
 import { holderExited } from '../scripts/lib/profile-lock.mjs'
+import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
 const tempDirs: string[] = []
@@ -36,7 +37,7 @@ if (args[0] === 'plugin' && args[3] === 'add') {
   const secs = Number(process.env.DSH_STUB_ADD_SLEEP || '0')
   if (secs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, secs * 1000)
   const home = process.env.DSH_HOME
-  const dir = path.join(home, 'profiles', 'opentui-inproc')
+  const dir = path.join(home, 'profiles', ${JSON.stringify(DEFAULT_PROFILE)})
   const manifestPath = path.join(dir, 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   manifest.dependencies = manifest.dependencies || {}
@@ -90,7 +91,7 @@ function fixture(): Fixture {
   writeFileSync(join(bin, 'npm'), STUB_NPM, { mode: 0o755 })
   writeFileSync(join(bin, 'which'), STUB_WHICH, { mode: 0o755 })
   chmodSync(join(bin, 'dsh'), 0o755)
-  return { root, home, profile: join(home, 'profiles', 'opentui-inproc'), bin }
+  return { root, home, profile: join(home, 'profiles', DEFAULT_PROFILE), bin }
 }
 
 function env(fx: Fixture, extra: Record<string, string> = {}) {
