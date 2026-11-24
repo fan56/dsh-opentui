@@ -6,12 +6,14 @@
  * This is a code-invariant gate, not a security boundary: it fails the build
  * if a future writer is reintroduced or only one whitelist table is widened.
  *
- * P0-4 hardening: the detector is a pure function
- * (`./lib/patch-writer-guard.ts`) so it can be fed inline fake source. The old
- * regex only matched `writeFileSync(...)` when its arguments had no nested
- * parentheses, so `writeFileSync(join(dir, "cordis.patch.yml"), content)` slipped
- * through. The new rule requires dimension A (patch target) and dimension B
- * (write capability) to co-occur inside one write call.
+ * P0-4: the detector is a pure function (`./lib/patch-writer-guard.ts`) so it
+ * can be fed inline fake source. The old regex only matched `writeFileSync(...)`
+ * when its arguments had no nested parentheses.
+ * P1-B: the detector was upgraded to a TypeScript AST taint analysis. Oldfox's
+ * 8 bypass samples (newline assignment, import/destructure alias, helper
+ * extraction, imported path constant, string concat, Deno write, subprocess
+ * write) are now pinned as synthetic self-tests below, each with a sanitized
+ * negative control so a blanket "any write call" rule cannot pass the suite.
  */
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync, statSync } from "node:fs"
@@ -96,14 +98,117 @@ const EXTRA_VIOLATIONS = [
 	},
 ]
 
+/**
+ * P1-B: oldfox's 7 bypass samples. Each entry pins the canonical write symbol
+ * so a fix cannot pass by merely "flagging something" in the file.
+ */
+const BYPASS_MATRIX: ReadonlyArray<{ name: string; source: string; symbol: string }> = [
+	{
+		name: "bypass 1: newline assignment",
+		source: `const p = join(home,\n  "cordis.patch.yml")\nwriteFileSync(p, yaml)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "bypass 2: aliased import",
+		source: `import { writeFileSync as wf } from "fs"\nwf(join(dir,"cordis.patch.yml"), yaml)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "bypass 3: extracted helper with tainted parameter",
+		source: `function save(p,b){writeFileSync(p,b)}\nsave(join(dir,"cordis.patch.yml"), yaml)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "bypass 4: imported PATCH-named path constant",
+		source: `import { CORDIS_PATCH_PATH } from "./profile-constants.ts"\nwriteFileSync(CORDIS_PATCH_PATH, yaml)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "bypass 5: string concatenation",
+		source: `writeFileSync("cordis" + ".patch.yml", yaml)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "bypass 6: Deno.writeTextFile",
+		source: `Deno.writeTextFile(join(dir,"cordis.patch.yml"), yaml)`,
+		symbol: "Deno.writeTextFile",
+	},
+	{
+		name: "bypass 7: subprocess write via execSync",
+		source: "execSync(`cat > ${join(dir,\"cordis.patch.yml\")}`)",
+		symbol: "execSync",
+	},
+]
+
+/** Cross-line helper + alias combinations requested in the P1-B spec. */
+const ALIAS_HELPER_CASES: ReadonlyArray<{ name: string; source: string }> = [
+	{
+		name: "multiline helper call with aliased writer and multiline join",
+		source: `import { writeFileSync as wf } from "fs"
+function save(p: string, b: string) {
+  wf(p, b)
+}
+save(
+  join(dir,
+    "cordis.patch.yml"),
+  yaml,
+)`,
+	},
+	{
+		name: "destructured write alias from fs namespace",
+		source: `const { writeFileSync: z } = fs\nz(join(dir,"cordis.patch.yml"), yaml)`,
+	},
+	{
+		name: "aliased fs.promises namespace",
+		source: `import { promises as p } from "fs"\np.writeFile(join(dir,"cordis.patch.yml"), yaml)`,
+	},
+	{
+		name: "Bun.spawn command array carrying patch path",
+		source: `Bun.spawn(["bash", "-c", \`cp x \${join(dir,"cordis.patch.yml")}\`])`,
+	},
+	{
+		name: "Deno.writeFile direct",
+		source: `Deno.writeFile(join(dir,"cordis.patch.yml"), data)`,
+	},
+	{
+		name: "writer rebound to a plain identifier",
+		source: `import { writeFileSync } from "fs"\nconst w = writeFileSync\nw(join(dir,"cordis.patch.yml"), yaml)`,
+	},
+	{
+		name: "helper aliased on import",
+		source: `import { patchPath as pp } from "./h.ts"\nwriteFileSync(pp(profile), yaml)`,
+	},
+	{
+		name: "helper aliased on destructure",
+		source: `const { patchPath: pp } = helpers\nwriteFileSync(pp(profile), yaml)`,
+	},
+]
+
+/** Replace only the patch target; a correct detector must then go silent. */
+function sanitizePatchTarget(source: string): string {
+	return source
+		.replaceAll("CORDIS_PATCH_PATH", "CONFIG_PATH")
+		.replaceAll("cordis.patch.yml", "config.json")
+		.replaceAll(".patch.yml", ".json")
+}
+
 /** Must NOT be reported: read-only, path-only, or writes to other files. */
 const NON_VIOLATIONS = [
 	{ name: "read-only readFileSync", source: `readFileSync(join(dir, "cordis.patch.yml"))` },
 	{ name: "path construction only", source: `const p = patchPath(profile)` },
+	{ name: "string concat only, no write", source: `const p = "cordis" + ".patch.yml"` },
 	{ name: "write to config.json", source: `writeFileSync(join(dir, "config.json"), content)` },
 	{
 		name: "patch var exists but write targets another file",
 		source: `const p = join(dir, "cordis.patch.yml")\nwriteFileSync(join(dir, "config.json"), "x")`,
+	},
+	{
+		name: "patch path read for rendering, config written",
+		source: `this.#patchPath = join(home, "cordis.patch.yml")\nreadFileSync(this.#patchPath)\nwriteFileSync(join(home, "config.json"), data)`,
+	},
+	{
+		name: "benign subprocess command",
+		source: `Bun.spawn(["bash", "-c", cmd], { cwd: opts.cwd })`,
 	},
 ]
 
@@ -155,6 +260,44 @@ describe("patch-writer-guard detector (P0-4 synthetic self-tests)", () => {
 	})
 })
 
+describe("patch-writer-guard detector (P1-B bypass matrix)", () => {
+	test("catches all 7 oldfox bypasses with the correct canonical write symbol", () => {
+		expect(BYPASS_MATRIX).toHaveLength(7)
+		for (const c of BYPASS_MATRIX) {
+			const found = detectPatchWriterViolations(c.source)
+			expect(found, c.name).toHaveLength(1)
+			expect(found[0]!.writeSymbol, c.name).toBe(c.symbol)
+			expect(found[0]!.targetForm, c.name).toBeTruthy()
+			expect(found[0]!.line, c.name).toBeGreaterThan(0)
+		}
+	})
+
+	test("negative control: each bypass goes silent once its patch target is sanitized", () => {
+		for (const c of BYPASS_MATRIX) {
+			const sanitized = sanitizePatchTarget(c.source)
+			expect(detectPatchWriterViolations(sanitized), `sanitized ${c.name}`).toEqual([])
+		}
+	})
+
+	test("catches cross-line helper + alias combinations", () => {
+		for (const c of ALIAS_HELPER_CASES) {
+			expect(detectPatchWriterViolations(c.source), c.name).toHaveLength(1)
+		}
+	})
+
+	test("violation record carries file/line/symbol/reason when file is supplied", () => {
+		const found = detectPatchWriterViolations(
+			`writeFileSync(join(dir, "cordis.patch.yml"), yaml)`,
+			{ file: "src/client/rogue.ts" },
+		)
+		expect(found).toHaveLength(1)
+		expect(found[0]!.file).toBe("src/client/rogue.ts")
+		expect(found[0]!.line).toBe(1)
+		expect(found[0]!.writeSymbol).toBe("writeFileSync")
+		expect(found[0]!.targetForm).toContain("cordis.patch.yml")
+	})
+})
+
 describe("no-client-patch-writers (T7)", () => {
 	test("no client source writes cordis.patch.yml", () => {
 		const violations: string[] = []
@@ -165,8 +308,8 @@ describe("no-client-patch-writers (T7)", () => {
 			const text = readFileSync(file, "utf8")
 			if (hasReadonlyMarker(text)) continue
 			scanned++
-			for (const v of detectPatchWriterViolations(text)) {
-				violations.push(`${rel}:${v.line}: ${v.snippet}`)
+			for (const v of detectPatchWriterViolations(text, { file: rel })) {
+				violations.push(`${v.file ?? rel}:${v.line}: ${v.snippet} [${v.writeSymbol} <- ${v.targetForm}]`)
 			}
 		}
 		// Anti-vacuity: a broken walker that scans zero files must fail the gate.
