@@ -1,14 +1,13 @@
 /**
  * Profile-name constants extracted from the retired `lifecycle.ts` (T9).
- * The value currently tracks the in-process host profile; the final rename to
- * `opentui-monday` is a separate T11 commit. T11 is a one-line edit HERE.
+ * T11 changes only `scripts/lib/profile-name.mjs`; this module re-exports that
+ * single source for the client and the provisioner imports it directly.
  *
- * SINGLE SOURCE OF TRUTH: every client profile-directory access (settings,
- * config, presets, login credentials) and the bridge host's `--profile` argv
- * must read this constant. Never re-declare the name in another module — the
- * guard test in `test/profile-consistency.test.ts` fails when this value and
- * the provisioner's `PROFILE` drift apart.
+ * Every client profile-directory access (settings, config, presets, login
+ * credentials) and the bridge host's `--profile` argv must read this constant.
+ * Never re-declare the name in another module — the guard test in
+ * `test/profile-consistency.test.ts` checks both consumers use the shared source.
  */
 
 /** Profile whose files the client owns and the in-process host loads. */
-export const DEFAULT_PROFILE = "opentui-inproc"
+export { DEFAULT_PROFILE } from "../../scripts/lib/profile-name.mjs"

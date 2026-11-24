@@ -3,10 +3,10 @@
  *
  * The client's config/login faces write to `<dshHome>/profiles/<DEFAULT_PROFILE>`,
  * while the in-process dsh host loads `--profile <PROFILE>` from the provisioner.
- * If those two names ever drift, /login silently writes credentials somewhere
- * the running host never reads. These tests pin BOTH halves of the fix:
- *   1. the provisioner's literal and the shared constant stay equal (T11 pin);
- *   2. the seam refuses a local profile-dir write when they are not equal.
+ * T11 changes only `scripts/lib/profile-name.mjs`. These tests pin the wiring:
+ *   1. the TS re-export and the shared .mjs constant stay equal;
+ *   2. the provisioner imports PROFILE from that same module;
+ *   3. the seam refuses a local profile-dir write when host and client drift.
  */
 import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
@@ -18,32 +18,26 @@ import {
 	type BridgeTransport,
 } from "../src/client/bridge-session-seam.ts"
 import { DEFAULT_PROFILE } from "../src/client/profile-constants.ts"
+import { DEFAULT_PROFILE as MJS_DEFAULT_PROFILE } from "../scripts/lib/profile-name.mjs"
 
+const PROFILE_CONSTANTS = fileURLToPath(new URL("../src/client/profile-constants.ts", import.meta.url))
 const PROVISIONER = fileURLToPath(new URL("../scripts/provision-inproc-profile.mjs", import.meta.url))
 
 describe("profile name single source (P0-3 / T11 pin)", () => {
-	test("provisioner PROFILE === client DEFAULT_PROFILE", () => {
-		const source = readFileSync(PROVISIONER, "utf8")
-		const match = /const PROFILE = ['"]([^'"]+)['"]/.exec(source)
-		expect(match).not.toBeNull()
-		const hostProfile = match![1]
-		expect(hostProfile).toBe(DEFAULT_PROFILE)
+	test("client DEFAULT_PROFILE === shared .mjs DEFAULT_PROFILE", () => {
+		expect(DEFAULT_PROFILE).toBe(MJS_DEFAULT_PROFILE)
 	})
 
-	test("mismatch gives a rename guide that names both edit sites", () => {
-		// The failure message is the guard's whole value when T11 forgets a site.
+	test("provisioner imports PROFILE from the shared module", () => {
 		const source = readFileSync(PROVISIONER, "utf8")
-		const hostProfile = /const PROFILE = ['"]([^'"]+)['"]/.exec(source)?.[1]
-		const guide = [
-			`Profile name drift: client DEFAULT_PROFILE=${DEFAULT_PROFILE} but provisioner PROFILE=${hostProfile}.`,
-			"T11 fix: set BOTH to the new name — packages/shell/src/client/profile-constants.ts",
-			"and packages/shell/scripts/provision-inproc-profile.mjs — then re-run this test.",
-		].join(" ")
-		if (hostProfile !== DEFAULT_PROFILE) {
-			throw new Error(guide)
-		}
-		expect(guide).toContain("profile-constants.ts")
-		expect(guide).toContain("provision-inproc-profile.mjs")
+		expect(source).toMatch(/import\s*\{\s*DEFAULT_PROFILE\s+as\s+PROFILE\s*\}\s*from\s*['"]\.\/lib\/profile-name\.mjs['"]/)
+		expect(source).not.toMatch(/\bconst\s+PROFILE\s*=\s*['"][^'"]+['"]/)
+	})
+
+	test("client constants re-export the shared module without redeclaring it", () => {
+		const source = readFileSync(PROFILE_CONSTANTS, "utf8")
+		expect(source).toMatch(/export\s*\{\s*DEFAULT_PROFILE\s*\}\s*from\s*['"]\.\.\/\.\.\/scripts\/lib\/profile-name\.mjs['"]/)
+		expect(source).not.toMatch(/\b(?:const|let|var)\s+DEFAULT_PROFILE\s*=/)
 	})
 })
 

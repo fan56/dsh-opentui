@@ -144,7 +144,7 @@ import {
 } from './lib/inproc-companions.mjs'
 
 const PREFIX = 'dsh-opentui(inproc): '
-const PROFILE = 'opentui-inproc'
+import { DEFAULT_PROFILE as PROFILE } from './lib/profile-name.mjs'
 const BRIDGE_NAME = '@aiwayds/dsh-opentui-bridge'
 const BUNDLES = ['@deepseek-ai/dsh-base', BRIDGE_NAME]
 
@@ -1487,7 +1487,7 @@ function main(argv = []) {
   if (!existsSync(dshHome)) {
     fail(
       `DSH_HOME directory does not exist: ${dshHome}`,
-      `Create it first (e.g. mkdir -p "${dshHome}"). The opentui-inproc profile must share the existing Harness home, not create an isolated one.`,
+      `Create it first (e.g. mkdir -p "${dshHome}"). The ${PROFILE} profile must share the existing Harness home, not create an isolated one.`,
     )
   }
   if (!statSync(dshHome).isDirectory()) {
