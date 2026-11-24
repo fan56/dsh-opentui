@@ -368,7 +368,15 @@ jobs:
           NODE_DIR="$(dirname "$(command -v node)")"
           SYSTEM_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$NODE_DIR"
           DSH_BIN="$RUNNER_TEMP/dsh-opentui-host-prefix/bin/dsh"
-          PASS2_PATH="$(dirname "$DSH_BIN"):$SYSTEM_PATH"
+          PASS2_PATH="$(dirname "$DSH_BIN")"
+          # pnpm/action-setup installs pnpm under PNPM_HOME, which is NOT on the
+          # system PATH, and the provisioner shells out to `pnpm` to install the
+          # policy companions. Keep the PATH scoped: add only that one pnpm dir.
+          # If PNPM_HOME is unset/empty, fall back to the original dsh + system-only PATH.
+          if [ -n "${PNPM_HOME:-}" ]; then
+            PASS2_PATH="$PASS2_PATH:$PNPM_HOME"
+          fi
+          PASS2_PATH="$PASS2_PATH:$SYSTEM_PATH"
           RESOLVED_DSH="$(env PATH="$PASS2_PATH" bash -c 'command -v dsh')"
           [ "$RESOLVED_DSH" = "$DSH_BIN" ] || { echo "::error::pass 2 resolved $RESOLVED_DSH, expected $DSH_BIN"; exit 1; }
           PASS2_HOME="$RUNNER_TEMP/fresh-home-pass2-home"
