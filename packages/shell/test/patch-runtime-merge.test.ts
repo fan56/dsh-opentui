@@ -161,9 +161,9 @@ describe('B1 S3 E3 — ledger-evidenced template line numbers do not shift', () 
   // R13 and later import additions shifted this ledger-anchored block.
   // D2 appended the approval-policy insert at the END of the template, so it
   // does not move it.
-  test('provision-inproc-profile.mjs:568-580 stays byte-for-byte anchored', () => {
+  test('provision-inproc-profile.mjs:571-583 stays byte-for-byte anchored', () => {
     const src = readFileSync(SCRIPT, 'utf8').split('\n')
-    const block = src.slice(567, 580).join('\n')
+    const block = src.slice(570, 583).join('\n')
     expect(block).toBe([
       '# Read-only tools (read/search/glob/...) are untouched and pass via next().',
       '# Escape hatch: DSH_OPENTUI_APPROVAL_GATE=off sets enabled=false (and reverts the',
