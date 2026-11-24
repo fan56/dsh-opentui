@@ -9,10 +9,12 @@
  *    `settingsController` nor the `session-log-deepseek` settings namespace;
  *    the bridge's CapIR settings arms therefore answer NOT_WIRED at runtime
  *    (same fact the S2 proof recorded for credentialsController).
- *  - the host would write settings to `<home>/profiles/opentui-inproc/cordis.patch.yml`,
- *    while the client profile (and verify70's assertions) is `opentui`.
- *  The client owns those files (DEFAULT_PROFILE='opentui', resolveDshHome()),
- *  so the honest real implementation is local file I/O — exactly what the
+ *  - the inproc host has no `settingsController`, so there is no host-side
+ *    settings write to ride; the patch is provisioner-owned anyway.
+ *  The client owns its profile files (DEFAULT_PROFILE from profile-constants.ts,
+ *  resolveDshHome()), and the seam's pre-write guard refuses to touch them if
+ *  that name ever drifts from the profile the running dsh process loads. Local
+ *  file I/O is therefore the honest real implementation — exactly what the
  *  legacy thin-client seam did for config/agents. The bridge CapIR wiring
  *  remains available for host profiles that DO mount the controller.
  *
@@ -96,6 +98,17 @@ const CONFIG_KEYS = [
 	"skinMigration", "workspaceTheme", "workspaceThemeMode",
 ] as const
 const CONFIG_KEY_SET = new Set<string>(CONFIG_KEYS)
+
+/**
+ * The value `configSave()` returns: an ordinary merged config Record for sync
+ * callers, but ALSO awaitable. `await configSave(patch)` resolves only once the
+ * workspace-layer disk write has settled (and REJECTS if that write failed),
+ * because the seam wrapper and the skin-migration boot site are both sync-typed
+ * yet the boot site already spells `await seam.configSave(patch)`. Attaching the
+ * thenable here is what makes THAT existing await real without changing the
+ * seam's `Record<string, unknown>` contract.
+ */
+type AwaitableConfigView = Record<string, unknown> & PromiseLike<Record<string, unknown>>
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -303,6 +316,10 @@ export class LocalConfigStore {
 	readonly #configPath: string
 	readonly #workspaceDir: string
 	#overlayCache: WorkspaceOverlay
+	/** The most recent workspace-layer write. Resolved while idle; rejects when
+	 *  that write failed. Kept so callers can await the REAL disk write rather
+	 *  than the optimistic in-memory cache. */
+	#workspaceWrite: Promise<void> = Promise.resolve()
 
 	constructor(home: string, profile: string, workspaceDir: string) {
 		this.#configPath = join(home, "profiles", profile, "config.json")
@@ -342,11 +359,31 @@ export class LocalConfigStore {
 		return { ...(this.#overlayCache as Record<string, unknown>) }
 	}
 
-	/** T9 (P0-2): split writes by layer. `workspaceTheme`/`workspaceThemeMode`
-	 *  go to `<workspace>/.dsh/config.yml` via the frozen `saveWorkspaceConfig`
-	 *  (atomic 0600 + credential guard); everything else stays in profile
-	 *  config.json. The async overlay write updates the sync cache optimistically
-	 *  and reverts on failure (same pattern as RemoteHostSession.configSave). */
+	/** Profile-layer half of configSave; kept separate so it can be chained
+	 *  AFTER the workspace write (marker must never precede its config). */
+	#writeProfile(rest: Record<string, unknown>): void {
+		const merged = { ...this.#readProfile(), ...rest }
+		atomicWrite(this.#configPath, JSON.stringify(merged, null, 2) + "\n")
+	}
+
+	/**
+	 * T9 (P0-2): split writes by layer. `workspaceTheme`/`workspaceThemeMode`
+	 * go to `<workspace>/.dsh/config.yml` via the frozen `saveWorkspaceConfig`
+	 * (atomic 0600 + credential guard); everything else (incl. the skinMigration
+	 * marker) stays in profile config.json. The async overlay write updates the
+	 * sync cache optimistically and reverts on failure.
+	 *
+	 * ORDERING (P1): when a patch spans BOTH layers, the profile write (marker)
+	 * is chained onto the workspace write's SUCCESS, never started before it.
+	 * So the marker cannot land while the workspace config is missing/stale,
+	 * and a failed workspace write leaves NO marker → next boot retries. The
+	 * tracked promise covers both writes, and the returned AWAITABLE view makes
+	 * the existing `await seam.configSave({skinMigration, workspaceTheme})` at
+	 * the migration boot site genuinely wait before it sets the notice/exits.
+	 *
+	 * A profile-only patch keeps the original fully synchronous path (no
+	 * marker delay for keys that never touch the workspace layer).
+	 */
 	configSave(patch: Record<string, unknown>): Record<string, unknown> {
 		const overlayPatch: WorkspaceOverlay = {}
 		const rest: Record<string, unknown> = {}
@@ -356,20 +393,63 @@ export class LocalConfigStore {
 			else if (key === "workspaceThemeMode") overlayPatch.themeMode = asThemeMode(value)
 			else rest[key] = value
 		}
-		if (Object.keys(overlayPatch).length > 0) {
+		const hasOverlay = Object.keys(overlayPatch).length > 0
+		const hasRest = Object.keys(rest).length > 0
+		// Awaitable view covers THIS call's write only; a stale failed write from
+		// an earlier call must not poison an unrelated profile-only save.
+		let write: Promise<void> = Promise.resolve()
+		if (hasOverlay) {
 			const previous = this.#overlayCache
 			const next: WorkspaceOverlay = { ...previous, ...overlayPatch }
 			this.#overlayCache = next
-			void saveWorkspaceConfig(this.#workspaceDir, next).catch((error: unknown) => {
-				this.#overlayCache = previous
+			const diskWrite = saveWorkspaceConfig(this.#workspaceDir, next)
+			// Rollback + log is a SEPARATE derived promise: it must not swallow
+			// the tracked promise's rejection (the awaitable path still sees it).
+			void diskWrite.catch((error: unknown) => {
+				if (this.#overlayCache === next) this.#overlayCache = previous
 				console.error("[local-config-faces] workspace config save failed:", error)
 			})
+			// Marker/profile write happens ONLY after the workspace write lands.
+			write = diskWrite.then(() => { if (hasRest) this.#writeProfile(rest) })
+			this.#workspaceWrite = write
+			void write.catch(() => { /* surfaced via await / flushWorkspaceWrites */ })
+		} else if (hasRest) {
+			// Profile-only: unchanged synchronous behaviour.
+			this.#writeProfile(rest)
 		}
-		if (Object.keys(rest).length > 0) {
-			const merged = { ...this.#readProfile(), ...rest }
-			atomicWrite(this.#configPath, JSON.stringify(merged, null, 2) + "\n")
-		}
-		return this.configLoad()
+		// `view` is deliberately a PLAIN object (no `then`), so resolving an
+		// outer promise with it cannot re-enter this thenable (self-resolution).
+		const view = this.configLoad()
+		const result = { ...view }
+		Object.defineProperties(result, {
+			then: {
+				enumerable: false,
+				// Re-read after the writes settle so the awaited view includes a
+				// deferred profile marker too (plain object → no self-resolution).
+				value: (
+					onFulfilled?: ((value: Record<string, unknown>) => unknown) | null,
+					onRejected?: ((error: unknown) => unknown) | null,
+				) => write.then(() => onFulfilled?.(this.configLoad()), onRejected),
+			},
+			catch: {
+				enumerable: false,
+				value: (onRejected?: ((error: unknown) => unknown) | null) => write.then(undefined, onRejected),
+			},
+		})
+		return result as AwaitableConfigView
+	}
+
+	/** Await the most recent workspace-layer write (and any profile marker
+	 *  chained onto it) before exit or before an independent marker write.
+	 *  Rejects with the original error — no silent swallow. */
+	flushWorkspaceWrites(): Promise<void> {
+		return this.#workspaceWrite
+	}
+
+	/** Async variant: resolves with the merged config view only AFTER the
+	 *  workspace write (and chained marker) lands; rejects if either fails. */
+	async configSaveAsync(patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+		return await (this.configSave(patch) as AwaitableConfigView)
 	}
 }
 
