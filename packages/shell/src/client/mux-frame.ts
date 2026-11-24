@@ -7,7 +7,24 @@
  * here too, and a malformed `$events` item invalidates the connection
  * generation (the `dsh-client-connection` contract). Keeping this pure and
  * dependency-free makes the parser unit-testable without sockets.
+ *
+ * The `MuxSocket` / `MuxSocketFactory` types below originally lived in the
+ * retired HTTP mux events-pump module; after that pump was decommissioned they
+ * moved here alongside the frame grammar they describe, unchanged.
  */
+
+/** EventEmitter-style subset of the `ws` socket the pump drives. */
+export interface MuxSocket {
+	readonly readyState: number
+	send(data: string): void
+	close(code?: number, reason?: string): void
+	on(event: string, listener: (...args: unknown[]) => void): unknown
+	once(event: string, listener: (...args: unknown[]) => void): unknown
+	removeListener(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+/** The mux socket factory: must attach the API cookie on the upgrade. */
+export type MuxSocketFactory = (path: string) => MuxSocket
 
 /** A failure that means "the physical/logical stream violated the protocol". */
 export class MuxFrameError extends Error {

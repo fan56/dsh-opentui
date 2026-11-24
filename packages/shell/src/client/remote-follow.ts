@@ -41,7 +41,7 @@
  *   compact detached stream of a reconnect baseline).
  */
 
-import type { MuxSocketFactory } from "./events-source.ts"
+import type { MuxSocketFactory } from "./mux-frame.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 
 /** The session wire header of the opening snapshot (`SessionWireHeader`). */

@@ -10,17 +10,15 @@
  * gateway refuses it: "stream Remote methods must be opened through the
  * stream carrier"), and P1's `ClientConnection` deliberately exposes only
  * `rpc` + `$events` — so this module is the session layer's own minimal mux
- * client, reusing the exact frame grammar of `mux-frame.ts` and the same
- * `MuxSocket` shape as `events-source.ts` (which drives the `$events`
- * logical stream on a separate socket the same way).
+ * client, reusing the exact frame grammar and `MuxSocket` shape from
+ * `mux-frame.ts`.
  *
  * One socket per logical stream: the mux multiplexes by `streamId`, and this
  * client filters frames to its own id, so sharing a socket is a future
  * optimization, not a requirement.
  */
 
-import { parseMuxFrame, type RemoteErrorFields } from "./mux-frame.ts"
-import type { MuxSocket, MuxSocketFactory } from "./events-source.ts"
+import { parseMuxFrame, type MuxSocket, type MuxSocketFactory, type RemoteErrorFields } from "./mux-frame.ts"
 
 /** The exact mux path carrying every Typert Remote stream (gateway parity). */
 export const REMOTE_STREAM_MUX_PATH = "/api/remote.mux"

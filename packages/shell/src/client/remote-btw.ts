@@ -25,7 +25,7 @@
 
 import { randomUUID } from "node:crypto"
 import { appendFileSync } from "node:fs"
-import type { MuxSocketFactory } from "./events-source.ts"
+import type { MuxSocketFactory } from "./mux-frame.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import type { RemoteModelSelection } from "./remote-model.ts"
 

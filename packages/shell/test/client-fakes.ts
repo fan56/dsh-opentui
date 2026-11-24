@@ -4,7 +4,7 @@
 // the session/follow streams speak.
 import type { ClientConnection, ClientConnectionState, ClientEventDisposer, ClientEventHandler, ClientReadyInfo } from "../src/client/transport.ts"
 import type { EventsItem } from "../src/client/mux-frame.ts"
-import type { MuxSocket } from "../src/client/events-source.ts"
+import type { MuxSocket } from "../src/client/mux-frame.ts"
 
 export type RpcHandler = (method: string, args: Record<string, unknown>) => unknown | Promise<unknown>
 
