@@ -532,6 +532,33 @@ describe("core commands", () => {
 		expect(ctx.hooks.footerRefreshes).toBe(1)
 	})
 
+	test("/model picker marks the SESSION route current, not the deployment default (RESTORE)", async () => {
+		const seam = new RecordingSeam()
+		// The catalog's default (deployment, B) is NOT the session's live route (A).
+		seam.catalog = [
+			{ providerID: "p0", modelID: "m0" },
+			{ providerID: "p1", modelID: "m1" },
+		]
+		const defaultRead = seam.seam.currentModelSelection!
+		seam.seam = {
+			...seam.seam,
+			currentModelSelection: async () => {
+				seam.calls.push("currentModelSelection")
+				// The RESTORED seam read returns the session route; the deployment
+				// default is still readable but must not drive the picker marker.
+				expect(await defaultRead()).toEqual({ providerID: "bigmodel", modelID: "glm-5.3-flash" })
+				return { providerID: "p1", modelID: "m1" }
+			},
+		}
+		const ctx = makeCtx(seam, undefined)
+		await coreCommands().find((c) => c.name === "/model")!.run(ctx, "")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "p0/m0" },
+			{ title: "p1/m1", description: "current" },
+		])
+		expect(ctx.hooks.picks[0]?.currentValue).toBe("p1/m1")
+	})
+
 	test("/model bare with esc resolves without selecting", async () => {
 		const seam = new RecordingSeam()
 		const ctx = makeCtx(seam, undefined)
@@ -819,6 +846,46 @@ describe("/think (batch F7b)", () => {
 		// (tui-pi footer parity — the effort segment moves NOW, not at the
 		// next turn boundary).
 		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("writes the SESSION route (A) with the new effort, never the deployment default (B)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "low")
+		// Deployment default B (p0/m0); the session's live route A (p1/m1) is
+		// what the RESTORED seam read returns. The seam-level journal fold is
+		// covered in shell/test/bridge-session-seam.test.ts; this pins the
+		// command contract: /think must not bypass the restored read.
+		const defaultRoute = { providerID: "p0", modelID: "m0" }
+		const sessionRoute = { providerID: "p1", modelID: "m1" }
+		const writes: { provider: string; model: string; effort?: string }[] = []
+		ctx.seam = {
+			...seam.seam,
+			currentModelSelection: async () => {
+				seam.calls.push("currentModelSelection")
+				return sessionRoute
+			},
+			thinking: {
+				efforts: async () => [
+					{ id: "low", name: "Low" },
+					{ id: "high", name: "High", description: "current" },
+				],
+				currentEffort: async () => "high",
+				selectEffort: async (effort) => {
+					// BridgeSessionSeam.thinking.selectEffort reads currentModelSelection
+					// and sends the FULL selection with the new reasoningEffort.
+					const sel = await ctx.seam.currentModelSelection!()
+					if (!sel) return
+					writes.push({ provider: sel.providerID, model: sel.modelID, effort })
+					seam.calls.push(`selectModel:${sel.providerID}/${sel.modelID}`)
+				},
+			},
+		}
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(writes).toEqual([{ provider: "p1", model: "m1", effort: "low" }])
+		expect(writes[0]).not.toMatchObject({ provider: defaultRoute.providerID, model: defaultRoute.modelID })
+		expect(seam.calls).toContain("selectModel:p1/m1")
+		expect(seam.calls).not.toContain("selectModel:p0/m0")
+		expect(ctx.lines).toEqual(["thinking → low (next turn)"])
 	})
 
 	test("footer refresh waits for the seam's selectEffort acceptance (no stale-race refresh)", async () => {

@@ -560,6 +560,92 @@ export interface BridgeReplayRow {
 	payload: unknown
 }
 
+// ---------------------------------------------------------------------------
+// RESTORE — session-level live model route folded from the durable journal.
+// `payload` on a replay row IS the host event's `data` (see the projection note
+// below), so `request/header` carries `{header:{config:{provider,model,..}}}`
+// (rc.2 dsh-session `EpochHeader`) and `model/selection` carries the staged
+// ModelSelection. rc.5 is not pinned line-by-line, so both a direct and a
+// wrapped/alias shape are accepted — a miss degrades to the default, never a
+// fabricated route.
+// ---------------------------------------------------------------------------
+
+/** One complete model route (the wire's `ModelSelection` shape). */
+export interface ModelRouteSelection {
+	providerID: string
+	modelID: string
+	reasoningEffort?: string
+}
+
+/** Mutable per-session fold state. `pending` is a staged `model/selection` a
+ *  request has not consumed yet; `lastUsed` is the latest `request/header` config. */
+export interface ModelRouteFold {
+	pending?: ModelRouteSelection
+	lastUsed?: ModelRouteSelection
+}
+
+function routeFromSelection(value: unknown): ModelRouteSelection | undefined {
+	const row = asRecord(value)
+	const providerID = typeof row.providerID === "string" ? row.providerID : typeof row.provider === "string" ? row.provider : ""
+	const modelID = typeof row.modelID === "string" ? row.modelID : typeof row.model === "string" ? row.model : ""
+	if (!providerID || !modelID) return undefined
+	const reasoningEffort = typeof row.reasoningEffort === "string" && row.reasoningEffort !== ""
+		? row.reasoningEffort : undefined
+	return { providerID, modelID, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) }
+}
+
+/** `model/selection` event data → the staged selection. Accept the selection
+ *  directly or under `selection` / `data` (rc.2 vs rc.5 drift). */
+function routeFromSelectionEvent(payload: unknown): ModelRouteSelection | undefined {
+	const data = asRecord(payload)
+	const nested = asRecord(data.data)
+	return routeFromSelection(data.selection)
+		?? routeFromSelection(data)
+		?? routeFromSelection(nested.selection)
+		?? routeFromSelection(nested)
+}
+
+/** `request/header` event data → the config the last request actually ran
+ *  under. rc.2 `EpochHeader` is `{header:{config:LlmCallConfig}}`; the extra
+ *  paths only guard an rc.5 field rename without inventing a route. */
+function routeFromHeader(payload: unknown): ModelRouteSelection | undefined {
+	const data = asRecord(payload)
+	const header = asRecord(data.header)
+	const nested = asRecord(data.data)
+	const nestedHeader = asRecord(nested.header)
+	for (const candidate of [header.config, nestedHeader.config, data.config, header, nestedHeader]) {
+		const route = routeFromSelection(candidate)
+		if (route !== undefined) return route
+	}
+	return undefined
+}
+
+/** Fold replay rows into a session's live route. Newest row wins; a
+ *  `request/header` whose route matches the pending selection consumes it so a
+ *  stale pending never overrides a newer lastUsed route. */
+export function foldBridgeModelRoute(fold: ModelRouteFold, rows: readonly BridgeReplayRow[]): void {
+	for (const row of rows) {
+		if (row.type === "model/selection") {
+			const staged = routeFromSelectionEvent(row.payload)
+			if (staged !== undefined) fold.pending = staged
+		} else if (row.type === "request/header") {
+			const used = routeFromHeader(row.payload)
+			if (used === undefined) continue
+			fold.lastUsed = used
+			if (fold.pending !== undefined
+				&& fold.pending.providerID === used.providerID
+				&& fold.pending.modelID === used.modelID) {
+				fold.pending = undefined
+			}
+		}
+	}
+}
+
+/** The route in force: a staged selection wins until a request consumes it. */
+export function liveModelRoute(fold: ModelRouteFold): ModelRouteSelection | undefined {
+	return fold.pending ?? fold.lastUsed
+}
+
 /**
  * A4+A5: read-only outcome of a post-DEAD session recovery. Exposed on the
  * seam so the UI branch (A8) can render "已连接未挂载" / "补齐 N 条" without
@@ -1967,9 +2053,15 @@ export class BridgeSessionSeam implements SessionSeam {
 		efforts: () => this.#catalogEfforts(),
 		effortsFor: (providerID, modelID) => this.#catalogEfforts(providerID, modelID),
 		currentEffort: async () => {
-			const selection = await this.#transport.request("model.currentSelection")
-			const value = asRecord(selection).reasoningEffort
-			return typeof value === "string" && value !== "" ? value : undefined
+			const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+			const cache = sessionId !== undefined && sessionId !== ""
+				? await this.#ensureModelRoute(sessionId)
+				: undefined
+			const live = cache !== undefined ? liveModelRoute(cache) : undefined
+			if (live?.reasoningEffort !== undefined) return live.reasoningEffort
+			// Old session / journal silent: the deployment default still names an effort.
+			const fallback = await this.#defaultModelRoute()
+			return fallback?.reasoningEffort
 		},
 		selectEffort: async (effort) => {
 			// Mirror selectModel's effort arm: the host's session/selectModel
@@ -1988,6 +2080,8 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (r === undefined || r === null || r.selected === undefined) {
 				return unsupported("selectEffort")
 			}
+			// RESTORE: the host-resolved selection is the live route from now on.
+			this.#writeModelRouteReply(reply)
 		},
 	}
 
@@ -2002,11 +2096,25 @@ export class BridgeSessionSeam implements SessionSeam {
 			default?: { provider?: unknown; model?: unknown }
 		} | undefined
 		if (raw === undefined || raw === null || !Array.isArray(raw.groups)) return []
+		if (providerID === undefined || modelID === undefined) {
+			// RESTORE: "the current route" is the session's live route, not the
+			// catalog default (which is the deployment default and drifts when
+			// /model side-writes it). Old sessions with a silent journal keep the
+			// catalog.default fallback below.
+			const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+			const cache = sessionId !== undefined && sessionId !== ""
+				? await this.#ensureModelRoute(sessionId)
+				: undefined
+			const live = cache !== undefined ? liveModelRoute(cache) : undefined
+			if (live !== undefined) {
+				providerID = live.providerID
+				modelID = live.modelID
+			}
+		}
 		let group = raw.groups.find((g) => typeof g?.id === "string" && g.id === providerID)
 		let model = group?.models?.find((m) => typeof m?.id === "string" && m.id === modelID)
 		if (providerID === undefined || modelID === undefined) {
-			// Current route = catalog.default (the host's real selection), falling
-			// back to the first group/model when the default is absent.
+			// Cold boot / old session: the catalog default is the honest label.
 			const d = raw.default
 			group = raw.groups.find((g) => typeof g?.id === "string" && g.id === d?.provider) ?? raw.groups[0]
 			model = group?.models?.find((m) => typeof m?.id === "string" && m.id === d?.model) ?? group?.models?.[0]
@@ -2239,6 +2347,16 @@ export class BridgeSessionSeam implements SessionSeam {
 		  }
 		| undefined
 	/**
+	 * RESTORE: session-level live model route. Undefined means "not established
+	 * yet" — a cold start / unbound session keeps reading `model.currentSelection`
+	 * (the deployment default). Established from ONE tail journal.replay, then
+	 * folded incrementally; cleared on session switch/dispose.
+	 */
+	#modelRoute: (ModelRouteFold & { sessionId: string }) | undefined
+	/** Single-flight for the first establishment replay, so the footer poll does
+	 *  not fire a fresh `journal.replay` on every refresh. */
+	#modelRouteReplayInFlight: Promise<ModelRouteFold & { sessionId: string }> | undefined
+	/**
 	 * ADR-0011 T8/Q4: a host→client ask frame is the bridge-side proof that the
 	 * host armed its ask answerers (`armAskAnswerers`, bridge/src/index.ts). We
 	 * use it as the provider signal because `bridge.hello`/`bridge.ping` reply
@@ -2405,6 +2523,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		// stage the id; the real resume is an eager `session.open{mode:"resume"}`
 		// at the next turn. "owned" is not determinable sync — a writer-held
 		// target surfaces as SESSION_LOCKED from that open, asynchronously.
+		// RESTORE: switching sessions invalidates the journal-folded live route.
+		this.#resetModelRoute()
 		this.#pendingOpen = { mode: "resume", id }
 		return "ok"
 	}
@@ -2423,6 +2543,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		// currentSessionId() === undefined. #sessionAttached intentionally stays
 		// true to remember that the close is owed; do NOT clear it here.
 		this.#currentSessionId = undefined
+		this.#resetModelRoute()
 		this.#pendingOpen = { mode: "new" }
 		// P1-1: starting a fresh session abandons the DEAD session entirely —
 		// settle any turn() the dead frame left suspended (busy wedge escape),
@@ -2562,6 +2683,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#lastAppliedSessionId = boundId
 			this.#lastAppliedSeq = undefined
 			this.#appliedReplayKeys.clear()
+			this.#resetModelRoute()
 		}
 		this.#sessionAttached = true
 
@@ -2588,6 +2710,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		// Same rows also restore the subagent roster after a process restart
 		// (spawn/settle from the durable journal; running = start w/o terminal).
 		this.#foldAgentReplayRows(drained.rows, boundId)
+		// RESTORE: the recovery replay is the first authoritative read of the
+		// resumed session's live route — establish the cache from it (no extra RPC).
+		this.#foldModelRouteFromDrain(boundId, drained.rows)
 		// 0.23.0 T1 sweep hook ② (recover): the bridge has no `recover` event, so
 		// the client drives the same host-registry sweep here — after the roster
 		// is restored from the replay so a ghost child can be settled. Best-effort
@@ -2986,6 +3111,11 @@ export class BridgeSessionSeam implements SessionSeam {
 				from = 1
 				drained = await this.#drainJournal(sessionId, 1)
 			}
+
+			// RESTORE: these SAME drained rows establish/update the live route
+			// cache, so the currentModelSelection() call below needs no second
+			// journal.replay (footer refresh stays at one drain per boundary).
+			this.#foldModelRouteFromDrain(sessionId, drained.rows)
 
 			// P2-1 (inproc): fold the SAME drained rows through the subagent
 			// projector so an async child's terminal converges OUTSIDE a turn. The
@@ -3990,20 +4120,100 @@ export class BridgeSessionSeam implements SessionSeam {
 		return forked
 	}
 
-	async currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined> {
-		// The bridge now exposes a read-only `model.currentSelection` route
-		// (19c2ab2, packages/bridge/src/index.ts:1795) backed by
-		// ctx.agentDefaultModel.currentSelection(); the seam reads it at boot
-		// before staging the first session.open. If that service is absent the
-		// bridge replies UNSUPPORTED and the error propagates — do not swallow it
-		// into a fabricated selection.
+	// ----- RESTORE: session-level live route -------------------------------
+
+	/** The deployment default (`agentDefaultModel.currentSelection`), still the
+	 *  honest cold-boot truth when no session is bound or the journal is silent. */
+	async #defaultModelRoute(): Promise<ModelRouteSelection | undefined> {
 		const selection = await this.#transport.request("model.currentSelection")
-		if (selection === undefined || selection === null) return undefined
-		const s = asRecord(selection)
-		const providerID = typeof s.provider === "string" ? s.provider : ""
-		const modelID = typeof s.model === "string" ? s.model : ""
-		if (!providerID || !modelID) return undefined
-		return { providerID, modelID }
+		return routeFromSelection(selection)
+	}
+
+	/** Drop the folded route when the session on screen changes. A stale replay
+	 *  still in flight only mutates its captured (now detached) cache object. */
+	#resetModelRoute(): void {
+		this.#modelRoute = undefined
+		this.#modelRouteReplayInFlight = undefined
+	}
+
+	/** Establish the cache at most once per session. Single-flight: concurrent
+	 *  footer / /model / /think reads await the SAME tail replay. A replay
+	 *  failure keeps an empty cache so later refreshes never re-fire the RPC;
+	 *  callers then fall back to the deployment default. */
+	async #ensureModelRoute(sessionId: string): Promise<ModelRouteFold & { sessionId: string }> {
+		const inFlight = this.#modelRouteReplayInFlight
+		if (inFlight !== undefined) {
+			await inFlight
+			return this.#modelRoute ?? { sessionId }
+		}
+		const existing = this.#modelRoute
+		if (existing !== undefined && existing.sessionId === sessionId) return existing
+		const cache: ModelRouteFold & { sessionId: string } = { sessionId }
+		this.#modelRoute = cache
+		const run = (async (): Promise<ModelRouteFold & { sessionId: string }> => {
+			try {
+				// Reuse the existing drain (dedup + paging + clamp) — no new wire.
+				const drained = await this.#drainJournal(sessionId, 1)
+				if (this.#modelRoute === cache) foldBridgeModelRoute(cache, drained.rows)
+			} catch {
+				// Old bridge / replay failure: keep the empty cache. Never throw —
+				// the caller's deployment-default fallback is the honest answer.
+			}
+			return cache
+		})()
+		this.#modelRouteReplayInFlight = run
+		const release = (): void => {
+			if (this.#modelRouteReplayInFlight === run) this.#modelRouteReplayInFlight = undefined
+		}
+		void run.then(release, release)
+		await run
+		return cache
+	}
+
+	/** Establish/cache the fold from rows another drain ALREADY fetched (the
+	 *  sessionInfo tally), so the first footer read needs no extra RPC. */
+	#foldModelRouteFromDrain(sessionId: string, rows: readonly BridgeReplayRow[]): void {
+		const existing = this.#modelRoute
+		if (existing !== undefined && existing.sessionId === sessionId) {
+			foldBridgeModelRoute(existing, rows)
+			return
+		}
+		if (this.#modelRouteReplayInFlight !== undefined) return
+		const cache: ModelRouteFold & { sessionId: string } = { sessionId }
+		this.#modelRoute = cache
+		foldBridgeModelRoute(cache, rows)
+	}
+
+	/** A host-accepted `selectModel` reply is the freshest route fact: write it
+	 *  into the cache so footer / picker / the NEXT /think see it immediately,
+	 *  without waiting for the next request's `request/header`. */
+	#writeModelRouteReply(reply: unknown): void {
+		const route = routeFromSelection(asRecord(reply).selected)
+		const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+		if (route === undefined || sessionId === undefined || sessionId === "") return
+		let cache = this.#modelRoute
+		if (cache === undefined || cache.sessionId !== sessionId) {
+			cache = { sessionId }
+			this.#modelRoute = cache
+		}
+		cache.pending = route
+	}
+
+	/**
+	 * RESTORE: prefer the session's live route (journal-folded / reply-cached)
+	 * over `model.currentSelection` (the deployment default). With no session —
+	 * or an old session whose journal carries no selection rows — the default
+	 * stays the honest fallback.
+	 */
+	async currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined> {
+		const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+		const cache = sessionId !== undefined && sessionId !== ""
+			? await this.#ensureModelRoute(sessionId)
+			: undefined
+		const live = cache !== undefined ? liveModelRoute(cache) : undefined
+		if (live !== undefined) return { providerID: live.providerID, modelID: live.modelID }
+		const fallback = await this.#defaultModelRoute()
+		return fallback !== undefined ? { providerID: fallback.providerID, modelID: fallback.modelID } : undefined
 	}
 
 	/**
@@ -4121,6 +4331,7 @@ export class BridgeSessionSeam implements SessionSeam {
 						this.#lastAppliedSessionId = this.#currentSessionId
 						this.#lastAppliedSeq = undefined
 						this.#appliedReplayKeys.clear()
+						this.#resetModelRoute()
 					}
 					this.#sessionAttached = true
 				} catch (err) {
@@ -4212,6 +4423,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		this.#sessionAttached = false
 		this.#currentSessionId = undefined
+		this.#resetModelRoute()
 	}
 
 	// ----- out-of-batch members: honest D3 stubs (later batch) --------------
@@ -4363,6 +4575,9 @@ export class BridgeSessionSeam implements SessionSeam {
 				if (r === undefined || r === null || r.selected === undefined) {
 					return unsupported("selectModel")
 				}
+				// RESTORE: previously discarded — the accepted route must be
+				// visible to the footer/picker before the next request lands.
+				this.#writeModelRouteReply(reply)
 			})
 	}
 

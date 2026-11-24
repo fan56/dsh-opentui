@@ -17,6 +17,8 @@ import { latestTodos, todoTreeLines } from "../../tui-base/src/routes/session/wi
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
+	foldBridgeModelRoute,
+	type ModelRouteFold,
 	type BridgeConfirmClock,
 	bridgeChildJournalMeta,
 	bridgeChildStopReason,
@@ -3863,5 +3865,179 @@ describe("R7 seam — live settle sticky against catalog-only re-fold (P1-1)", (
 
 		// Different run key => #sweepSettledRuns does NOT match => real new run wins.
 		expect(statusOf(h)).toBe("running")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// RESTORE — session-level live model route (journal fold + reply cache)
+// ---------------------------------------------------------------------------
+
+describe("RESTORE: session-level live model route", () => {
+	/** rc.2 host shapes: `model/selection` data = a ModelSelection;
+	 *  `request/header` data = `{header:{config:LlmCallConfig}}`. */
+	const selectionRow = (seq: number, provider: string, model: string, effort?: string): BridgeReplayRow => ({
+		seq,
+		type: "model/selection",
+		payload: { provider, model, ...(effort !== undefined ? { reasoningEffort: effort } : {}) },
+	})
+	const headerRow = (seq: number, provider: string, model: string, effort?: string): BridgeReplayRow => ({
+		seq,
+		type: "request/header",
+		payload: {
+			header: { config: { provider, model, ...(effort !== undefined ? { reasoningEffort: effort } : {}) }, reason: "loop" },
+			reason: "loop",
+		},
+	})
+
+	/** A staged resume session is the session on screen: currentModelSelection
+	 *  must fold its journal, not read the deployment default. Default is p0/m0. */
+	function stagedHarness(id = "sess-A") {
+		const h = makeHarness()
+		h.replies.set("model.currentSelection", { kind: "value", value: { provider: "p0", model: "m0" } })
+		h.seam.resumeSession(id)
+		return h
+	}
+
+	test("pure fold: model/selection=pending, request/header.config=lastUsed, matching header consumes pending", () => {
+		const fold: ModelRouteFold = {}
+		foldBridgeModelRoute(fold, [
+			selectionRow(1, "p1", "m1"),
+			headerRow(2, "p1", "m1"),
+		])
+		expect(fold.pending).toBeUndefined() // consumed, no stale pending residue
+		expect(fold.lastUsed).toEqual({ providerID: "p1", modelID: "m1" })
+	})
+
+	test("pure fold: a newer header after consumption wins over a stale pending route", () => {
+		const fold: ModelRouteFold = {}
+		foldBridgeModelRoute(fold, [
+			selectionRow(1, "p2", "m2"),
+			headerRow(2, "p2", "m2"), // consumes pending p2
+			headerRow(3, "p3", "m3"), // host ran a different route; no new selection
+		])
+		expect(fold.pending).toBeUndefined()
+		expect(fold.lastUsed).toEqual({ providerID: "p3", modelID: "m3" })
+	})
+
+	test("pure fold: rc.5-shaped wrapped payloads degrade honestly, never fabricate a route", () => {
+		const fold: ModelRouteFold = {}
+		foldBridgeModelRoute(fold, [
+			{ seq: 1, type: "model/selection", payload: { selection: { providerID: "p1", modelID: "m1" } } },
+			{ seq: 2, type: "request/header", payload: { header: { config: null } } },
+		])
+		expect(fold.pending).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(fold.lastUsed).toBeUndefined()
+	})
+
+	test("bound/staged session with a journal header returns the session route, not the deployment default", async () => {
+		const h = stagedHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "p1", "m1")], cursor: 2 } })
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(h.lastRequest("journal.replay")?.params).toMatchObject({ sessionId: "sess-A" })
+		// The deployment default (p0/m0) was NOT read once the fold was established.
+		expect(h.requests.some((r) => r.method === "model.currentSelection")).toBe(false)
+	})
+
+	test("pending selection is returned before a request consumes it; a matching header then folds it away", async () => {
+		const h = stagedHarness()
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: { rows: [selectionRow(1, "p1", "m1", "high"), headerRow(2, "p1", "m1", "high")], cursor: 3 },
+		})
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(await h.seam.thinking.currentEffort()).toBe("high")
+	})
+
+	test("selectModel reply is cached immediately (footer/picker see it before the next request)", async () => {
+		const h = stagedHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		// Old/empty journal: honest fallback to the deployment default.
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p0", modelID: "m0" })
+		h.replies.set("selectModel", { kind: "value", value: { selected: { provider: "p2", model: "m2" } } })
+		await h.seam.selectModel("p2", "m2")
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p2", modelID: "m2" })
+		// No second replay was needed for the immediate read.
+		expect(h.requests.filter((r) => r.method === "journal.replay")).toHaveLength(1)
+	})
+
+	test("selectEffort reply writes the host-resolved effort into the same cache", async () => {
+		const h = stagedHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "p1", "m1")], cursor: 2 } })
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		h.replies.set("selectModel", {
+			kind: "value",
+			value: { selected: { provider: "p1", model: "m1", reasoningEffort: "low" } },
+		})
+		await h.seam.thinking.selectEffort("low")
+		expect(h.lastRequest("selectModel")!.params).toMatchObject({ provider: "p1", model: "m1", reasoningEffort: "low" })
+		expect(await h.seam.thinking.currentEffort()).toBe("low")
+	})
+
+	test("no session falls back to model.currentSelection and never replays the journal", async () => {
+		const h = makeHarness()
+		h.replies.set("model.currentSelection", { kind: "value", value: { provider: "p9", model: "m9" } })
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p9", modelID: "m9" })
+		expect(h.requests.some((r) => r.method === "journal.replay")).toBe(false)
+	})
+
+	test("session switch clears the fold; the new session replays its own route", async () => {
+		const h = stagedHarness("sess-A")
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => ({
+				kind: "value",
+				value: {
+					rows: [headerRow(1, params?.sessionId === "sess-B" ? "p9" : "p1", params?.sessionId === "sess-B" ? "m9" : "m1")],
+					cursor: 2,
+				},
+			}),
+		})
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		h.seam.resumeSession("sess-B")
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p9", modelID: "m9" })
+		expect(h.requests.some((r) => r.method === "journal.replay" && r.params?.sessionId === "sess-A")).toBe(true)
+		expect(h.requests.some((r) => r.method === "journal.replay" && r.params?.sessionId === "sess-B")).toBe(true)
+	})
+
+	test("first read is single-flight; repeated footer reads do not re-fire journal.replay", async () => {
+		const h = stagedHarness()
+		let replays = 0
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: () => {
+				replays++
+				return { kind: "value", value: { rows: [headerRow(1, "p1", "m1")], cursor: 2 } }
+			},
+		})
+		const [a, b] = await Promise.all([h.seam.currentModelSelection(), h.seam.currentModelSelection()])
+		expect(a).toEqual(b)
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(replays).toBe(1)
+	})
+
+	test("journal.replay failure or silent journal falls back to the default without throwing", async () => {
+		const failed = stagedHarness("fail")
+		failed.replies.set("journal.replay", { kind: "error", error: new Error("journal down") })
+		await expect(failed.seam.currentModelSelection()).resolves.toEqual({ providerID: "p0", modelID: "m0" })
+
+		const silent = stagedHarness("silent")
+		silent.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		await expect(silent.seam.currentModelSelection()).resolves.toEqual({ providerID: "p0", modelID: "m0" })
+	})
+
+	test("effort ladder for the current route reads the session route, not catalog.default", async () => {
+		const h = stagedHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "p1", "m1")], cursor: 2 } })
+		h.replies.set("modelCatalog", {
+			kind: "value",
+			value: {
+				default: { provider: "p0", model: "m0" },
+				groups: [
+					{ id: "p0", models: [{ id: "m0", reasoning: { efforts: [{ id: "default-effort" }] } }] },
+					{ id: "p1", models: [{ id: "m1", reasoning: { efforts: [{ id: "session-effort" }] } }] },
+				],
+			},
+		})
+		expect(await h.seam.thinking.efforts()).toEqual([{ id: "session-effort", name: "session-effort" }])
 	})
 })
