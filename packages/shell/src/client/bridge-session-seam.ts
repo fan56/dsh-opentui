@@ -2610,7 +2610,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	resumeSession(id: string): "ok" | "owned" {
-		// COVERED (staging semantics, remote-host-session.ts:760-764 parity):
+		// COVERED (staging semantics, legacy HTTP session facade:760-764 parity):
 		// stage the id; the real resume is an eager `session.open{mode:"resume"}`
 		// at the next turn. "owned" is not determinable sync — a writer-held
 		// target surfaces as SESSION_LOCKED from that open, asynchronously.
@@ -2622,7 +2622,7 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	newSession(): void {
 		// COVERED: clear the bound id and stage a `session.open{mode:"new"}` for
-		// the next turn (remote-host-session.ts:746-751 staging parity).
+		// the next turn (legacy HTTP session facade:746-751 staging parity).
 		//
 		// P2-8 LOCK WINDOW (deliberate, no behavior change): after /new but before
 		// the next turn, the BRIDGE still holds the OLD session open. The close is
@@ -3106,8 +3106,8 @@ export class BridgeSessionSeam implements SessionSeam {
 	 */
 
 	/**
-	 * ⚡ CH footer segment — RemoteHostSession.cacheHitRate() 1:1
-	 * (remote-host-session.ts:789-803). "session" is the cumulative journal rate
+	 * ⚡ CH footer segment — the retired HTTP facade's cacheHitRate() 1:1
+	 * (legacy HTTP session facade:789-803). "session" is the cumulative journal rate
 	 * ΣcacheRead / (Σprompt + ΣcacheRead + ΣcacheWrite); the default
 	 * ("lastMessage") is the latest billed row's `cacheRead / billed * 100`.
 	 * Visibility gate: null until ANY cache traffic. Reads the SAME
@@ -3239,7 +3239,7 @@ export class BridgeSessionSeam implements SessionSeam {
 					stats.rawAssistants++
 					const usage = journalUsage(row.payload)
 					if (usage !== undefined) {
-						// remote-host-session.ts:2529-2533 parity — cumulative
+						// legacy HTTP session facade:2529-2533 parity — cumulative
 						// billing totals + the latest billed request's own rate.
 						// Gate on `> 0`, not truthiness, exactly like remote: a
 						// reported 0 must never advance (or reset) a tally.
@@ -3388,7 +3388,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
-	// ----- subagent marker face (row 33 inproc, RemoteHostSession 1:1) -------
+	// ----- subagent marker face (row 33 inproc, legacy HTTP facade 1:1) -------
 
 	/** Panel/viewer snapshot — a fresh copy so callers cannot mutate the store.
 	 *  T2: lazy journal reads write rounds/lastLine/model straight into the
@@ -4100,7 +4100,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * capability declaration — `bridge.hello`/`bridge.ping` reply with ONLY
 	 * `{protocolVersion, bridgeVersion, hostVersion}` (packages/bridge/src/index.ts
 	 * :1977-1994) — and NO `permissionPresets/catalog` route (dispatch :1977-2042),
-	 * unlike the remote host which calls that RPC (remote-host-session.ts:1347).
+	 * unlike the remote host which calls that RPC (legacy HTTP session facade:1347).
 	 * A real catalog therefore cannot be fetched here. The honest signal is the
 	 * ask event channel plus local answerer state:
 	 *   - a delivered `ask.request`/`ask.pending` frame (#askFrameSeen) proves the
@@ -4470,7 +4470,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			// the first turn used to reach session.send with no bridge binding
 			// and the bridge answered SESSION_NOT_OPEN — no turn started, so the
 			// pre-execute gate never fired and no approval ask.card was pushed.
-			// Mirror RemoteHostSession.#ensureSession(): when no id is staged and
+			// Mirror the legacy facade's #ensureSession(): when no id is staged and
 			// no session is attached yet, stage a fresh session on this turn so
 			// the bridge binds it BEFORE send. --session / auto-resume / /new
 			// still win because they stage #pendingOpen explicitly.

@@ -2,7 +2,7 @@
  * M3-07 — ride path isolation (scope-limited). LOCK-IN-PLACE tests.
  *
  * The legacy append "ride" (roster probe `agentPresets/list` at
- * remote-host-session.ts:1132-1158, `session/create.agentPreset` at :2370-2381,
+ * legacy HTTP session facade:1132-1158, `session/create.agentPreset` at :2370-2381,
  * ask-btw throwaway create at :2011, echo guards at :2396-2399/:2427, and
  * remote-btw.ts:53) lives ONLY in the legacy thin-client seam implementation.
  *

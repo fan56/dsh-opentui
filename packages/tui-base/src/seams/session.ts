@@ -1,6 +1,6 @@
 /**
  * SessionSeam — the typed contract between the vendored view (this package)
- * and OUR session layer (`@dsh-opentui/shell`'s RemoteHostSession facade).
+ * and OUR session layer (`@dsh-opentui/shell`'s legacy HTTP session facade).
  *
  * Design rule (ADR-0006 dependency direction): shell → tui-base, never the
  * reverse. This file therefore declares STRUCTURAL types only and imports
@@ -32,7 +32,7 @@
  *                                     → status / currentSessionId / resumeSession
  *                                       / newSession / dispose
  *
- * Mapping table (vendored surface → SessionSeam method → RemoteHostSession):
+ * Mapping table (vendored surface → SessionSeam method → legacy HTTP facade):
  *
  *   createData().session.list            → listSessions()        → listSessions(limit)
  *   api.session.list / data.session.get  → getSession(id)        → (adapter projects
@@ -1026,7 +1026,7 @@ export interface SessionSeam {
 	 * 025-w2-2 — warm/refresh the real plugin-manager bundle cache. The panel
 	 * calls this on every open (the cache fills ASYNC after boot; a sync open
 	 * read would see stale/empty rows). Optional — seams whose pluginBundles is
-	 * already live (RemoteHostSession) keep their own refresh strategy.
+	 * already live (legacy HTTP facade) keep their own refresh strategy.
 	 */
 	refreshPluginBundles?(): Promise<void>
 	/**

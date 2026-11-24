@@ -77,11 +77,10 @@ jobs:
       # full-suite leg above — it exists to name the assembly contract, not to
       # replace the full run.
       - run: cd packages/tui-base && bun test -t '^verify:'
-      # Real-boot E2E (e2e-client.mjs, the client topology gate) is not a CI
-      # step: it needs a global dsh + tmux + provider keys. The release gate
-      # (fresh-install boot render check) covers the real-boot leg before
-      # every publish. The retired plugin-face scripts (e2e-live / e2e-fork)
-      # were removed with the plugin mode.
+      # The legacy HTTP client-topology E2E gate was retired with the HTTP
+      # host. The release gate (fresh-install boot render check) covers the
+      # real-boot leg before every publish. The retired plugin-face scripts
+      # (e2e-live / e2e-fork) were removed with the plugin mode.
       # The real-machine tmux gate (verify/agents-mount-repro.mjs) is LOCAL
       # ONLY for GitHub-hosted runners: the published runner images do not
       # ship tmux, and the script needs a `dsh` CLI to provision

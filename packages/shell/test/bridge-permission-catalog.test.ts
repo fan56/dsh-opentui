@@ -6,7 +6,7 @@
  * capability declaration (bridge.hello/ping reply only versions) and NO
  * `permissionPresets/catalog` route, so `undefined` is the honest "cannot
  * confirm an approval provider" answer — the SAME meaning the remote host
- * gives a failed/malformed catalog read (remote-host-session.ts:1346-1355).
+ * gives a failed/malformed catalog read (legacy HTTP session facade:1346-1355).
  * These tests pin both the confirmed (catalog) and unconfirmed (undefined +
  * one-shot sink) branches, plus no-regression of the existing ask fail-closed
  * `unavailable` answer that triggers the notice in the real runtime.

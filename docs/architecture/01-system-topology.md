@@ -23,12 +23,12 @@
 
 ## 1.3 生产 boot 合成根（v2-entry，构建期重写）
 
-合成根 = `packages/tui-base/examples/v2-entry.tsx` 的 `bootClientV2()`（`v2-entry.tsx:1541-1649`）。源码中 v2-entry 由 client-entry 的**计算式动态 import** 引入（对 tsc 不透明，`client-entry.tsx:440-441`）；`scripts/build-client.mjs:18-22,60-61,100-107` 在构建期用 `onLoad` rewrite 把计算说明符钉成字面量 `"../../tui-base/examples/v2-entry.tsx"`，并同样重写 v2-entry `loadShell()` 的 5 个 shell computed import（`build-client.mjs:62-63,110-120`）、lifecycle 的 cookie-mint import（`:64-67,133-141`）与 spin-attention 的 jev-core import（`:68-73,155-163`）。源文件保持 tsc 不透明形态，直跑路径不变。构建后 `scripts/build-client.mjs:206-214` 扫描 bundle，泄漏任何 computed 动态 import 即打印 offender 并 `process.exit(1)`——这是合成根重写机制的自守不变量，与四组 onLoad 重写构成闭环（来源：`025-architecture-doc-review-oldfox.md` §三 SUGGESTION-2）。
+合成根 = `packages/tui-base/examples/v2-entry.tsx` 的 `bootClientV2()`（`v2-entry.tsx:1541-1649`）。源码中 v2-entry 由 client-entry 的**计算式动态 import** 引入（对 tsc 不透明，`client-entry.tsx:440-441`）；`scripts/build-client.mjs:18-22,60-61,100-107` 在构建期用 `onLoad` rewrite 把计算说明符钉成字面量 `"../../tui-base/examples/v2-entry.tsx"`，并同样重写 v2-entry `loadShell()` 的 5 个 shell computed import（`build-client.mjs:62-63,110-120`）、spin-attention 的 jev-core import（`:68-73,155-163`）。源文件保持 tsc 不透明形态，直跑路径不变。构建后 `scripts/build-client.mjs:206-214` 扫描 bundle，泄漏任何 computed 动态 import 即打印 offender 并 `process.exit(1)`——这是合成根重写机制的自守不变量，与四组 onLoad 重写构成闭环（来源：`025-architecture-doc-review-oldfox.md` §三 SUGGESTION-2）。
 
 boot 顺序（结构不变量）：
 
 ```
-ensureV2Host → ClientConnection → RemoteHostSession → BridgeSessionSeam → 视图
+bridge transport → BridgeSessionSeam → 视图
 ```
 
 出处：`v2-entry.tsx:1536-1540`（注释即顺序）、`:1552-1605`（实现）、`:1625`（seam 创建）。
@@ -37,13 +37,13 @@ Provider 嵌套（由外到内，结构固定）：`... → ClipboardHost → Fo
 
 **S6 不变量**：`BridgeSessionSeam` 是唯一 session seam；legacy seam 与 env escape hatch 已删除（`v2-entry.tsx:1616-1624`，`packages/shell/src/client/seam-bootstrap.ts:4-6`）。bridge 握手/指纹失败抛 `BridgeBootstrapError`（三要素），**绝不静默降级到 remote seam**（`seam-bootstrap.ts:72-76,123-125`，`v2-entry.tsx:1617-1623`）。
 
-## 1.4 host 客户端层与 seam 选择正交（保留面定性）
+## 1.4 HTTP host 客户端层已退役
 
-`ClientConnection`（`packages/shell/src/client/transport.ts`）与 `RemoteHostSession`（`packages/shell/src/client/remote-host-session.ts`）构成 **host 客户端层**：负责 label/config/lifecycle（`v2-entry.tsx:1536-1538`）。它与「session seam 选谁」正交——seam 是 `BridgeSessionSeam`（会话面），客户端层是 HTTP 宿主的连接/生命周期面，二者在 boot 中各占一条线（`v2-entry.tsx:1587-1625`）。定性：
+原 HTTP carrier/session facade 曾负责 label/config/lifecycle，与 session seam 选择正交。该层已随 HTTP host 退役，不再参与 boot；当前客户端通过 bridge transport 与 `BridgeSessionSeam` 连接宿主。定性：
 
 - **会话面**归 bridge：`session.open`/`send`/`close`/`list`、`turn.abort`、ask 应答、`journal.replay` 与 append section（ADR-0009 `:71`）。
-- **config 面**：seam 四方法（`configLoad`/`configRaw`/`workspaceConfig`/`configSave`）自 S5 起由 `LocalConfigStore` 本地真实现供给（[05](05-tui-layer.md) §5.3；`bridge-session-seam.ts:2885-2900`）；HTTP 宿主仅残留 boot 期 skin migration 写与 theme/themeMode 读（`v2-entry.tsx:1762,1771-1772`）。
-- 保留 `RemoteHostSession` 不是设计目标而是债；ADR-0009 `:75` 的删除计划（原定 0.23.0）前半已由 S5 完成、通路删除未做，0.24 仍在役。
+- **config 面**：seam 四方法（`configLoad`/`configRaw`/`workspaceConfig`/`configSave`）自 S5 起由 `LocalConfigStore` 本地真实现供给（[05](05-tui-layer.md) §5.3；`bridge-session-seam.ts:2885-2900`）。
+- HTTP host 客户端层不再保留；相关 boot 分支与门禁已归入后续退役批次。
 
 ## 1.5 exit code 契约
 

@@ -215,5 +215,5 @@ npm view @aiwayds/dsh-opentui dist-tags.latest --registry=https://registry.npmjs
 6. **prepack 会重写 `packages/shell/{LICENSE,NOTICE,README.md,CHANGELOG.md}`**（gitignored，`.gitignore:8-11`）。当前这些本地副本是 11-15 的旧版（`packages/shell/CHANGELOG.md` mtime 11-15 11:44，不含 0.17.3），pack 时会从根覆盖，属正常；但**不要 `git add -A` 时误把它们当新文件**（已被 ignore，不会）。
 7. **版本号只在 `packages/shell/package.json:3`**；改了根 package.json 或别的包版本都是错的（其余 5 包 private）。
 8. **CI 的 `pnpm install --frozen-lockfile`**（`ci.yml:22`）：任何依赖/锁文件漂移都会让 main 上的 CI 红。upgrade 工作目前未改 lockfile，别在合并时顺手改依赖。
-9. **发布不可撤销**（npm 24h 内可 unpublish，之后不行）；先 `npm pack --dry-run` 看清单，尤其 `files` 里 `scripts` 整个目录（含 52KB `e2e-client.mjs`）会进 tarball。
+9. **发布不可撤销**（npm 24h 内可 unpublish，之后不行）；先 `npm pack --dry-run` 看清单，尤其 `files` 里 `scripts` 整个目录（含 52KB `legacy client-topology gate (retired).mjs`）会进 tarball。
 10. **worktree 里的 90 个未跟踪文件**（`.v2c/`、`.video_agent/`、`verify/*` 产物）不会被 npm 或 git 提交带上（`files` 白名单 + 未 add），但会让 `git status` 很脏；不要用 `git add -A` 在 release 提交里误收。

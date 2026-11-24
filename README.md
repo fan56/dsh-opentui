@@ -356,27 +356,8 @@ required before keymap/panel/command-surface changes. The legacy podman
 assertions moved to the host families, verify70, unit tests and the
 `pack-cold-start` gate.
 
-Live client-topology gates (local / self-hosted, not hosted CI):
-
-```bash
-node packages/shell/scripts/e2e-sweep.mjs   # full command-surface sweep
-node packages/shell/scripts/e2e-client.mjs  # two-process topology gate (attach/adopt/reload)
-```
-
-`e2e-sweep.mjs` drives EVERY slash command + keyboard surface through the
-real client topology in tmux 120x34 (slow typing, per-item capture): the
-read-only commands, every overlay picker, `/config` forms, the `/login`
-panel + headless forms, the palette / history-recall / alt+enter / paste /
-scroll / dock-toggle / esc stop-confirm keys — and the keystroke-leak
-regressions (modal-consumed keys must never type into the blurred editor).
-`e2e-client.mjs` gates the two-process topology itself: multi-client attach,
-crash adoption, same-port `/reload`, host-death recovery, markdown-table
-rendering. Both run under a scratch `DSH_HOME` (temp dir, mode 700) seeded
-from the real profile, so login/logout/config/preset writes never touch the
-user's home. Real turns ride the workingRoute pattern: the catalog is probed,
-a route is selected, and when no route answers the turn items report BLOCKED
-loudly while everything else still gates. Requires `dsh`, `tmux`, `bun` on
-PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
+The legacy HTTP client-topology and command-surface gates were retired with
+the HTTP host. They are no longer available as local verification commands.
 
 ## Status
 

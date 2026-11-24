@@ -116,7 +116,7 @@ export function projectConfigurableProviders(raw: unknown): SeamConfigurableProv
 
 /** permissionPresets/catalog -> SeamPermissionCatalog | undefined.
  *  Mirrors the remote host's honest "absent/malformed -> undefined" semantics
- *  (remote-host-session.ts:1351): an empty catalog is NOT invented. */
+ *  (legacy HTTP session facade:1351): an empty catalog is NOT invented. */
 function projectOptions(value: unknown): { value: string; name?: string; description?: string }[] {
   if (!Array.isArray(value)) return []
   const out: { value: string; name?: string; description?: string }[] = []

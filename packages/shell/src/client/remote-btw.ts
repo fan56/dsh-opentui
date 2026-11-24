@@ -32,7 +32,7 @@ import type { RemoteModelSelection } from "./remote-model.ts"
 /** Durable marker title prefix set on the throwaway session. */
 export const BTW_TITLE_PREFIX = "btw:"
 
-/** Unary RPC carrier (the ClientConnection subset used here). */
+/** Unary RPC carrier (the legacy HTTP carrier subset used here). */
 export type RemoteBtwRpc = (method: string, args?: Record<string, unknown>) => Promise<unknown>
 
 export interface RemoteBtwOptions {

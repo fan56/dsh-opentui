@@ -99,7 +99,7 @@ The user's actual complaint about the shipped ask panel: **Esc anywhere
 declines the whole batch, silently**. `turn-overlay-controller.ts:339-344`
 resolves the batch with `[]`; `remote-waterfall.ts:199-222` turns that into
 `{ selected: [], custom: "declined" }` per question, and
-`remote-host-session.ts:2716-2740` answers the host with it, so the agent
+`legacy HTTP session facade:2716-2740` answers the host with it, so the agent
 continues on `declined` while every answer typed so far is lost. No key
 hint states that Esc means "throw the batch away". That is what the staged
 back-out in `docs/ask-user-panel-spec.md` §6 fixes; routing is a separate

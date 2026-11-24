@@ -44,7 +44,7 @@ HTTP remote-session stack.
 | `remote-follow.ts` | Legacy HTTP stream implementation is not wired into production; pure text/error helpers remain reused by journal projection. |
 | `remote-session-ops.ts` | Legacy HTTP operations are not wired into production; `RemoteJournalEntry` and `journalToTranscriptRows` remain reused by the bridge seam. |
 | `remote-stream.ts`, `remote-btw.ts`, `remote-model.ts`, `remote-settings.ts` | Retired HTTP runtime helpers; not used by the stdio bridge. |
-| `transport.ts`, `lifecycle.ts`, `remote-host-session.ts` | Retired HTTP stubs retained only for legacy script imports; constructors/entry points throw. |
+| Retired HTTP lifecycle/carrier/session stubs | Removed in T12 Batch 1 with the legacy e2e scripts; use `StdioBridgeTransport` + `BridgeSessionSeam`. |
 | `remote-attachments.ts`, `remote-exec-mode.ts`, `remote-git.ts` | Legacy helpers retained outside the stdio runtime path. |
 
 In short: legacy helpers retained for pure projection functions and local file

@@ -49,7 +49,7 @@ export interface RemoteJournalEntry {
 	data: Record<string, unknown>
 }
 
-/** Unary RPC carrier (the ClientConnection subset used here). */
+/** Unary RPC carrier (the legacy HTTP carrier subset used here). */
 export interface RemoteOpsTransport {
 	rpc(method: string, args?: Record<string, unknown>): Promise<unknown>
 }

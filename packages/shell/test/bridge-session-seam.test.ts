@@ -1689,7 +1689,7 @@ describe("footer telemetry parity (cacheHitRate / contextTokens / contextWindow)
 		})
 		await h.seam.sessionInfo()
 		// lastMessage bills INPUT only (prompt + cacheRead + cacheWrite), never
-		// output — exactly remote-host-session.ts:2532-2533 and its test (20%).
+		// output — exactly legacy HTTP session facade:2532-2533 and its test (20%).
 		expect(h.seam.cacheHitRate()).toBeCloseTo(20, 5)
 		expect(h.seam.cacheHitRate("lastMessage")).toBeCloseTo(20, 5)
 		expect(h.seam.cacheHitRate("session")).toBeCloseTo(55, 5) // 1100 / (900+1100+0)

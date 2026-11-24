@@ -9,7 +9,7 @@ Status: Proposed（0.22.0 落地前定稿）
 
 `/resume` 流程在当前 thin-client 架构下静默丢失上下文，根因链已逐环定位：
 
-1. `/resume` 只在客户端 stage 一个 id，不建立任何会话（`packages/shell/src/client/remote-host-session.ts:746-764`）。
+1. `/resume` 只在客户端 stage 一个 id，不建立任何会话（历史 HTTP session facade；该 facade 已退役）。
 2. 首条消息触发 `#ensureSession()`，调用 `session/create`（`:2361-2384`），把 staged id 作为 resume 意图传给宿主。
 3. 宿主 `claim()` 判定 `reusable = request.reusable(id) && !events.some(e => e.type === 'turn/start')`。一旦目标会话有过任何 user turn，`events` 里必然存在 `turn/start`，该式为 false，reuse 路径不成立。
 4. 宿主走 `createMinted()` 新建会话（`@deepseek-ai/dsh-api-session-controller/src/agent.ts:352-371`），返回一个全新 sessionId。
@@ -67,12 +67,12 @@ Negative / cost:
 
 0.22.0 的默认 inproc 启动路径实际上同时拉起**两个 node 宿主进程**（`packages/tui-base/examples/v2-entry.tsx:1439-1494`），与上文"bridge 跑在宿主进程内"的单宿主叙事并不完全一致——后者描述的是会话桥的归属，不代表全链路只有一个 node 宿主：
 
-- **HTTP 宿主**（`lifecycle.ensureHost` + `RemoteHostSession`）承担 **config 面**：`configSave`、主题 / skin 迁移持久化（`v2-entry.tsx:1589`）、profile 与 workspace overlay 读取。`BridgeSessionSeam` 没有 config frame，其 `configLoad` / `configRaw` / `workspaceConfig` 只能降级返回 `{}`（`packages/shell/src/client/bridge-session-seam.ts:627-656`），所以 config 面仍由 HTTP 宿主负责。
+- **HTTP 宿主**（`lifecycle.legacy host bootstrap` + `legacy HTTP facade`）承担 **config 面**：`configSave`、主题 / skin 迁移持久化（`v2-entry.tsx:1589`）、profile 与 workspace overlay 读取。`BridgeSessionSeam` 没有 config frame，其 `configLoad` / `configRaw` / `workspaceConfig` 只能降级返回 `{}`（`packages/shell/src/client/bridge-session-seam.ts:627-656`），所以 config 面仍由 HTTP 宿主负责。
 - **bridge 宿主**（`createBridgeSessionSeam` 的 stdio transport）承担 **会话面**：`session.open` / `send` / `close` / `list`、`turn.abort`、ask 应答、`journal.replay` 与 append section。
 
 代价：两份 node 宿主并存，常驻内存与冷启动时间约为单宿主时的两倍；profile 配置 / overlay 在两侧各有一份视图，存在失步风险。此前没有任何 ADR 或 ticket 记录这一现状，此处补记为 0.22.0 的**已知过渡债务，不是方案 D 的设计目标**。
 
-移除计划：0.23.0 把 config 面（`configLoad` / `configRaw` / `workspaceConfig` / `configSave`）迁入 bridge 或下沉到本地文件后，删除 `ensureHost` / `RemoteHostSession` 这条 config 通路，只保留 bridge 一个 node 宿主。本条只记录现状与退出计划，不据此改动 0.22.0 代码。
+移除计划：0.23.0 把 config 面（`configLoad` / `configRaw` / `workspaceConfig` / `configSave`）迁入 bridge 或下沉到本地文件后，删除 `legacy host bootstrap` / `legacy HTTP facade` 这条 config 通路，只保留 bridge 一个 node 宿主。本条只记录现状与退出计划，不据此改动 0.22.0 代码。
 
 不可逆点 / 发布后约束：
 

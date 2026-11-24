@@ -94,7 +94,7 @@ const CONFIG_KEYS = [
 	"agentPreset",
 	// T9 (P0-2/P0-3): the one-shot skin migration marker + workspace-layer
 	// theme writes must survive the seam config face (they used to go through
-	// RemoteHostSession.configSave).
+	// the legacy facade's configSave).
 	"skinMigration", "workspaceTheme", "workspaceThemeMode",
 ] as const
 const CONFIG_KEY_SET = new Set<string>(CONFIG_KEYS)

@@ -8,7 +8,7 @@
  * same $DSH_HOME). These are the exact in-process semantics of
  * host-session.ts:453-507 (agent definition files) and :653-711 (session
  * store integrity scan), moved verbatim into injectable helpers so the
- * RemoteHostSession can call them with an explicit dsh home (tests + live
+ * legacy HTTP facade can call them with an explicit dsh home (tests + live
  * smoke scratch homes) instead of only the process environment.
  *
  * Row 30 — agent definitions live at `<dshHome>/agents/*.md`, one file per

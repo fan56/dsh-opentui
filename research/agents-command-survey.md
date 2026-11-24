@@ -10,7 +10,7 @@
 
 1. `/agents` **存在且是完整功能**：命令注册在 `coreCommands()`（`packages/tui-base/src/routes/session/commands.ts:379,754-767`），面板 `AgentsPanel` 1229 行，含 table / fields / limits / limitEdit / picker / effort / deep / viewer 八层（`packages/tui-base/src/routes/session/agents-panel.tsx:103-111`）。
 2. 渲染层是 **ad-hoc 自绘面板**，不是 panel-kit，也不是直接复用 tui-pi 组件：所有内容先被拍平成 `PanelLine[]` 字符串数组，再由一个 `border={["left"]}` 的内联 dock box 逐行画（`agents-panel.tsx:1085-1144`、`1162-1227`）。语义照 tui-pi，代码是 opentui 自写。
-3. 数据面是 **client-local 文件系统**，不是 host registry RPC：读 `<$DSH_HOME>/agents/*.md`，写 frontmatter 或 workspace pin 的 profile 覆盖（`packages/shell/src/client/remote-host-session.ts:1498-1531`、`packages/shell/src/client/remote-local-fs.ts:162-190,277-320`、`packages/shell/src/client/remote-agent-profiles.ts:322-342`）。审计文档明确记录 host 侧无 agents CRUD（`docs/client-mode-protocol-audit.md:87,106-109`）。
+3. 数据面是 **client-local 文件系统**，不是 host registry RPC：读 `<$DSH_HOME>/agents/*.md`，写 frontmatter 或 workspace pin 的 profile 覆盖（`retired HTTP session facade module:1498-1531`、`packages/shell/src/client/remote-local-fs.ts:162-190,277-320`、`packages/shell/src/client/remote-agent-profiles.ts:322-342`）。审计文档明确记录 host 侧无 agents CRUD（`docs/client-mode-protocol-audit.md:87,106-109`）。
 4. 与 `/settings` 是**同一套手写骨架的疑似复制**：模块级 open signal + `Keymap` priority 2 + `lines()` 字符串渲染 + focus-catcher input + close summary（settings 侧 `packages/tui-base/src/routes/session/settings-panel.tsx:877-900,1276-1315,1320,1369-1395`）。两者适合共用一个 PanelStack/导航骨架。
 5. panel-kit 能覆盖面板壳、栈、确认框、数字/文本输入、下拉；**硬缺口有 5 个**：多列行（`cells/columns` 只在契约里、实现里没有）、列表窗口/分页、字母热键路由（只认 7 个保留键）、tui-base 主题到 `PanelTheme` 的投影、`PanelBody/PanelTitle/PanelActions` 三个壳组件只有类型没有实现（`packages/panel-kit/src/contracts.ts:186-192,371-404,426-447`，`packages/panel-kit/src/controls/list.tsx:358-503`，`packages/panel-kit/src/panel.tsx:52`，`packages/panel-kit/src/kit.tsx:37-45`，`packages/panel-kit/src/index.ts:13-117`）。
 6. 另一个必须先拍板的点：panel-kit 的 `Panel` 是**全屏模态**（absolute + scrim + zIndex 3000，`packages/panel-kit/src/panel.tsx:241-256`），而 `/agents` 今天是**内联 dock 行**（`flexShrink={0} width="100%"`，`agents-panel.tsx:1163-1174`）。迁移等于改变交互形态，不是纯重构。
@@ -103,7 +103,7 @@
 ```
 AgentsPanel props.seam.agents
   → SessionSeamAdapter.agents.list()            session-seam-adapter.ts:479-481
-  → RemoteHostSession.listAgents()              remote-host-session.ts:1498-1501
+  → HTTP session facade.listAgents()              retired HTTP session facade module:1498-1501
   → listComposedAgents(dshHome, workspaceDir)   remote-agent-profiles.ts:226-247
   → listAgentFiles(home)                        remote-local-fs.ts:162-190
   → <$DSH_HOME>/agents/*.md（顶层，仅 .md）
@@ -120,7 +120,7 @@ AgentsPanel props.seam.agents
 ```
 AgentsPanel seam.set(name, field, value)
   → SessionSeamAdapter.agents.set()             session-seam-adapter.ts:479-494
-  → RemoteHostSession.agentSet()                remote-host-session.ts:1514-1526
+  → HTTP session facade.agentSet()                retired HTTP session facade module:1514-1526
       ├─ deep | maxRounds | background → setAgentField()      remote-local-fs.ts:277-320
       │      → updateAgentFrontmatter()                       remote-local-fs.ts:200-270
       └─ model | thinking → commitAgentModelEdit()            remote-agent-profiles.ts:322-342
@@ -128,7 +128,7 @@ AgentsPanel seam.set(name, field, value)
              └─ 否则        → updateAgentFrontmatter()
 ```
 
-- 写目标语义：`model/thinking` 落在 pinned profile 的 `agents[name]`；`deep/maxRounds/background` **永远**落 frontmatter（`remote-host-session.ts:1507-1513` 注释、`1519-1525`）。
+- 写目标语义：`model/thinking` 落在 pinned profile 的 `agents[name]`；`deep/maxRounds/background` **永远**落 frontmatter（`retired HTTP session facade module:1507-1513` 注释、`1519-1525`）。
 - `null` = 删 key（inherit）；`maxRounds` 正整数字面校验，0 会让消费侧判 broken（`remote-local-fs.ts:277-318`、`agents-panel.tsx:479-487`）。
 - 原子性：profile 覆盖写走 tmp+rename（`remote-agent-profiles.ts:296-317`）；frontmatter 原地改写，保留注释/未知字段/CRLF，无变更不写（`remote-local-fs.ts:200-270`）。
 - 面板侧不乐观更新：每次写后重读（`agents-panel.tsx:722,748,815,863,905`）。
@@ -137,10 +137,10 @@ AgentsPanel seam.set(name, field, value)
 
 | 数据 | 来源 | 证据 |
 | --- | --- | --- |
-| system prompt body | `agentBody(name)` → 再读同一语料 | `remote-host-session.ts:1555-1559` |
-| 官方 subagent caps | `settingsDescribe()` 的 `subagent` namespace：`maxActiveSubagents` / `maxDepth`；读不到就 `n/a`，不猜默认 | `remote-host-session.ts:1533-1553`、`agents-panel.tsx:299-320` |
-| think 档位阶梯 | `modelCatalog()` 的 `reasoning.efforts` | `remote-host-session.ts:1561-1566` |
-| 语料目录 | `joinPath($DSH_HOME, "agents")` | `remote-host-session.ts:1503-1505` |
+| system prompt body | `agentBody(name)` → 再读同一语料 | `retired HTTP session facade module:1555-1559` |
+| 官方 subagent caps | `settingsDescribe()` 的 `subagent` namespace：`maxActiveSubagents` / `maxDepth`；读不到就 `n/a`，不猜默认 | `retired HTTP session facade module:1533-1553`、`agents-panel.tsx:299-320` |
+| think 档位阶梯 | `modelCatalog()` 的 `reasoning.efforts` | `retired HTTP session facade module:1561-1566` |
+| 语料目录 | `joinPath($DSH_HOME, "agents")` | `retired HTTP session facade module:1503-1505` |
 
 ### 2.4 host / web 侧
 
@@ -299,7 +299,7 @@ grep -n 'PanelLevel\|Keymap.createLayer\|MAX_VISIBLE\|PanelLine' \
 
 # 3) 数据面
 grep -n 'listAgents\|agentSet\|agentBody\|agentOfficialCaps\|modelEfforts' \
-  packages/shell/src/client/remote-host-session.ts
+  retired HTTP session facade module
 sed -n '226,247p;322,342p' packages/shell/src/client/remote-agent-profiles.ts
 
 # 4) panel-kit 缺口

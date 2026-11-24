@@ -41,7 +41,7 @@
                        │ 段 2  bun TUI 进程                           │
                        │   client-entry.tsx:440-459                   │
                        │     → v2-entry.tsx 生产 boot 合成根           │
-                       │   · ClientConnection / RemoteHostSession      │
+                       │   · legacy HTTP carrier / legacy HTTP facade      │
                        │     (HTTP 宿主：label/lifecycle + boot 期     │
                        │      theme/skin 残留；v2-entry.tsx:1587-1605) │
                        │   · StdioBridgeTransport → BridgeSessionSeam  │

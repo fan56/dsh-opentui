@@ -424,7 +424,7 @@ resolves the existing envelope `{ id, selected: [], custom: "declined" }`.
 The controller resolves `[]` (`routes/session/turn-overlay-controller.ts:574-579`);
 the waterfall builds the per-question envelopes
 (`packages/shell/src/client/remote-waterfall.ts:206-223` — `answersValue`,
-with `declinedValue` at `:226-230` used by `remote-host-session.ts:2716-2740` on a provider
+with `declinedValue` at `:226-230` used by `legacy HTTP session facade:2716-2740` on a provider
 error). No protocol change. The answers typed before the decline are
 discarded — that is the user-visible defect this staged ladder exists to
 prevent users from hitting by accident: it now takes one Esc per stage plus

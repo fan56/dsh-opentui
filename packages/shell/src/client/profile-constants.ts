@@ -1,5 +1,6 @@
 /**
- * Profile-name constants extracted from the retired `lifecycle.ts` (T9).
+ * Profile-name constants extracted during T9; the lifecycle stub was removed
+ * in T12 Batch 1.
  * T11 changes only `scripts/lib/profile-name.mjs`; this module re-exports that
  * single source for the client and the provisioner imports it directly.
  *

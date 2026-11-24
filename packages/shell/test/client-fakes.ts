@@ -1,24 +1,27 @@
-// Shared fakes for the client-mode tests: a minimal ClientConnection
+// Shared fakes for the client-mode tests: a minimal connection
 // stand-in (scripted RPC results + $events emit), a minimal `ws` stand-in
 // with the MuxSocket surface the pumps drive, and the wire-frame builders
 // the session/follow streams speak.
-import type { ClientConnection, ClientConnectionState, ClientEventDisposer, ClientEventHandler, ClientReadyInfo } from "../src/client/transport.ts"
+type FakeConnectionState = "connecting" | "connected" | "disconnected"
+type FakeEventDisposer = () => void
+type FakeEventHandler = (payload: unknown) => void
+type FakeReadyInfo = { clientId: string; host: { home: string } }
 import type { EventsItem } from "../src/client/mux-frame.ts"
 import type { MuxSocket } from "../src/client/mux-frame.ts"
 
 export type RpcHandler = (method: string, args: Record<string, unknown>) => unknown | Promise<unknown>
 
-/** Minimal ClientConnection stand-in (the frozen P1 surface subset). */
+/** Minimal connection stand-in (the frozen P1 surface subset). */
 export class FakeConnection {
 	baseUrl = "http://127.0.0.1:18120"
-	#eventHandlers = new Set<ClientEventHandler>()
-	#stateListeners = new Set<(state: ClientConnectionState) => void>()
-	#state: ClientConnectionState = "connecting"
+	#eventHandlers = new Set<FakeEventHandler>()
+	#stateListeners = new Set<(state: FakeConnectionState) => void>()
+	#state: FakeConnectionState = "connecting"
 	closed = false
 	rpcCalls: { method: string; args: Record<string, unknown> }[] = []
 	rpcHandler: RpcHandler = () => ({})
 
-	async connect(): Promise<ClientReadyInfo> {
+	async connect(): Promise<FakeReadyInfo> {
 		this.#state = "connected"
 		return { clientId: "client-1", host: { home: "/tmp/dsh-home" } }
 	}
@@ -28,17 +31,17 @@ export class FakeConnection {
 		return (await this.rpcHandler(method, args ?? {})) as T
 	}
 
-	onEvent(handler: ClientEventHandler): ClientEventDisposer {
+	onEvent(handler: FakeEventHandler): FakeEventDisposer {
 		this.#eventHandlers.add(handler)
 		return () => this.#eventHandlers.delete(handler)
 	}
 
-	onStateChange(listener: (state: ClientConnectionState) => void): ClientEventDisposer {
+	onStateChange(listener: (state: FakeConnectionState) => void): FakeEventDisposer {
 		this.#stateListeners.add(listener)
 		return () => this.#stateListeners.delete(listener)
 	}
 
-	getState(): ClientConnectionState {
+	getState(): FakeConnectionState {
 		return this.#state
 	}
 
@@ -57,7 +60,7 @@ export class FakeConnection {
 		this.emit({ type: "emit", event, args } as EventsItem)
 	}
 
-	setState(state: ClientConnectionState): void {
+	setState(state: FakeConnectionState): void {
 		this.#state = state
 		for (const listener of [...this.#stateListeners]) listener(state)
 	}

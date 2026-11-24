@@ -4,8 +4,7 @@
 //   node verify/agents-mount-repro.mjs [--cols 120] [--rows 34] [--keep]
 //
 // What it proves (against the REAL launcher `./dsh-opentui`, a scratch
-// DSH_HOME seeded from the real home — same isolation pattern as
-// packages/shell/scripts/e2e-sweep.mjs, nothing is written to ~/.dsh):
+// DSH_HOME seeded from the real home — all writes stay in scratch HOME):
 //   1. `/agents` opens the panel-kit modal (title `Agents`, List columns
 //      NAME/MODEL/THINK/DEEP/LIMITS, one row per agent; the limits layer when
 //      the corpus is empty) instead of the fallback notice
@@ -199,7 +198,7 @@ if (!existsSync(LAUNCHER) || !existsSync(MOCK)) {
 }
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 
-// --- scratch home (same isolation as e2e-sweep: real writes never land in ~/.dsh) ---
+// --- scratch home (all writes stay in scratch HOME) ---
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-agents-mount-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-agents-mount-ws-'))

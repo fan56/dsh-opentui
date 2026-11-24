@@ -425,7 +425,7 @@ function unmetRequirements(fields: Record<string, unknown>, runtimeVersion: stri
 
 ### 7.4 其他常驻门禁
 
-- `node packages/shell/scripts/e2e-sweep.mjs`（全命令面扫描）、`node packages/shell/scripts/e2e-client.mjs`（双进程拓扑）：`README.md:191-195`。
+- Legacy command-surface sweep and client-topology gates: retired in T12 Batch 1; no longer runnable.
 - ui 层三条脚本：`scripts/test-tier.mjs:162-173`（`verify/ui-matrix.mjs`、`verify/agents-mount-repro.mjs`、`verify/text-leak-audit.mjs`）。
 - 打包产物语言审计：`verify/text-leak-pack-audit.mjs`（存在；`CHANGELOG.md:17` 提到 prepack 校验打包产物）。
 

@@ -42,7 +42,7 @@ import { basename, join, resolve } from 'node:path'
 /** The one product profile (ADR-0005 decision 3). */
 export const PROFILE = 'opentui'
 
-/** The default dsh home when DSH_HOME is unset (mirrors lifecycle.ts). */
+/** The default dsh home when DSH_HOME is unset. */
 export function defaultDshHome() {
 	return join(homedir(), '.dsh')
 }

@@ -71,7 +71,7 @@ export async function readImageAttachment(path: string): Promise<StagedImageUplo
 	return { data: Buffer.from(data).toString("base64"), mediaType, name: leaf, bytes: data.byteLength }
 }
 
-/** Unary RPC carrier (the ClientConnection subset used here). */
+/** Unary RPC carrier (the legacy HTTP carrier subset used here). */
 export type RemoteAttachmentRpc = (method: string, args?: Record<string, unknown>) => Promise<unknown>
 
 /** The wire `PromptContentPart` image shape (session-controller types). */

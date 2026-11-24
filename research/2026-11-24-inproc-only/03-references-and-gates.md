@@ -15,11 +15,11 @@
 2. **历史记录的三个"硬引用点"核对结果**：
    - `v2-entry` 约 `:1617`/`:1660` 在 0.22–0.24 与 HEAD 上都是 **seam bootstrap（legacy seam 删除/BridgeBootstrapError）**，不是 profile 名（`packages/tui-base/examples/v2-entry.tsx:1674-1682`；`docs/architecture/01-system-topology.md:38`）。该处**无需因删 profile 而改**。
    - 真正的 v2-entry 硬点在 `:1609`（`lifecycle.DEFAULT_PROFILE`，旧版本约 `:1554-1555`）及其下游 `:1616`、`:1636`、`:1651`、`:1940`；**仍存在，必须改**（或随 HTTP host 一起退役）。
-   - `lifecycle` 约 `:1079` 在 0.22–0.24 与 HEAD 都是**参数化**的 `profileDir = join(o.dshHome, 'profiles', o.profile)` + `ProfileMissingError`（`packages/shell/src/client/lifecycle.ts:1078-1079`）。**仍存在**，但它本身不是字面量；硬依赖来自 `:91`（`DEFAULT_PROFILE='opentui'`）→ `:1009`（`opts.profile ?? DEFAULT_PROFILE`）→ `:1113`（spawn `--profile <o.profile>`）。
+   - `lifecycle` 约 `:1079` 在 0.22–0.24 与 HEAD 都是**参数化**的 `profileDir = join(o.dshHome, 'profiles', o.profile)` + `ProfileMissingError`（`retired HTTP lifecycle module:1078-1079`）。**仍存在**，但它本身不是字面量；硬依赖来自 `:91`（`DEFAULT_PROFILE='opentui'`）→ `:1009`（`opts.profile ?? DEFAULT_PROFILE`）→ `:1113`（spawn `--profile <o.profile>`）。
 
 3. **默认 CI 不会被删 profile 直接打断**：`.github/workflows/ci.yml` 的 `test` 与 `pack-cold-start` job 都不需要 `~/.dsh/profiles/opentui`（pack 只用 `opentui-inproc`，`ci.yml:237,294`）。**会失效的是 opt-in 的 `real-client` job**（`ci.yml:129-140`），它 preflight 检查老 profile 并跑 `agents-mount-client.test.ts`。
 
-4. **发布门禁与 e2e 家族会失效**：`scripts/real-client-gate.sh:224,231`、`e2e/families/lib/family-lib.sh:39`、`packages/shell/scripts/e2e-sweep.mjs:49,74,94-95`、`packages/shell/scripts/e2e-client.mjs:96,114,166-172`、`verify/*` 全家（8 个脚本）都以老 profile 为 seed/preflight。CI pack gate 与 `e2e/families/00-pack-gate.sh` 不受影响。
+4. **发布门禁与 e2e 家族会失效**：`scripts/real-client-gate.sh:224,231`、`e2e/families/lib/family-lib.sh:39`、`legacy command-surface sweep (retired):49,74,94-95`、`legacy client-topology gate (retired):96,114,166-172`、`verify/*` 全家（8 个脚本）都以老 profile 为 seed/preflight。CI pack gate 与 `e2e/families/00-pack-gate.sh` 不受影响。
 
 5. **bridge 与老 profile 刻意分离**：`packages/shell/src/client/local-config-faces.ts:7-17` 明确说明 inproc provisioner 会整体重写自己的 `cordis.patch.yml`，所以客户端读老 profile 是"诚实实现"而非遗留 bug。删老 profile 前必须先决定**用户配置（主题/语言/快捷键/预设/provider 路由）迁到哪里**，否则改常量会与 inproc provisioner 写同一文件冲突。这是本次改动的最大设计约束。
 
@@ -35,20 +35,20 @@
 
 | 文件:行 | 上下文 | 该处假设 |
 |---|---|---|
-| `packages/shell/src/client/lifecycle.ts:91` | `export const DEFAULT_PROFILE = 'opentui'` | 所有未显式传 profile 的 host 生命周期调用都指老 profile |
-| `packages/shell/src/client/lifecycle.ts:1009` | `const profile = opts.profile ?? DEFAULT_PROFILE` | `ensureHost`/`ensureV2Host` 默认 profile 可解析到老 profile |
-| `packages/shell/src/client/lifecycle.ts:1078-1079` | `join(o.dshHome, 'profiles', o.profile)` + `ProfileMissingError` | profile 目录必须存在，否则冷启动抛错 |
-| `packages/shell/src/client/lifecycle.ts:1095` | `const profileDir = join(o.dshHome, 'profiles', o.profile)` | append-system 写老 profile 的 `cordis.patch.yml` |
-| `packages/shell/src/client/lifecycle.ts:1113` | `spawnDsh(['--profile', o.profile, '--no-open', '--port', ...])` | 实际拉起 `dsh --profile opentui` HTTP 宿主 |
+| `retired HTTP lifecycle module:91` | `export const DEFAULT_PROFILE = 'opentui'` | 所有未显式传 profile 的 host 生命周期调用都指老 profile |
+| `retired HTTP lifecycle module:1009` | `const profile = opts.profile ?? DEFAULT_PROFILE` | `legacy host bootstrap`/`ensureV2Host` 默认 profile 可解析到老 profile |
+| `retired HTTP lifecycle module:1078-1079` | `join(o.dshHome, 'profiles', o.profile)` + `ProfileMissingError` | profile 目录必须存在，否则冷启动抛错 |
+| `retired HTTP lifecycle module:1095` | `const profileDir = join(o.dshHome, 'profiles', o.profile)` | append-system 写老 profile 的 `cordis.patch.yml` |
+| `retired HTTP lifecycle module:1113` | `spawnDsh(['--profile', o.profile, '--no-open', '--port', ...])` | 实际拉起 `dsh --profile opentui` HTTP 宿主 |
 | `packages/shell/src/client/client-entry.tsx:258` | `const profile = options.profile ?? DEFAULT_PROFILE` | boot 默认 profile |
 | `packages/shell/src/client-entry.tsx:266-268` | `ensureV2Host({ profile, ... })` | 客户端采纳/拉起老 profile 的 HTTP host |
 | `packages/shell/src/client-entry.tsx:298` | `spawnLifecycleWatchdog(host.dshHome, { scriptPath, profile })` | watchdog 按老 profile 标识进程 |
-| `packages/shell/src/client-entry.tsx:323` | `createSession({ ..., profile })` | `RemoteHostSession` 配置路径按老 profile 解析 |
+| `packages/shell/src/client-entry.tsx:323` | `createSession({ ..., profile })` | `HTTP session facade` 配置路径按老 profile 解析 |
 | `packages/shell/src/client-entry.tsx:376` | `lastOneGracefulShutdown(host.dshHome, { profile, hooks })` | 退出时的宿主回收按老 profile registry |
 | `packages/tui-base/examples/v2-entry.tsx:1609` | `const profile = lifecycle.DEFAULT_PROFILE` | 合成根的 profile 直接来自老常量（历史约 `:1554-1555`） |
 | `packages/tui-base/examples/v2-entry.tsx:1616` | `ensureV2Host({ profile, idleExitSec })` | 同上：拉起 HTTP host |
 | `packages/tui-base/examples/v2-entry.tsx:1636` | `spawnWatchdog(host.dshHome, { scriptPath, profile })` | watchdog argv 带老 profile |
-| `packages/tui-base/examples/v2-entry.tsx:1651-1657` | `new rhs.RemoteHostSession({ ..., profile })` | 本地 config/keybindings 路径按老 profile |
+| `packages/tui-base/examples/v2-entry.tsx:1651-1657` | `new rhs.HTTP session facade({ ..., profile })` | 本地 config/keybindings 路径按老 profile |
 | `packages/tui-base/examples/v2-entry.tsx:1940` | `profileName: profile` 传给 welcome hero | 启动页插件树根标签显示老 profile 名 |
 | `packages/shell/src/client/bridge-session-seam.ts:89,2273` | `import DEFAULT_PROFILE` → `options.profile ?? DEFAULT_PROFILE` | **bridge seam** 的本地配置面仍以老 profile 为目录 |
 | `packages/shell/src/client/bridge-session-seam.ts:2278-2280` | `new LocalSettingsStore(dshHome, profile)` / `new LocalConfigStore(...)` | patch/config 文件读写指向 `profiles/opentui/*` |
@@ -64,7 +64,7 @@
 | `packages/shell/src/client/host-launch.ts:549` | `spawnHost(['--profile', o.profile, '--no-open', ...])` | 真正拉起 HTTP host |
 | `packages/shell/src/client/remote-restart.ts:165` | `options.profile ?? "opentui"`（`/reload` 同端口重启） | 重启的 lockfile 与 spawn 都按老 profile |
 | `packages/shell/src/client/remote-restart.ts:258` | `spawnDsh(["--profile", profile, "--no-open", ...])` | 同上 |
-| `packages/shell/src/client/remote-host-session.ts:547` | `this.#profile = options.profile ?? "opentui"` | 未注入 profile 的 session 默认老 profile |
+| `retired HTTP session facade module:547` | `this.#profile = options.profile ?? "opentui"` | 未注入 profile 的 session 默认老 profile |
 | `packages/shell/src/client/watchdog-cli.ts:25` | `process.env[ENV_WATCHDOG_PROFILE] || 'opentui'` | detached watchdog 的兜底 profile |
 | `packages/shell/src/client/append-system.ts:33,37` | `APPEND_SYSTEM_PRESET_ID='opentui-append-system'`、marker | 合成 preset id 与老 profile patch 行绑定（历史元数据） |
 | `packages/shell/src/client/append-system.ts:312-313,349,382-388` | `profilePatchPath(home, profile)` 等 | 按传入 profile 写 patch；调用方（lifecycle/legacy）传老 profile |
@@ -84,7 +84,7 @@
 
 | 文件:行 | 说明 |
 |---|---|
-| `packages/shell/src/client/lifecycle.ts:5` | 用法示例 `ensureHost({profile:'opentui', ...})` |
+| `retired HTTP lifecycle module:5` | 用法示例 `legacy host bootstrap({profile:'opentui', ...})` |
 | `packages/shell/src/client-entry.tsx:20,148` | 头部示例 + `profile` 选项注释 |
 | `packages/shell/src/client/host-launch.ts:17` | 三证据注释含 `--profile opentui` |
 | `packages/shell/src/client/watchdog-cli.ts:6` | watchdog 三证据注释 |
@@ -94,10 +94,10 @@
 | `packages/shell/src/client/append-system.ts:5,8,53` | "opentui profile 的 patch / opentui host"说明 |
 | `packages/shell/src/client/remote-agent-profiles.ts:13` | `current` key 驱动 opentui profile 的说明 |
 | `packages/shell/src/client/remote-restart.ts:66` | "default `opentui`"注释 |
-| `packages/shell/src/client/remote-host-session.ts:259` | "default `opentui`"注释 |
+| `retired HTTP session facade module:259` | "default `opentui`"注释 |
 | `packages/shell/bin/lib/launcher.mjs:23-29,427,441-455,691` | host 识别规则与 help 文案 |
 | `packages/shell/bin/dsh-opentui.mjs:20-33,205,261-265,341` | step 3/迁移/`--force` 说明 |
-| `packages/shell/scripts/e2e-client.mjs:4,166` / `e2e-sweep.mjs:32,37` | 脚本头部拓扑说明 |
+| `legacy client-topology gate (retired):4,166` / `legacy command-surface sweep (retired).mjs:32,37` | 脚本头部拓扑说明 |
 | `packages/shell/scripts/lib/provision-plan.mjs:107,724,888` / `upgrade.mjs:5` / `inproc-companions.mjs:18` | 文案 |
 | `dsh-opentui:3` | 顶层 wrapper 注释："resident `dsh --profile opentui` host" |
 | `packages/tui-base/src/routes/welcome-hero.tsx:80` | tree-root 标签注释（描述 profile 名） |
@@ -119,7 +119,7 @@
 | `idle-reaper.test.ts:44,142` | lockfile 的 `profile:'opentui'` 字段；reaper 读取该字段 |
 | `host-port.test.ts:16,51` | `PROFILE='opentui'`，端口探测循环含 `'opentui'` |
 | `bin-launcher.test.ts:118,121,138,148,155-156,158,162,166,169-170,181,184` | `classifyProcess`/`parseProcessHomes` 用 `--profile opentui` 文本串做正反例 |
-| `remote-btw-restart.test.ts:346,358,363,401,408,416,427,436,463,506,511,547` | `/reload` 同端口重启：老 profile 目录、`opentui-host.opentui.json` lock、spawn argv、重写后 `profile==='opentui'`，随后 `ensureHost` 采纳（真实 killable child + HTTP server） |
+| `remote-btw-restart.test.ts:346,358,363,401,408,416,427,436,463,506,511,547` | `/reload` 同端口重启：老 profile 目录、`opentui-host.opentui.json` lock、spawn argv、重写后 `profile==='opentui'`，随后 `legacy host bootstrap` 采纳（真实 killable child + HTTP server） |
 | `remote-wave3-local.test.ts:351-352,380,417,431-432,435` | `configLoad`/`configSave`/`keybindingsLoad` 从 `profiles/opentui/*.json` 读写 |
 | `bridge-session-seam.test.ts:519,602,3355,3435` | seam 的 `profile='opentui'`；`profiles/opentui/node_modules` 存在性分支 |
 | `b1-s4-seam-route.test.ts:35-38,46` | scratch `profiles/opentui/cordis.patch.yml` 为 seam 本地配置源；断言 patch 字节不变 |
@@ -140,8 +140,8 @@
 
 | 文件:行 | 假设 / 门禁后果 |
 |---|---|
-| `packages/shell/scripts/e2e-client.mjs:96,99-103,114,166-172` | preflight 要求 `profiles/opentui` 存在；`LOCK_PATH=opentui-host.opentui.json`；用 `pgrep -f 'dsh --profile opentui --no-open'` 找宿主 pid。删 profile 后脚本永远 skip 或误判 |
-| `packages/shell/scripts/e2e-sweep.mjs:32,49,74,94-98,122,365` | 从真 home 拷 `profiles/opentui` 到 scratch（不写真 profile），真实目录缺失则 skip；生成的 host 调用 `ensureHost({profile:'opentui'})` |
+| `legacy client-topology gate (retired):96,99-103,114,166-172` | preflight 要求 `profiles/opentui` 存在；`LOCK_PATH=opentui-host.opentui.json`；用 `pgrep -f 'dsh --profile opentui --no-open'` 找宿主 pid。删 profile 后脚本永远 skip 或误判 |
+| `legacy command-surface sweep (retired):32,49,74,94-98,122,365` | 从真 home 拷 `profiles/opentui` 到 scratch（不写真 profile），真实目录缺失则 skip；生成的 host 调用 `legacy host bootstrap({profile:'opentui'})` |
 | `scripts/real-client-gate.sh:24,125-126,156,224,231` | 环境自检查 `dsh --profile opentui --no-open` 孤儿；**preflight 要求真 `profiles/opentui` 存在**；拷入 scratch 作配置 seed |
 | `scripts/real-client-gate.sh:30,236-243,263` | 握手与 provision 阶段实际只用 `opentui-inproc`（`:263` spawn `dsh --profile opentui-inproc`）；老 profile 仅作为 fixture |
 | `scripts/test-tier.mjs:22,139-140,191` | `PROFILE=DSH_UI_PROFILE||'opentui'`；ui 档 preflight 要求老 profile；`DSH_SMOKE_PROFILE` 默认传它 |
@@ -196,9 +196,9 @@
 |---|---|---|---|
 | `v2-entry ≈ :1617` | v0.22–v0.24 该区间是 seam 选择 / `createBridgeSessionSeam` / `BridgeBootstrapError`，**无 profile 字面量**（`v0.24.0:packages/tui-base/examples/v2-entry.tsx:1616-1626`） | `packages/tui-base/examples/v2-entry.tsx:1674-1682` 仍是 seam bootstrap fail-fast；`docs/architecture/01-system-topology.md:38` 引用的就是这里 | **否**（不是 profile 引用） |
 | `v2-entry ≈ :1660` | recoverBridge / seam 相关（同上区间），非 profile | `packages/tui-base/examples/v2-entry.tsx:1706-1712` recoverBridge | **否** |
-| `v2-entry 真正硬点` | v0.22 `:1555`、v0.23 `:1555`、v0.24 `:1554` 为 `const profile = lifecycle.DEFAULT_PROFILE` | `packages/tui-base/examples/v2-entry.tsx:1609`（同句）；下游 `:1616` ensureV2Host、`:1636` spawnWatchdog、`:1651-1657` RemoteHostSession、`:1940` profileName | **是**（改常量或整体退役 HTTP host 路径） |
-| `lifecycle ≈ :1079` | v0.22–v0.24 与 HEAD 完全一致：`join(o.dshHome,'profiles',o.profile)` + `ProfileMissingError`，**参数化** | `packages/shell/src/client/lifecycle.ts:1078-1079`；相邻 `:1095` 写 patch | **间接是**：它本身随参数变化；字面量源头在 `:91` / `:1009` 与 spawn `:1113` |
-| 其他字面量源头（补充） | 0.22–0.24 已存在且 HEAD 未变 | `client-lifecycle.ts:393,557,657`；`safe-kill.ts:31,151,227`；`host-launch.ts:69,268,549`；`remote-restart.ts:165`；`remote-host-session.ts:547`；`watchdog-cli.ts:25`；`bin/launcher.mjs:42`；`bin/dsh-opentui.mjs:272,505` | **是**（全部把 `'opentui'` 当默认值或唯一可信号 profile） |
+| `v2-entry 真正硬点` | v0.22 `:1555`、v0.23 `:1555`、v0.24 `:1554` 为 `const profile = lifecycle.DEFAULT_PROFILE` | `packages/tui-base/examples/v2-entry.tsx:1609`（同句）；下游 `:1616` ensureV2Host、`:1636` spawnWatchdog、`:1651-1657` HTTP session facade、`:1940` profileName | **是**（改常量或整体退役 HTTP host 路径） |
+| `lifecycle ≈ :1079` | v0.22–v0.24 与 HEAD 完全一致：`join(o.dshHome,'profiles',o.profile)` + `ProfileMissingError`，**参数化** | `retired HTTP lifecycle module:1078-1079`；相邻 `:1095` 写 patch | **间接是**：它本身随参数变化；字面量源头在 `:91` / `:1009` 与 spawn `:1113` |
+| 其他字面量源头（补充） | 0.22–0.24 已存在且 HEAD 未变 | `client-lifecycle.ts:393,557,657`；`safe-kill.ts:31,151,227`；`host-launch.ts:69,268,549`；`remote-restart.ts:165`；`retired HTTP session facade module:547`；`watchdog-cli.ts:25`；`bin/launcher.mjs:42`；`bin/dsh-opentui.mjs:272,505` | **是**（全部把 `'opentui'` 当默认值或唯一可信号 profile） |
 
 **删 profile 时不可绕过的最小闭环**：`DEFAULT_PROFILE`/`HOST_PROFILE`/`DEFAULT_LAUNCH_PROFILE` 与 6 处 `?? 'opentui'` 必须统一决策；同时 `bridge-session-seam.ts:2273` 与 `local-config-faces.ts` 的文件归属必须重新指定，否则"删除目录"只是让代码继续找（或重建）一个用户不可见的空 profile。
 
@@ -216,8 +216,8 @@
 | `scripts/real-client-gate.sh` | **是**：preflight `:224`、seed copy `:231`、孤儿检测 `:125-126,156`；握手用 inproc（`:263`） | **失效**：preflight exit 2；可改为拷贝 inproc + 新的用户配置 seed |
 | `e2e/families/lib/family-lib.sh:38-46` + `run-all.sh:63-70` | **是**（间接）：每个 family 拷老 profile 到 scratch，verify-gate family 复用 real-client-gate | **失效** |
 | `e2e/families/00-pack-gate.sh` | 否（只跑 capcontract 完整性） | **不失效** |
-| `packages/shell/scripts/e2e-client.mjs` | **是**：preflight 存在性 + `opentui-host.opentui.json` lock + `pgrep --profile opentui`（`:96,114,166-172`） | **失效**（永远 skip 或误判宿主） |
-| `packages/shell/scripts/e2e-sweep.mjs` | **是**：seed 老 profile；缺则 skip（`:74`） | **失效/静默 skip** |
+| `legacy client-topology gate (retired)` | **是**：preflight 存在性 + `opentui-host.opentui.json` lock + `pgrep --profile opentui`（`:96,114,166-172`） | **失效**（永远 skip 或误判宿主） |
+| `legacy command-surface sweep (retired)` | **是**：seed 老 profile；缺则 skip（`:74`） | **失效/静默 skip** |
 | `scripts/test-tier.mjs` 的 `ui`/`e2e` 档 | **是**：老 profile preflight（`:139-140`） | **失效**（exit 2 = 环境缺失，不是测试通过） |
 | `verify/*`（8 个脚本） | **是**：全部以老 profile 为模板/lock/config 源（详见 2.4） | **失效**：preflight 退出或 scratch 配置缺失 |
 | `packages/shell/test/agents-mount-client.test.ts` | **是**（真机路径） | **失效**（在 CI `real-client` job 中变为 FAIL） |
@@ -258,9 +258,9 @@
 | `packages/shell/scripts/upgrade.mjs` | **删代码 / 重写** | `PROFILE` 来自老 profile（`:55-61,84,972,1133`）；需决策 upgrade 子命令退役或改服务 inproc companion |
 | `packages/shell/scripts/lib/provision-plan.mjs` | **删代码 / 改常量** | `PROFILE='opentui'` `:15`；插件 pin/tier/patch 行 `:29-115,125-159,720-885`；先解耦 upgrade 再删 |
 | `packages/shell/bin/lib/launcher.mjs` | **改常量 / 删代码** | `PROFILE` `:42`；`classifyProcess` host 判定 `:452-455,482`；help 文案 `:691`。若去掉 HTTP 预启，此面整体退役 |
-| `packages/shell/src/client/lifecycle.ts` | **改常量 / 删代码** | `DEFAULT_PROFILE` `:91`；`:1009,1078-1079,1095,1113`。若 HTTP host 整个退役，v1+v2 boot 路径一起删 |
+| `retired HTTP lifecycle module` | **改常量 / 删代码** | `DEFAULT_PROFILE` `:91`；`:1009,1078-1079,1095,1113`。若 HTTP host 整个退役，v1+v2 boot 路径一起删 |
 | `packages/shell/src/client-entry.tsx`、`packages/tui-base/examples/v2-entry.tsx` | **改常量 / 删代码** | `client-entry.tsx:258,266-268,298,323,376`；`v2-entry.tsx:1609,1616,1636,1651-1657,1940`。决定 ensureV2Host 是否保留 |
-| `packages/shell/src/client/host-launch.ts`、`safe-kill.ts`、`client-lifecycle.ts`、`remote-restart.ts`、`remote-host-session.ts`、`watchdog-cli.ts` | **改常量** | `:69/268/549`、`:31/151/227`、`:393/557/657`、`:165/258`、`:547`、`:25`；全部把老 profile 当默认值 |
+| `packages/shell/src/client/host-launch.ts`、`safe-kill.ts`、`client-lifecycle.ts`、`remote-restart.ts`、`retired HTTP session facade module`、`watchdog-cli.ts` | **改常量** | `:69/268/549`、`:31/151/227`、`:393/557/657`、`:165/258`、`:547`、`:25`；全部把老 profile 当默认值 |
 | `packages/shell/src/client/bridge-session-seam.ts`、`local-config-faces.ts` | **改常量 + 设计决策** | `:89/2273/2278-2280/3795-3805`、`:231-232/333/498-499/608-609`。**必须**先定用户配置归属（迁到 inproc 或独立 user profile），否则会与 inproc provisioner 的 patch 收敛冲突 |
 | `packages/shell/src/client/append-system.ts` | **改常量 / 保留历史标记** | preset id `:33`、marker `:37` 可保留为惰性元数据；路径函数 `:312-313,349,382-388` 随调用方 profile 变化 |
 | `packages/shell/scripts/provision-inproc-profile.mjs` | **无需改（仅注释建议）** | 有硬 guard 只碰 inproc（`:92-95,147`）；老名只在注释/legacy 模板 MD5/文案 `:8,651-653,1313` |
@@ -269,7 +269,7 @@
 | `packages/shell/test/*.test.ts`（约 14 个文件，见 2.3） | **改测试** | 字面量与常量断言需同步；`agents-mount-client.test.ts:35-36` 需改前置；`append-system.test.ts` 约 27 处；`lifecycle.test.ts` 约 20 处 |
 | `packages/shell/test/provision-inproc-companions.test.ts`、`patch-runtime-merge.test.ts`、`provision-state.test.ts` | **无需改 / 视调用方** | 前两者只涉及 inproc；后者为纯逻辑 |
 | `scripts/real-client-gate.sh`、`e2e/families/lib/family-lib.sh` | **改脚本** | `:224,231`（+ `:125-126,156` 孤儿检测）、`:39`。seed 源改为 inproc + 用户配置 |
-| `packages/shell/scripts/e2e-client.mjs`、`e2e-sweep.mjs` | **改脚本 / 删代码** | `:96,114,166-172`、`:49,74,94-98,122,365`。若 HTTP host 退役，e2e-client 的 host 拓扑断言需重写或删除 |
+| `legacy client-topology gate (retired)`、`legacy command-surface sweep (retired).mjs` | **改脚本 / 删代码** | `:96,114,166-172`、`:49,74,94-98,122,365`。若 HTTP host 退役，legacy client-topology gate (retired) 的 host 拓扑断言需重写或删除 |
 | `scripts/test-tier.mjs`、`verify/*`（8 个）、`verify/e2e-flows/*` | **改脚本** | 常量、preflight、seed 源、lock 名（见 2.4） |
 | `.github/workflows/ci.yml` | **改文档/门禁** | `real-client` job 注释与 preflight `:88,94,129-134`；`test` 与 `pack-cold-start` 无需改 |
 | `README.md`、`CONTEXT.md`、`docs/verification-gates.md:39,120`、`docs/testing.md:17`、`docs/adr/0005-client-mode.md:43`、`docs/adr/0009-server-lifecycle-singleton.md:71`、`packages/shell/src/client/README.md` | **改文档** | 产品语义与 gate 前置；`CHANGELOG.md` / `tickets/*` / `research/*` 的历史记录建议保留 |
@@ -279,7 +279,7 @@
 
 ## 七、未知项
 
-1. **HTTP host 是否仍承担功能**：`docs/architecture/01-system-topology.md:42` 把 `ClientConnection`/`RemoteHostSession` 称为独立于 session seam 的"host 客户端层"，`v2-entry.tsx:1616` 仍 `ensureV2Host`；但 bridge 是唯一 session seam（`v2-entry.tsx:1674-1682`）。HTTP host 除 registry/health 外是否仍被实际消费，需运行时/odot 侧确认；本只读调研不启动任何 dsh 进程。
+1. **HTTP host 是否仍承担功能**：`docs/architecture/01-system-topology.md:42` 把 `HTTP client carrier`/`HTTP session facade` 称为独立于 session seam 的"host 客户端层"，`v2-entry.tsx:1616` 仍 `ensureV2Host`；但 bridge 是唯一 session seam（`v2-entry.tsx:1674-1682`）。HTTP host 除 registry/health 外是否仍被实际消费，需运行时/odot 侧确认；本只读调研不启动任何 dsh 进程。
 2. **用户配置归属的产品决策**：inproc provisioner 每轮整体收敛 `cordis.patch.yml`（`provision-inproc-profile.mjs:1275-1322`），把本地配置面直接改指向 inproc 会冲突。是迁到 inproc、新增第三个 user profile、还是改为 workspace/config 文件，仓库内没有既定结论。
 3. **`dsh` CLI 自身行为**：`dsh --profile <missing>` 是否自动 provision、`dsh opentui --from-default-profile web --dump-config` 生成哪些文件，源码不在本仓（`01-provisioning.md:143`）。删目录后 dsh 是否立即重建，无法从仓库判断。
 4. **`upgrade` 子命令去向**：当前只服务老 profile（`upgrade.mjs:55-61`）；是否退役、或改造为 inproc companion 升级，需决策。

@@ -147,10 +147,10 @@ devtools files carry no errors.
 from a session backend (sessions list/search/transcript, turn streaming with
 approve callback, provider/catalog/usage reads, typed event push, lifecycle),
 plus `NullSessionSeam` (test stub; drives events via `emit()`). The header
-comment carries the full vendored-surface → seam → `RemoteHostSession`
+comment carries the full vendored-surface → seam → `legacy HTTP facade`
 mapping table derived from auditing all 113 `@opencode/client` import sites.
 Dependency rule: tui-base imports nothing from `@dsh-opentui/*`; the real
-adapter (`RemoteHostSession` → `SessionSeam`) lives in packages/shell and is
+adapter (`legacy HTTP facade` → `SessionSeam`) lives in packages/shell and is
 injected at the composition root (later batch). Tests:
 `test/session-seam.test.ts` (interface conformance, event subscribe/emit,
 dependency-direction guard).

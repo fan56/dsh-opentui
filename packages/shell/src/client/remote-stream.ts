@@ -8,7 +8,7 @@
  * `end` frame, or an `error` frame carrying the Remote failure envelope. A
  * stream Remote method CANNOT ride the unary HTTP `POST /api` carrier (the
  * gateway refuses it: "stream Remote methods must be opened through the
- * stream carrier"), and P1's `ClientConnection` deliberately exposes only
+ * stream carrier"), and P1's `legacy HTTP carrier` deliberately exposes only
  * `rpc` + `$events` — so this module is the session layer's own minimal mux
  * client, reusing the exact frame grammar and `MuxSocket` shape from
  * `mux-frame.ts`.

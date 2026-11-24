@@ -1,8 +1,8 @@
 // T9 retarget — the client-local clusters that survive the HTTP host removal:
 // /agents + /repair over a scratch dsh home, the git probe, the preset-document
 // executionMode scan, attachment staging helpers, and the LOCAL config seam
-// (LocalConfigStore replaces RemoteHostSession.configLoad/configSave). The
-// HTTP-backed facade cases were deleted with RemoteHostSession.
+// (LocalConfigStore replaces legacy HTTP facade.configLoad/configSave). The
+// HTTP-backed facade cases were deleted with legacy HTTP facade.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -103,7 +103,7 @@ describe("rows 35/36 — attachment helpers", () => {
 	})
 })
 
-describe("row 41 — LOCAL config seam (T9: was RemoteHostSession)", () => {
+describe("row 41 — LOCAL config seam (T9: was legacy HTTP facade)", () => {
 	test("configLoad = profile config.json ⊕ workspace config.yml", () => {
 		const home = scratchDir("wave3-config-")
 		const workspace = scratchDir("wave3-ws-")

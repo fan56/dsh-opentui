@@ -24,7 +24,7 @@
 | # | 事实 | 出处 |
 |---|---|---|
 | 1 | 客户端 seam 的 `settings.describe/mutate` 直接走 `LocalSettingsStore`，**完全没有尝试宿主** | `packages/shell/src/client/bridge-session-seam.ts:1416-1419` |
-| 2 | `LocalSettingsStore` 读写 `join(home,"profiles",profile,"cordis.patch.yml")`，`profile = DEFAULT_PROFILE = 'opentui'` | `packages/shell/src/client/local-config-faces.ts:231-320`、`packages/shell/src/client/lifecycle.ts:91` |
+| 2 | `LocalSettingsStore` 读写 `join(home,"profiles",profile,"cordis.patch.yml")`，`profile = DEFAULT_PROFILE = 'opentui'` | `packages/shell/src/client/local-config-faces.ts:231-320`、`retired HTTP lifecycle module:91` |
 | 3 | 实际运行的宿主以 `--profile opentui-inproc` 启动 | `packages/shell/src/client/bridge-transport.ts:71,188` |
 | 4 | 因此客户端写的 `opentui` patch **不是**宿主读的 `opentui-inproc` patch —— 写入永远到不了消费方 | 由 2+3 直接推出；`local-config-faces.ts:8-17` 的自述与 `bridge-session-seam.ts:3637-3644` 注释均记录同一事实 |
 | 5 | inproc 宿主配方 = `@deepseek-ai/dsh-base` + bridge 自身 | `packages/shell/scripts/provision-inproc-profile.mjs:149` |

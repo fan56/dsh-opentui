@@ -28,12 +28,8 @@
  * - @deepseek-ai/dsh-client-connection stays EXTERNAL (red line): the SDK is
  *   DeepSeek private code, distributed only inside a global dsh install's
  *   node_modules closure — inlining it here would redistribute it in a
- *   public npm tarball. It is listed explicitly so the bundler keeps the
- *   `import("@deepseek-ai/dsh-client-connection/client")` in
- *   src/client/transport.ts as a RUNTIME import even in a dev checkout
- *   where a closure symlink makes the package resolvable at build time. At
- *   runtime the bin (bin/dsh-opentui.mjs) bridges resolution by symlinking
- *   the SDK from the global dsh closure into the package's node_modules.
+ *   public npm tarball. It is listed explicitly so any closure-compatible
+ *   runtime import remains external to the public bundle.
  * The output is gitignored (root .gitignore: dist/).
  */
 import { cpSync, readFileSync } from "node:fs"
@@ -56,10 +52,6 @@ const V2_LITERAL = '"../../tui-base/examples/v2-entry.tsx"'
 const NEEDLE = "await import(v2Specifier)"
 // v2-entry's loadShell(): five more computed specifiers, "../../" + "shell/src/client/"
 const SHELL_IMPORT_RE = /import\(SHELL \+ "([^"]+)"\)/g
-// lifecycle.ts loadRealMint(): `dynamicImport(specifier)` wrapper defeats
-// tsc until cookie-mint.ts lands — under the bundler the wrapped import
-// stays a computed runtime import and breaks in the bundle.
-const MINT_NEEDLE = "await dynamicImport(specifier)"
 // spin-attention.ts loadJevCore(): the jev-optional probe holds its
 // specifier in a variable (a runtime capability probe resolved from the
 // profile node_modules, not a compile-time dependency) — under the bundler
@@ -116,26 +108,6 @@ const result = await Bun.build({
             )
           }
           return { contents: rewritten, loader: "tsx" }
-        })
-        // lifecycle.ts: pin loadRealMint() to the (existing) cookie-mint
-        // module — the dynamicImport-wrapper idiom cannot be statically
-        // resolved by the bundler. Both loop specifiers collapse to the one
-        // literal; the first iteration wins, the second is dead.
-        build.onLoad({ filter: /client\/lifecycle\.ts$/ }, (args) => {
-          const src = readFileSync(args.path, "utf8")
-          if (!src.includes(MINT_NEEDLE)) {
-            throw new Error(
-              `[build-client] lifecycle.ts no longer contains "${MINT_NEEDLE}" — the cookie-mint dynamic-import shape changed, update this rewrite`,
-            )
-          }
-          // drop the now-dead wrapper line too (bun keeps unused vars, and
-          // the leak guard below must not see its import(specifier))
-          return {
-            contents: src
-              .replace(MINT_NEEDLE, 'await import("./cookie-mint.ts")')
-              .replace(/const dynamicImport = \(specifier: string\): Promise<unknown> => import\(specifier\)\n/, ""),
-            loader: "ts",
-          }
         })
         // spin-attention.ts: pin loadJevCore() to the literal jev specifier —
         // the variable-held probe import cannot be statically resolved by the

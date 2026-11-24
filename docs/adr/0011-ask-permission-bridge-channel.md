@@ -25,7 +25,7 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 - **D3 — 5 帧命名空间**：`ask.request` / `ask.cancel` / `ask.pending` / `ask.settled` / `ask.response`。帧名沿用 bridge 的 `turn.<verb>` 点分小写风格（`packages/bridge/src/index.ts:629,635,699,708,770`），不沿用宿主 `$events` 的斜杠风格（`approval/request`，`packages/shell/src/client/remote-waterfall.ts:1-35`）。
 - **D4 — first-wins 结算**：同一 ask 恰好结算一次，第二次应答一律拒绝，不改状态。
 - **D5 — turn 结束强制清场**：turn abort / 终态 / 会话 close / replace 时把所有 pending ask 一次性 cancel，迟到应答不得改写已终态 ask。
-- **D6 — 显式 fail-closed**：无 provider / 无服务 / 应答异常 / 超时一律落 `unavailable`（与宿主契约一致，`packages/shell/src/client/remote-waterfall.ts:42`、`packages/shell/src/client/remote-host-session.ts:2702-2708`），不在 UI 静默吞掉。
+- **D6 — 显式 fail-closed**：无 provider / 无服务 / 应答异常 / 超时一律落 `unavailable`（与宿主契约一致，`packages/shell/src/client/remote-waterfall.ts:42`、历史 HTTP session facade），不在 UI 静默吞掉。
 - **D7 — 决策进 journal + 'always' 走会话级摘要**：每次结算写 journal；`behavior:'always'` 的效果以会话级权限摘要承载，compaction 清事件但不清效果。
 
 ## 3. 契约（Contract）

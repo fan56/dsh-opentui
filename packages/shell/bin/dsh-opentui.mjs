@@ -415,9 +415,8 @@ function migrateLegacyPreferences() {
 }
 
 // --- 5. dsh-client-connection resolution guarantee --------------------------
-// The client bundle imports "@deepseek-ai/dsh-client-connection/client" at
-// runtime (packages/shell/src/client/transport.ts). That SDK is NOT on the
-// public npm registry — it ships only inside a globally-installed dsh's own
+// The client bundle historically imported "@deepseek-ai/dsh-client-connection/client"
+// at runtime. That SDK is NOT on the public npm registry — it ships only inside a globally-installed dsh's own
 // node_modules closure, and it must NEVER be bundled into this public
 // package (that would redistribute DeepSeek private code). A plain npm
 // global install of this package does not make the closure reachable: module

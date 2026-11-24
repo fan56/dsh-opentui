@@ -65,7 +65,7 @@ mock-llm.mjs phase=btw（一次性整段答案，mock-llm.mjs:346-356）
 → host 守护进程（外部 dsh，不在本仓）翻成 session/follow 帧
 → askBtw 内联 pump（packages/shell/src/client/remote-btw.ts:106-150）
    text-delta → out 累加(:124-131)；event turn/end → finish(:134-145)；onEnd/onFailed → finish(undefined)(:147-148)
-→ RemoteHostSession.btwAsk（packages/shell/src/client/remote-host-session.ts:1742-1779）
+→ HTTP session facade.btwAsk（retired HTTP session facade module:1742-1779）
 → session-seam-adapter.ts:415-417（纯透传）
 → BtwController.#start/#settle（packages/tui-base/src/routes/session/btw-overlay.tsx:117-144）
    onDelta → run signal；resolve → #settle → last signal → 队列头 #start(next)
@@ -89,7 +89,7 @@ mock-llm.mjs phase=btw（一次性整段答案，mock-llm.mjs:346-356）
 机制：`remote-btw.ts` 的 pump 对**任何**顶层 `turn/end` 帧或 `onEnd/onFailed` 都 `finish(undefined)` → 以**当时**的 `out`（可为 ""）resolve（:106-150）。Q2 复用 Q1 的 throwaway session（`previousSessionId`，:47,70,85），若 host 在 attach 后补发旧事件帧或流提前 end/失败，Q2 以 "" 结算 → `last.answer=""` → 徽章画、正文空，**症状完全一致**。单测也证明"零 chunk + turn/end ⇒ 空 answer"（remote-btw-restart.test.ts:110-114 `expect(await next).toBe("")`）。
 排除/削弱的证据：
 - 确定性变体被排除：协议文档 `remote-follow.ts:5-8`——durable 前缀（含旧 turn/end）装在**开头 snapshot 帧内**，而 askBtw 的 pump 只认 `assistant-stream`/`event` 顶层帧、忽略 snapshot；主会话 follow 明确注释"snapshot 内 turn/end 是历史，不结算 live await"（remote-follow.ts:513-514）。
-- 并发 busy 守卫不会打断排队提升：`#btwBusy` 的 `finally` 在 controller `.then` 前跑（remote-host-session.ts:1749,1777-1779 + promise 语义）。
+- 并发 busy 守卫不会打断排队提升：`#btwBusy` 的 `finally` 在 controller `.then` 前跑（retired HTTP session facade module:1749,1777-1779 + promise 语义）。
 - 实测：本机只读跑数据层单测 `bun test packages/tui-base/test/btw-overlay.test.ts packages/shell/test/remote-btw-restart.test.ts` → **22 pass / 0 fail**（含二次提问复用 session、turn 错误、空流路径）。
 - 无法排除的部分：onEnd/onFailed 早到、prompt 拒绝（"error: …" 正文同样会被场景记为 GAP，因为 `wait_answer_body` 只 grep 标记串）这类**非确定**竞态，需要真机画面/trace 才能区分。
 

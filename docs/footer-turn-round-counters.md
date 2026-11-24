@@ -22,18 +22,17 @@ passed as `messages: remoteInfo()?.messageCount` in
   documented at `session-seam-adapter.ts:808-813` and the notice set at `:801`.
 - Text-less user records produce no row (`remote-session-ops.ts:93`: `if (text)`).
 - One nominal turn = one `turn()` call = one `session/prompt` with `mode:"queue"`
-  (`packages/shell/src/client/remote-host-session.ts:659-703`, RPC at `:681-688`),
-  which yields one such `user/message` event → one `user` row. So the mapping is
-  1:1 in the nominal path.
+  (historical HTTP session facade, now retired), which yields one such
+  `user/message` event → one `user` row. So the mapping is 1:1 in the nominal path.
 - `SeamSessionInfo.turnCount` is a DIFFERENT counter: `#turns`, incremented per
-  client `turn()` call (`remote-host-session.ts:433,665`; exposed at `:920-949`),
-  documented as "User turns this facade drove since attach"
+  client `turn()` call (historical HTTP session facade, now retired; exposed
+  through its session info surface), documented as "User turns this facade drove since attach"
   (`packages/tui-base/src/seams/session.ts:268`). It is client-local, not durable,
   and does not include resumed history — it is NOT the footer's source today.
 
 ### Exceptions and whether they inflate the count
 - **steer** — `session/prompt` with `mode:"steer"` carrying user content
-  (`remote-host-session.ts:705-719`). Whether the host journals that steer text as
+  (`legacy HTTP session facade:705-719`). Whether the host journals that steer text as
   a `user/message` with `source.kind:"user"` is **UNKNOWN from this repo** (the
   host is an external binary; no `host-session.ts` source is present — see
   `find . -name host-session.ts` → empty). If it does, it inflates the `user`-row
@@ -44,7 +43,7 @@ passed as `messages: remoteInfo()?.messageCount` in
   turn end", takeover-table row 18 in `.proof/025-w3-2/01-legacy-retirement/`).
   Neither says anything durable about steer journaling.
 - **queued message** — the prompt queue is client-side in ShellHost
-  (`remote-host-session.ts:9-12`); each queued send is another real `turn()` →
+  (`legacy HTTP session facade:9-12`); each queued send is another real `turn()` →
   another genuine user turn. Not an inflation (it is a real turn).
 - **fork** — `forkSession` (`session-seam-adapter.ts:204-206`) creates a session
   from a seq prefix; the forked journal inherits that prefix's `user` rows, so the
@@ -64,7 +63,7 @@ are skipped. It is strictly better than the client-local `turnCount`.
 
 ## 2. ROUND — is any per-session round counter available?
 
-- **Host facade `sessionInfo()`** (`remote-host-session.ts:920-949`) returns
+- **Host facade `sessionInfo()`** (`legacy HTTP session facade:920-949`) returns
   `sessionId, model, turnCount, tokensIn, tokensOut, cacheRead, cacheWrite,
   lastTurnTps, sessionAvgTps, contextTokens, contextWindow`. **No round field.**
 - **Seam type `SeamSessionInfo`** (`packages/tui-base/src/seams/session.ts:262-290`):
@@ -83,7 +82,7 @@ are skipped. It is strictly better than the client-local `turnCount`.
 - **Assistant rows carry no round/tool-loop metadata**: the mapper keeps only
   text (`remote-session-ops.ts:95-97`), and the seam event projection emits
   `message.part.updated` with text only (`session-seam-adapter.ts:826-835`).
-- **stats/tps sources** — `lastTurnStats` (`remote-host-session.ts:387`),
+- **stats/tps sources** — `lastTurnStats` (`legacy HTTP session facade:387`),
   `lastTurnTps`/`sessionAvgTps` (`:941-945`), `usageSummary()` prints `turns`
   only (`:951-965`). These are per-turn decode rates, not round counters.
 
@@ -102,7 +101,7 @@ field), because the host's `step` is on live frames only and is unconsumed.
   truthful**, because text-less tool-only assistant rounds are dropped
   (`remote-session-ops.ts:96-97` keeps a row only `if (text)`). It undercounts.
 - **Count `assistant/message` durable events** (via the journal hook
-  `onJournalRecord` at `remote-host-session.ts:642-647`, or a journal read through
+  `onJournalRecord` at `legacy HTTP session facade:642-647`, or a journal read through
   `sessionJournal` at `session-seam-adapter.ts:195-197`): **truthful** in this
   data model (one assembled message = one attempt/round; subagent precedent above)
   and needs only client-side plumbing, no host change. This is the recommendation.
@@ -136,7 +135,7 @@ field), because the host's `step` is on live frames only and is unconsumed.
     `onSessionEvent` is dead exactly mid-turn.
 - Per-round signals exist on the wire but are unconsumed: assistant stream
   `step` (`remote-follow.ts:123-129`, parsed at `:432-436`) and per-request `usage`
-  chunks (`onUsage` at `remote-host-session.ts:2490-2502`). Piggybacking either
+  chunks (`onUsage` at `legacy HTTP session facade:2490-2502`). Piggybacking either
   requires new client plumbing, and `step` is the only true per-round index.
 
 **Verdict (4):** yes — a sessionInfo-sourced rounds number updates only at turn

@@ -25,7 +25,7 @@
 
 8. **`HOST_PEER_RANGE='>=0.2.2-rc.3 <0.3.0'` 只服务 inproc**：注入 bridge 的 peerDependencies、provision 启动前 fail-fast gate、握手期 host 校验，并写 profile 内 `compatibility.json` 精确版本豁免。老 `opentui` profile 不走此窗口校验，也没有该文件。（`packages/shell/scripts/lib/host-compat.mjs:23,32,35,42,103-114,203-224`；`scripts/build-bridge.mjs:38,103`；`provision-inproc-profile.mjs:129-135,1215-1261`；`packages/shell/src/client/seam-bootstrap.ts:35-37,176-179`）
 
-9. **只停 provision、不删目录时，`~/.dsh/profiles/opentui` 仍被大量读写**：客户端本地配置面（settings/config/presets/login）读写其 `cordis.patch.yml`/`config.json`/`provider-keys.json`；HTTP host 预启与 stale-kill 仍按 `--profile opentui` 匹配；launcher 的一次性迁移仍写其 `config.json`；e2e/verify 脚本仍以它为 seeded profile。（`packages/shell/src/client/bridge-session-seam.ts:2271-2290,3794-3805`；`local-config-faces.ts:235,333,498-499,608-609`；`bin/dsh-opentui.mjs:272,324-401`；`bin/lib/launcher.mjs:42,433-466`；`scripts/e2e-sweep.mjs:49,74,94-95`）
+9. **只停 provision、不删目录时，`~/.dsh/profiles/opentui` 仍被大量读写**：客户端本地配置面（settings/config/presets/login）读写其 `cordis.patch.yml`/`config.json`/`provider-keys.json`；HTTP host 预启与 stale-kill 仍按 `--profile opentui` 匹配；launcher 的一次性迁移仍写其 `config.json`；e2e/verify 脚本仍以它为 seeded profile。（`packages/shell/src/client/bridge-session-seam.ts:2271-2290,3794-3805`；`local-config-faces.ts:235,333,498-499,608-609`；`bin/dsh-opentui.mjs:272,324-401`；`bin/lib/launcher.mjs:42,433-466`；`legacy command-surface sweep (retired):49,74,94-95`）
 
 10. **`install-profile.mjs` 是退役的 plugin-mode 死代码**：它建的是第三个 profile `dsh-opentui`（不是 `opentui`/`opentui-inproc`），且 import 的 `./solid-js-pin.mjs` 在仓库中已不存在，无任何调用方。（`packages/shell/scripts/install-profile.mjs:3-5,25,34`；全仓仅 `provision-plan.mjs:607` 注释提及被退役的 solid-js-pin）
 
@@ -61,8 +61,8 @@
 | `provision-inproc-profile.mjs` | 无（开头注释明确 "The `opentui` profile path is otherwise untouched"） | 全部 8 步 | `:6-11,92-95,147,1399-1499` |
 | `upgrade.mjs` | 升级受管插件 pin、写 override、备份/回滚、WARN；`PROFILE` 取自 provision-plan | 无 | `:55-61,84-102,732-870,972,1133` |
 | `install-profile.mjs` | 无（建第三个 profile `dsh-opentui`，死代码） | 无 | `:3-5,25,34` |
-| `e2e-client.mjs` | 只读预检存在性 + 按 `dsh --profile opentui --no-open` 找 host pid | 无 | `:96,114,166-172` |
-| `e2e-sweep.mjs` | 从真实 home 拷贝 `profiles/opentui` 到 scratch（不写真实 profile）；真实目录不存在则 skip | 在 scratch 中链接 bridge | `:32,49,74,94-95` |
+| `legacy client-topology gate (retired).mjs` | 只读预检存在性 + 按 `dsh --profile opentui --no-open` 找 host pid | 无 | `:96,114,166-172` |
+| `legacy command-surface sweep (retired).mjs` | 从真实 home 拷贝 `profiles/opentui` 到 scratch（不写真实 profile）；真实目录不存在则 skip | 在 scratch 中链接 bridge | `:32,49,74,94-95` |
 | `idle-reaper.mjs` | 只写 `<dshHome>/opentui-host.idle.log`，不写 profile 目录 | 无 | `:27,113` |
 | `pack-meta.mjs` | 无（仅拷贝 LICENSE/NOTICE/README/CHANGELOG） | 无 | 文件全文 |
 | `lib/provision-plan.mjs` | 纯逻辑：`PROFILE='opentui'`、12 插件+pin、tier、patch 行定义、override 规则、WARN 文案 | 无 | `:15-19,29-121,352-403,720-885` |
@@ -89,7 +89,7 @@
 
 | 类型 | 位置（文件:行） |
 |---|---|
-| 老 profile 名常量 | `provision-plan.mjs:15`、`bin/lib/launcher.mjs:42`、`bin/dsh-opentui.mjs:272,505`、`scripts/e2e-client.mjs:96`、`scripts/e2e-sweep.mjs:49`、`src/client/lifecycle.ts:91`（`DEFAULT_PROFILE`）、`src/client/host-launch.ts:69`（`DEFAULT_LAUNCH_PROFILE`）、`src/client/safe-kill.ts:31`（`HOST_PROFILE`）、`src/client/client-lifecycle.ts:393,557,657`、`src/client/remote-restart.ts:165`、`src/client/watchdog-cli.ts:25`、`src/client/remote-host-session.ts:547`、`scripts/verify-sk-keymap-ans.mjs:31`、`scripts/verify-s1-model-ans.mjs:20`、`scripts/test-tier.mjs:22` |
+| 老 profile 名常量 | `provision-plan.mjs:15`、`bin/lib/launcher.mjs:42`、`bin/dsh-opentui.mjs:272,505`、`legacy client-topology gate (retired):96`、`legacy command-surface sweep (retired):49`、`legacy HTTP lifecycle:91`（`DEFAULT_PROFILE`）、`src/client/host-launch.ts:69`（`DEFAULT_LAUNCH_PROFILE`）、`src/client/safe-kill.ts:31`（`HOST_PROFILE`）、`src/client/client-lifecycle.ts:393,557,657`、`src/client/remote-restart.ts:165`、`src/client/watchdog-cli.ts:25`、`legacy HTTP session facade:547`、`scripts/verify-sk-keymap-ans.mjs:31`、`scripts/verify-s1-model-ans.mjs:20`、`scripts/test-tier.mjs:22` |
 | 新 profile 名常量 | `provision-inproc-profile.mjs:147`、`src/client/bridge-transport.ts:71,188`（默认 spawn `dsh --profile opentui-inproc`） |
 | 版本 pin | 老 profile 全部插件 pin 在 `provision-plan.mjs:29-102`（`PLUGIN_SET[].version`）；override 抬升 `provision-plan.mjs:392-403`；inproc 不 pin 插件版本（companion 走 `npm view dist-tags latest`：`inproc-companions.mjs:199-213`），bridge 自身身份/版本由 `bundle-fingerprint.json` 守护（`provision-inproc-profile.mjs:55-58,1490-1492`） |
 | 升级/降级 | 老 profile：`upgrade.mjs` 批量 `dsh plugin add` + override（只升不降：`provision-plan.mjs:368-371,392-403`）；inproc：`decideCompanionInstall` 明确 `downgrade → skip`（`inproc-companions.mjs:185-191`） |
@@ -119,11 +119,11 @@
 
 ### B. 关联必改（不删目录也会被读写，属"只停 provision"的遗漏面）
 
-6. **`packages/shell/src/client/lifecycle.ts:91,1078,1095`**（`DEFAULT_PROFILE='opentui'` + profileDir 校验/append-system patch 路径）、**`client-entry.tsx:258,266-267`**（`ensureV2Host({profile})` 仍用 DEFAULT_PROFILE 启动 HTTP host）、**`host-launch.ts:69,549`**（`--profile <profile> --no-open --port N`）、**`safe-kill.ts:31`**（`HOST_PROFILE='opentui'`）、**`client-lifecycle.ts:393,557,657`、`remote-restart.ts:165`、`watchdog-cli.ts:25`、`remote-host-session.ts:547`** 的默认 profile 值：若只删供给、不改这些，客户端会继续找一个不存在的 profile 目录并在很多情况下自动重建它（如 `remote-host-session.ts:1502` 的 `mkdirSync`）。
+6. **`retired HTTP lifecycle module:91,1078,1095`**（`DEFAULT_PROFILE='opentui'` + profileDir 校验/append-system patch 路径）、**`client-entry.tsx:258,266-267`**（`ensureV2Host({profile})` 仍用 DEFAULT_PROFILE 启动 HTTP host）、**`host-launch.ts:69,549`**（`--profile <profile> --no-open --port N`）、**`safe-kill.ts:31`**（`HOST_PROFILE='opentui'`）、**`client-lifecycle.ts:393,557,657`、`remote-restart.ts:165`、`watchdog-cli.ts:25`、`retired HTTP session facade module:547`** 的默认 profile 值：若只删供给、不改这些，客户端会继续找一个不存在的 profile 目录并在很多情况下自动重建它（如 `retired HTTP session facade module:1502` 的 `mkdirSync`）。
 
 7. **`packages/shell/src/client/bridge-session-seam.ts:2271-2290,3794-3805` + `local-config-faces.ts:235,333,498-499,608-609`**：bridge seam 下客户端仍以 `DEFAULT_PROFILE='opentui'` 读写 `cordis.patch.yml`/`config.json`/`provider-keys.json`。这是"删掉老 profile 目录后谁还写它"的核心答案，必须改成 inproc profile（或改到本地配置路径）才能真正不再触碰。注意 inproc provisioner 每轮都会整体重写 `cordis.patch.yml`（`provision-inproc-profile.mjs:1283-1322`），两边若指向同一文件会冲突——这正是当前刻意分离两个 profile 的原因（见 `local-config-faces.ts:7-17`）。
 
-8. **测试/e2e 与验证脚本**：`scripts/e2e-client.mjs:96,114`、`scripts/e2e-sweep.mjs:49,74,94-95`、`scripts/verify-sk-keymap-ans.mjs:31,45,57-64`、`scripts/verify-s1-model-ans.mjs:20,33`、`scripts/test-tier.mjs:22`、`scripts/real-client-gate.sh:125-126,181,224,231`（读/拷真实 `profiles/opentui`），需改用 inproc 或移除相关 preflight。
+8. **测试/e2e 与验证脚本**：`legacy client-topology gate (retired):96,114`、`legacy command-surface sweep (retired):49,74,94-95`、`scripts/verify-sk-keymap-ans.mjs:31,45,57-64`、`scripts/verify-s1-model-ans.mjs:20,33`、`scripts/test-tier.mjs:22`、`scripts/real-client-gate.sh:125-126,181,224,231`（读/拷真实 `profiles/opentui`），需改用 inproc 或移除相关 preflight。
 
 ### C. 仅文档/不阻塞但建议同步
 

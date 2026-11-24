@@ -861,7 +861,7 @@ function V2SessionPageBody(props: {
 	registerSubagentSteerFeedback((line: string) => void showNotice(line))
 	// /theme switch surface (batch F7b — client-face parity with
 	// host-entry-v2): live apply + persistence through the seam's
-	// configSave (RemoteHostSession.configSave routes `theme` to the
+	// configSave (the legacy facade's configSave routes `theme` to the
 	// profile config.json, host-face parity); boot reads the stored
 	// name via themeNameFromConfig (shared/boot-shared.ts). Shared by the
 	// /theme command hooks and the /settings panel (one face, no drift).

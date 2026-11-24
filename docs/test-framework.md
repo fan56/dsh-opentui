@@ -96,9 +96,9 @@ against it.
 ## 3. Shell render fixture API reference
 
 File: `packages/shell/test/shell-render-fixture.tsx`. It drives the REAL shell
-render path — `RemoteSessionSeam` over a fake `RemoteHostSession` → tui-base's
+render path — `RemoteSessionSeam` over a fake `legacy HTTP facade` → tui-base's
 seam-rows projection → `Transcript` + `WidgetsDock` mounted via `testRender`.
-The fake session doubles the `RemoteHostSession` surface at the same boundary
+The fake session doubles the `legacy HTTP facade` surface at the same boundary
 the protocol tests use, so no network and no SDK are involved (CI-stub safe).
 
 ### `createShellRenderFixture(options)`
@@ -275,7 +275,7 @@ defense, not something adjacent.
    `<topic>.test.ts`.
 3. **Write it** under the norms of §4. Reuse `shell-render-fixture.tsx` for
    anything that goes through the shell render path; write a local fake
-   `RemoteHostSession` (copy the shape from `key-routing-ft.test.tsx`) for
+   `legacy HTTP facade` (copy the shape from `key-routing-ft.test.tsx`) for
    other seams. No network, no SDK, no `~/.dsh` access in unit/ft tests.
 4. **Verify the tier assignment:** `bun run test:list` — the new file must
    appear in the tier you intended. A renderer test landing in `unit` means
@@ -337,7 +337,7 @@ CI has no global `dsh` install, so `packages/shell/node_modules/` has no
 `@deepseek-ai/dsh-client-connection` symlink (verified: the worktree
 node_modules carries only `cordis`, `dsh-llm`, `schemastery`). This does not
 affect the test suite because the transport lazy-imports the SDK and every
-test fakes at the `RemoteHostSession` boundary (`test/client-fakes.ts`, and
+test fakes at the `legacy HTTP facade` boundary (`test/client-fakes.ts`, and
 the fixture's fake session) — the SDK path is never loaded. The CI stub
 exists only so RESOLUTION succeeds; it throws if INVOKED.
 

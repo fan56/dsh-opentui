@@ -3,8 +3,8 @@
  *
  * T9: the HTTP host boot chain is gone. `main()` injects a StdioBridgeTransport
  * into tui-base's `bootClientV2`, which builds the BridgeSessionSeam directly.
- * The old `bootClient()` seam (ensureHost → ClientConnection →
- * RemoteHostSession → ShellHost) and its exported helpers were removed with
+ * The old `bootClient()` seam (legacy host bootstrap → legacy HTTP carrier →
+ * legacy HTTP facade → ShellHost) and its exported helpers were removed with
  * the HTTP modules they depended on.
  *
  * The v2 entry resolves at RUNTIME (non-literal dynamic import) on purpose:

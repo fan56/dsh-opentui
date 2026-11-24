@@ -1,5 +1,5 @@
 // RemoteSessionOps wave-2 cluster tests (audit rows 12–20, 26, 27): fake
-// ClientConnection + fake mux sockets deliver the wire frames
+// connection + fake mux sockets deliver the wire frames
 // (`session/list`, `session/page`, `session/search`, `session/rename`,
 // `session/fork`, `skills/list`, `commands/list|execute`) and assert the
 // HostSession-shaped results plus the client-side retention filter, the
@@ -14,7 +14,6 @@ import {
 	tailRowsFromEntries,
 	type RemoteJournalEntry,
 } from "../src/client/remote-session-ops.ts"
-import { ClientConnection } from "../src/client/transport.ts"
 import { FakeConnection, FakeMuxSocket, until, type RpcHandler } from "./client-fakes.ts"
 
 function makeOps(rpcHandler: RpcHandler): { connection: FakeConnection; ops: RemoteSessionOps; sockets: FakeMuxSocket[]; lastSocket(): FakeMuxSocket } {

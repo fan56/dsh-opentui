@@ -87,9 +87,9 @@
 | 宿主 `sanitizeProfile` | 启动恢复路径 | `renameSync` 把 patch 挪走（等价于删除） | 调用方负责排他（模块注释） | `dsh-app-boot/src/profile-sanitize.ts:15-40` |
 | 客户端 `LocalSettingsStore.mutate` | 宿主不可用时的 local-file 模式（seam 已拒绝，但代码仍在） | 行级写托管行 | 否 | `packages/shell/src/client/local-config-faces.ts:283-316` |
 | 客户端 `LocalLoginFace.registerRoute` | `/login` 注册 provider 路由 | 行级改 `llm-pi-ai.providers` | 否 | `local-config-faces.ts:668-708`；接线 `bridge-session-seam.ts:1585` |
-| 客户端 append-system sync | 客户端 lifecycle 启动 | **注释 marker 管理的 insert 块** | 否 | `packages/shell/src/client/append-system.ts:310-339,349-360,382`；调用 `lifecycle.ts:1103` |
+| 客户端 append-system sync | 客户端 lifecycle 启动 | **注释 marker 管理的 insert 块** | 否 | `packages/shell/src/client/append-system.ts:310-339,349-360,382`；调用 `legacy HTTP lifecycle:1103` |
 
-后三个客户端写手今天写的是 **`DEFAULT_PROFILE='opentui'`**（`lifecycle.ts:91`；`local-config-faces.ts:14`；`bridge-session-seam.ts:2273,2290`）。改名之后同一份代码会把目标切到 provisioner 的 inproc profile，所以 **R6 的退役必须先于改名提交**（P0-6）。
+后三个客户端写手今天写的是 **`DEFAULT_PROFILE='opentui'`**（`legacy HTTP lifecycle:91`；`local-config-faces.ts:14`；`bridge-session-seam.ts:2273,2290`）。改名之后同一份代码会把目标切到 provisioner 的 inproc profile，所以 **R6 的退役必须先于改名提交**（P0-6）。
 
 `plugin_manager.runPluginCommand` 本身不写 patch，但它在整段 pnpm 期间持 `package.json.lock`（`dsh-plugin-manager/src/operations.ts:602-608`；CLI `dsh plugin add` 的等待上限是 120s，`dsh/src/plugin.ts:89`）。
 
@@ -750,7 +750,7 @@ carry 前校验（在组内一起做，任一失败 → 整组回模板 + WARN `
 
 1. `LocalSettingsStore.mutate`（`local-config-faces.ts:287-316`）：local-file 模式必须**只读**。seam 已在 `bridge-session-seam.ts:1458-1483` 拒绝写；把 store 的 `mutate` 删除或改为返回 `ok:false`，杜绝未来接线。
 2. `LocalLoginFace.registerRoute`（`local-config-faces.ts:668-708`，接线 `bridge-session-seam.ts:1585`）：改为**不写托管 patch**。新 provider 的写入通道按 §2.4（宿主设置通道或 provisioner sidecar），不是 `registerRoute`。key 的落点按 D8-Q2。注意 `registerRoute` 今天写的是 `DEFAULT_PROFILE='opentui'`，改名后会切到 provisioner 的 patch，所以这条是改名前置条件。
-3. `append-system` 的 marker 管理块（`append-system.ts:310-339,349-360`，启动调用 `lifecycle.ts:1103`）：M3 在 inproc 从未生效；marker 方案正是 P0-1 否决的形态。整块退役（保留 `~/.dsh/APPEND_SYSTEM.md` 文件读取能力的不变）。
+3. `append-system` 的 marker 管理块（`append-system.ts:310-339,349-360`，启动调用 `legacy HTTP lifecycle:1103`）：M3 在 inproc 从未生效；marker 方案正是 P0-1 否决的形态。整块退役（保留 `~/.dsh/APPEND_SYSTEM.md` 文件读取能力的不变）。
 
 强制手段（不是安全边界，是代码不变量）：
 
@@ -774,7 +774,7 @@ carry 前校验（在组内一起做，任一失败 → 整组回模板 + WARN `
 ```
 bin/dsh-opentui.mjs
   ├─ spawnSync(provision-inproc-profile.mjs)   :310-319   ← 同步；非零 → 打印并 exit 1（已实现）
-  └─ ensureHost() / host pre-launch            :490-527   ← 之后宿主才读 patch
+  └─ legacy host bootstrap() / host pre-launch            :490-527   ← 之后宿主才读 patch
 --repair-bridge 路径                             :223-229   ← 先杀本 home 的 stale 实例，再 provision
 ```
 

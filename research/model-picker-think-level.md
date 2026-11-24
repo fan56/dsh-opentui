@@ -45,7 +45,7 @@
 - 显示侧硬编码表（仅展示词汇，不是数据源，改 UI 不动它们）：
   - `powerline.tsx:189` `EffortLevel = off|minimal|low|medium|high|xhigh|max`；:192 `DEFAULT_EFFORT = "high"`；:202-215 `isExplicitEffort`/`effectiveEffort`（显式词永不被拉回默认）；:233-239 `decideEffort`；:249-256 `defaultEffortToApply`；:616-628 `EFFORT_ICONS` + `effortIcon`（未知词落 `○`）。
 - **关键缺口**：seam 面 `modelCatalog(): Promise<SeamProviderModel[]>` 的行只有 `{providerID, modelID}`（`seams/session.ts:116-119`；adapter `session-seam-adapter.ts:330-339` 组装时**丢掉 ladder**）。`/model` 命令今天拿不到「任意一个模型」的档位——它只能拿到「当前 route」的（thinking.efforts）。
-- 已存在的「任意 route 的 ladder」读取：`seam.agents?.modelEfforts(providerID, modelID)`（`seams/session.ts:562`；adapter `session-seam-adapter.ts:480-481` → `remote-host-session.ts:1484-1489`，走缓存的 catalog；in-process 面契约 `shell-session.ts:81` 必有此方法）。/agents 面板正用它（`agents-panel.tsx:780,834`）。
+- 已存在的「任意 route 的 ladder」读取：`seam.agents?.modelEfforts(providerID, modelID)`（`seams/session.ts:562`；adapter `session-seam-adapter.ts:480-481` → `legacy HTTP session facade:1484-1489`，走缓存的 catalog；in-process 面契约 `shell-session.ts:81` 必有此方法）。/agents 面板正用它（`agents-panel.tsx:780,834`）。
 
 ### 1.4 可复用的两步选择先例（不要新造）
 
@@ -147,6 +147,6 @@
 
 ## 6. 未验证项
 
-- `effortsFor` 走 `#session.modelEfforts` 时对**in-process**（非 remote）模式的真实返回形状未实测（契约在 shell-session.ts:81，remote 实现在 remote-host-session.ts:1484-1489；in-process 宿主实现文件未逐行确认）。
+- `effortsFor` 走 `#session.modelEfforts` 时对**in-process**（非 remote）模式的真实返回形状未实测（契约在 shell-session.ts:81，remote 实现在 legacy HTTP session facade:1484-1489；in-process 宿主实现文件未逐行确认）。
 - catalog `defaultEffort` 在各 provider 的实际填充率（决定第 0 行描述能否稳定显示 `(model default: high)`）。
 - 无档位模型的实际占比（跳段路径的触发频率，只影响文案取舍，不影响正确性）。
