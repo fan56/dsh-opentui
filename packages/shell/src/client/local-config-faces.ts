@@ -33,7 +33,7 @@ import {
 	type ComposedAgentRow,
 } from "./remote-agent-profiles.ts"
 import { setAgentField } from "./remote-local-fs.ts"
-import { mergeConfig, workspaceConfigPath } from "./workspace-config.ts"
+import { mergeConfig, saveWorkspaceConfig, type ThemeMode, type WorkspaceOverlay } from "./workspace-config.ts"
 import type {
 	SeamAgentOfficialCaps,
 	SeamAgentRow,
@@ -90,6 +90,10 @@ const CONFIG_KEYS = [
 	// 025-w1a — /preset staged selection (next-session preset id). A plain
 	// scalar preference, same class as theme/lang; no secret crosses the seam.
 	"agentPreset",
+	// T9 (P0-2/P0-3): the one-shot skin migration marker + workspace-layer
+	// theme writes must survive the seam config face (they used to go through
+	// RemoteHostSession.configSave).
+	"skinMigration", "workspaceTheme", "workspaceThemeMode",
 ] as const
 const CONFIG_KEY_SET = new Set<string>(CONFIG_KEYS)
 
@@ -297,12 +301,12 @@ export class LocalSettingsStore {
 
 export class LocalConfigStore {
 	readonly #configPath: string
-	readonly #overlayPath: string
-	readonly #overlayCache: ReturnType<typeof loadWorkspaceConfigState>
+	readonly #workspaceDir: string
+	#overlayCache: WorkspaceOverlay
 
 	constructor(home: string, profile: string, workspaceDir: string) {
 		this.#configPath = join(home, "profiles", profile, "config.json")
-		this.#overlayPath = workspaceConfigPath(workspaceDir)
+		this.#workspaceDir = workspaceDir
 		this.#overlayCache = loadWorkspaceConfigState(workspaceDir)
 	}
 
@@ -316,10 +320,13 @@ export class LocalConfigStore {
 
 	configLoad(): Record<string, unknown> {
 		const base = this.#readProfile()
-		// Merge only for theme/model/cached overlay keys; the returned object
-		// carries only whitelisted config keys (oldfox §六.2/§六.3).
+		// Merge only for theme/model/overlay keys; the returned object carries
+		// only whitelisted config keys (oldfox §六.2/§六.3).
 		const merged = mergeConfig(
-			{ theme: typeof base.theme === "string" ? base.theme : undefined },
+			{
+				theme: typeof base.theme === "string" ? base.theme : undefined,
+				themeMode: asThemeMode(base.themeMode),
+			},
 			this.#overlayCache,
 			process.env as Record<string, string>,
 		)
@@ -335,35 +342,94 @@ export class LocalConfigStore {
 		return { ...(this.#overlayCache as Record<string, unknown>) }
 	}
 
+	/** T9 (P0-2): split writes by layer. `workspaceTheme`/`workspaceThemeMode`
+	 *  go to `<workspace>/.dsh/config.yml` via the frozen `saveWorkspaceConfig`
+	 *  (atomic 0600 + credential guard); everything else stays in profile
+	 *  config.json. The async overlay write updates the sync cache optimistically
+	 *  and reverts on failure (same pattern as RemoteHostSession.configSave). */
 	configSave(patch: Record<string, unknown>): Record<string, unknown> {
-		const current = this.#readProfile()
-		const next: Record<string, unknown> = {}
+		const overlayPatch: WorkspaceOverlay = {}
+		const rest: Record<string, unknown> = {}
 		for (const [key, value] of Object.entries(patch)) {
-			if (CONFIG_KEY_SET.has(key)) next[key] = value
+			if (!CONFIG_KEY_SET.has(key)) continue
+			if (key === "workspaceTheme") overlayPatch.theme = typeof value === "string" && value ? value : undefined
+			else if (key === "workspaceThemeMode") overlayPatch.themeMode = asThemeMode(value)
+			else rest[key] = value
 		}
-		if (Object.keys(next).length === 0) return this.configLoad()
-		const merged = { ...current, ...next }
-		atomicWrite(this.#configPath, JSON.stringify(merged, null, 2) + "\n")
+		if (Object.keys(overlayPatch).length > 0) {
+			const previous = this.#overlayCache
+			const next: WorkspaceOverlay = { ...previous, ...overlayPatch }
+			this.#overlayCache = next
+			void saveWorkspaceConfig(this.#workspaceDir, next).catch((error: unknown) => {
+				this.#overlayCache = previous
+				console.error("[local-config-faces] workspace config save failed:", error)
+			})
+		}
+		if (Object.keys(rest).length > 0) {
+			const merged = { ...this.#readProfile(), ...rest }
+			atomicWrite(this.#configPath, JSON.stringify(merged, null, 2) + "\n")
+		}
 		return this.configLoad()
 	}
 }
 
-/** Synchronous overlay snapshot (loadWorkspaceConfig is async; the config
- *  faces are sync). Reads the file directly with the same credential guard
- *  the async helper applies — overlay keys are theme/model only. */
-function loadWorkspaceConfigState(workspaceDir: string): Record<string, unknown> {
-	try {
-		const raw = JSON.parse(readFileSync(join(workspaceDir, ".dsh", "config.yml"), "utf8"))
-		return asRecord(raw)
-	} catch {
-		try {
-			const text = readFileSync(join(workspaceDir, ".dsh", "config.yml"), "utf8")
-			const out: Record<string, unknown> = {}
-			const m = /^\s*theme:\s*(.+)$/m.exec(text)
-			if (m) out.theme = parseScalar(m[1])
-			return out
-		} catch { return {} }
+function asThemeMode(value: unknown): ThemeMode | undefined {
+	return value === "dark" || value === "light" || value === "auto" ? value : undefined
+}
+
+/**
+ * Synchronous overlay snapshot (loadWorkspaceConfig is async; the config
+ * faces are sync). Reads the file directly, projection-limited to the three
+ * overlay fields so it can be handed to `saveWorkspaceConfig` (which rejects
+ * unknown keys). T9 (P0-3): YAML fallback parses `theme`, `themeMode` AND
+ * `model` — matching `workspace-config.ts:593-606`, so a boot-time seam
+ * configLoad no longer drops the workspace mode pin / model override.
+ */
+function loadWorkspaceConfigState(workspaceDir: string): WorkspaceOverlay {
+	let text: string
+	try { text = readFileSync(join(workspaceDir, ".dsh", "config.yml"), "utf8") } catch { return {} }
+	const out: WorkspaceOverlay = {}
+	const project = (raw: Record<string, unknown>): WorkspaceOverlay => {
+		const projected: WorkspaceOverlay = {}
+		if (typeof raw.theme === "string") projected.theme = raw.theme
+		const mode = asThemeMode(raw.themeMode)
+		if (mode !== undefined) projected.themeMode = mode
+		if (raw.model !== null && typeof raw.model === "object" && !Array.isArray(raw.model)) {
+			const prefs = raw.model as Record<string, unknown>
+			const model: { provider?: string; model?: string; reasoningEffort?: string } = {}
+			for (const field of ["provider", "model", "reasoningEffort"] as const) {
+				if (typeof prefs[field] === "string") model[field] = prefs[field] as string
+			}
+			if (model.provider !== undefined || model.model !== undefined || model.reasoningEffort !== undefined) {
+				projected.model = model
+			}
+		}
+		return projected
 	}
+	try {
+		return project(asRecord(JSON.parse(text)))
+	} catch { /* YAML fallback below */ }
+	const theme = /^\s*theme:\s*(.+)$/m.exec(text)
+	if (theme) {
+		const value = parseScalar(theme[1]!)
+		if (typeof value === "string") out.theme = value
+	}
+	const themeMode = /^\s*themeMode:\s*(.+)$/m.exec(text)
+	if (themeMode) out.themeMode = asThemeMode(parseScalar(themeMode[1]!))
+	const lines = text.split("\n")
+	const modelLine = lines.findIndex((line) => /^\s*model:\s*$/.test(line))
+	if (modelLine >= 0) {
+		const model: { provider?: string; model?: string; reasoningEffort?: string } = {}
+		for (let i = modelLine + 1; i < lines.length; i++) {
+			if (/^\S/.test(lines[i])) break // dedent to a top-level key
+			const field = /^\s{2}(provider|model|reasoningEffort):\s*(.+)$/.exec(lines[i])
+			if (!field) continue
+			const value = parseScalar(field[2]!)
+			if (typeof value === "string") model[field[1] as "provider" | "model" | "reasoningEffort"] = value
+		}
+		if (model.provider !== undefined || model.model !== undefined || model.reasoningEffort !== undefined) out.model = model
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

@@ -86,7 +86,7 @@ import { tokensPerSecond } from "../agent/loop.ts"
 // failure degrades (no mocks; every read/write touches the operator's files).
 import { LocalAgentsFace, LocalConfigStore, LocalLoginFace, LocalPresetFace, LocalSettingsStore } from "./local-config-faces.ts"
 import { resolveDshHome } from "./remote-local-fs.ts"
-import { DEFAULT_PROFILE } from "./lifecycle.ts"
+import { DEFAULT_PROFILE } from "./profile-constants.ts"
 // 025-w1a — /plugins phase-1 local install manifest (profile node_modules).
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"

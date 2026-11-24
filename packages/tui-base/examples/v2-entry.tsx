@@ -71,7 +71,6 @@ import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palet
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
 import { join } from "node:path"
-import { existsSync } from "node:fs"
 import { agentsHomeEnvWarning, discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SkillsPanel, openSkillsPanel } from "../src/routes/session/skills-panel"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
@@ -119,27 +118,18 @@ import {
 // transitive errors on top of the 58 budget) even behind this file's
 // ts-nocheck. Runtime-only, opaque to tsc.
 const SHELL = "../../" + "shell/src/client/"
-/** Locate the detached watchdog bundle across source / built layouts. */
-function resolveWatchdogScript(): string | null {
-	const candidates = [
-		join(import.meta.dir, "..", "watchdog.mjs"),
-		join(import.meta.dir, "..", "..", "shell", "dist", "watchdog.mjs"),
-		join(import.meta.dir, "..", "..", "..", "shell", "dist", "watchdog.mjs"),
-	]
-	for (const candidate of candidates) if (existsSync(candidate)) return candidate
-	return null
-}
+/** T9: only the seam bootstrap, the local config helpers, git probe and the
+ *  shared boot helpers remain. The HTTP host stack (lifecycle/client-lifecycle/
+ *  transport/remote-host-session) is gone — the stdio bridge is the sole host. */
 async function loadShell() {
-	const [shared, lifecycle, clifecycle, transport, rhs, git, seamBootstrap] = await Promise.all([
+	const [shared, rfs, git, seamBootstrap, appendSystem] = await Promise.all([
 		import(SHELL + "boot-shared.ts"),
-		import(SHELL + "lifecycle.ts"),
-		import(SHELL + "client-lifecycle.ts"),
-		import(SHELL + "transport.ts"),
-		import(SHELL + "remote-host-session.ts"),
+		import(SHELL + "remote-local-fs.ts"),
 		import(SHELL + "remote-git.ts"),
 		import(SHELL + "seam-bootstrap.ts"),
+		import(SHELL + "append-system.ts"),
 	])
-	return { shared, lifecycle, clifecycle, transport, rhs, git, seamBootstrap }
+	return { shared, rfs, git, seamBootstrap, appendSystem }
 }
 
 const overlays = new TurnOverlayController()
@@ -1588,10 +1578,10 @@ export interface ClientBootV2 {
 }
 
 /**
- * The v2 boot: ensureV2Host → ClientConnection → RemoteHostSession (host
- * client layer — label/config/lifecycle) → BridgeSessionSeam (sole session
- * seam) → the rebuilt view. Shutdown semantics are client-entry parity
- * (dispose session → release host ref → idle reaper hand-off).
+ * The v2 boot (T9): the injected stdio bridge is the ONLY host. The boot
+ * creates BridgeSessionSeam directly — no HTTP host, no registry, no
+ * heartbeat/watchdog/reaper. Shutdown disposes the seam and closes the
+ * bridge transport only (the bridge owns its child process lifecycle).
  */
 export async function bootClientV2(options: {
 	argv?: readonly string[]
@@ -1604,67 +1594,13 @@ export async function bootClientV2(options: {
 	/** Injected seam logger (inproc mode). */
 	bridgeCtx?: { logger: { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void } }
 } = {}): Promise<ClientBootV2> {
-	const { shared, lifecycle, clifecycle, transport, rhs, git, seamBootstrap } = await loadShell()
+	const { shared, rfs, git, seamBootstrap, appendSystem } = await loadShell()
 	const workspace = process.cwd()
-	const profile = lifecycle.DEFAULT_PROFILE
-	const idleExitMs = lifecycle.resolveIdleExitMs()
-	const idleExitSec = idleExitMs / 1000
-
-	shared.bootCallOrder.push("ensureHost")
-	// ADR-0009 (P0-1): attach through the v2 host-launch stack (v2 registry),
-	// never the legacy v1 ensureHost that overwrites the registry on adopt.
-	const host = await lifecycle.ensureV2Host({ profile, idleExitSec })
-	// ADR-0009 decision 6: register this client's OWN heartbeat as soon as the
-	// attach succeeded, refresh every ~3s, and start the detached all-crash
-	// watchdog. All I/O here is best-effort — a heartbeat failure must never
-	// block the TUI from booting.
-	let clientHeartbeat: ReturnType<typeof clifecycle.registerHeartbeat> | null = null
-	let heartbeatRegistered = false
-	try {
-		clientHeartbeat = clifecycle.registerHeartbeat(host.dshHome, { pid: process.pid, workspace })
-		clientHeartbeat.start()
-		heartbeatRegistered = true
-	} catch (error) {
-		console.error("[v2-entry] heartbeat registration failed:", error)
-	}
-	// P1-6: do NOT arm the all-crash watchdog when our own heartbeat was not
-	// registered — with no heartbeat file the watchdog would reclaim the host
-	// from under this still-live client after the TTL.
-	if (heartbeatRegistered) {
-		try {
-			const scriptPath = resolveWatchdogScript()
-			if (scriptPath) clifecycle.spawnWatchdog(host.dshHome, { scriptPath, profile })
-		} catch (error) {
-			console.error("[v2-entry] watchdog spawn failed:", error)
-		}
-	}
-	shared.bootCallOrder.push("connect")
-	const connection = new transport.ClientConnection({
-		authority: host.authority,
-		cookieHeader: host.cookieHeader,
-		// Surface the child's stderr tail if the first connection cannot be
-		// established (host died/wedged right after boot) instead of the SDK's
-		// silent infinite retry loop.
-		diagnostics: () => host.diagnostics(),
-	})
-	shared.bootCallOrder.push("createSession")
-	const session = new rhs.RemoteHostSession({
-		connection: connection as never,
-		cookieHeader: host.cookieHeader,
-		cwd: workspace,
-		workspaceDir: workspace,
-		dshHome: host.dshHome,
-		profile,
-	})
-	shared.bootCallOrder.push("session.start")
-	await session.start()
-	// Cold-boot label wait (client-entry parity): the powerline shows the
-	// real provider/model from the first paint when the catalog answers.
-	{
-		const deadline = Date.now() + shared.BOOT_LABEL_BUDGET_MS
-		while (session.label === "dsh-host" && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100))
-		}
+	const dshHome = rfs.resolveDshHome()
+	// APPEND_SYSTEM.md file seeding survives the T7/T9 patch-writer retirement:
+	// the bridge reads the file at runtime; a missing file is seeded once.
+	try { appendSystem.ensureAppendSystemFile(appendSystem.appendSystemPath(dshHome)) } catch (error) {
+		console.error("[v2] APPEND_SYSTEM.md seed failed:", error)
 	}
 
 	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
@@ -1776,7 +1712,7 @@ export async function bootClientV2(options: {
 	pendingAgentsHomeNotice = agentsHomeEnvWarning(undefined, agentsHomeConfig)
 	const skillRows = discoverSkills({
 		cwd: workspace,
-		dshHome: host.dshHome,
+		dshHome,
 		agentsHome: agentsHomeForSkills,
 	})
 	// /skills manager roots (gap C3): the panel manages the SAME pair of
@@ -1786,7 +1722,7 @@ export async function bootClientV2(options: {
 	// the one the host provider serves).
 	const skillsManagerRoots = {
 		source: join(agentsHomeForSkills, "skills"),
-		curated: join(host.dshHome, "skills"),
+		curated: join(dshHome, "skills"),
 	}
 	// One-shot skin migration (α skin layer, real precedence chain env >
 	// workspace > profile): a STORED legacy `theme` key (profile OR
@@ -1814,7 +1750,7 @@ export async function bootClientV2(options: {
 			const patch: Record<string, unknown> = { skinMigration: migration.skinMigration }
 			if (migration.layer === "workspace") patch.workspaceTheme = migration.theme
 			else patch.theme = migration.theme
-			await session.configSave(patch)
+			await seam.configSave(patch)
 			pendingMigrationNotice = migration.notice
 		} catch (error) {
 			console.error("[v2] skin migration persist failed (will retry next boot):", error)
@@ -1823,15 +1759,15 @@ export async function bootClientV2(options: {
 	// The mode-pin layer mirrors the theme's layer: workspace theme → the
 	// workspace slice; profile (or env) theme → the profile config.json.
 	themeModePatchKey = migration?.layer === "workspace" || (!envTheme && workspaceConfig.theme !== undefined) ? "workspaceThemeMode" : "themeMode"
-	const themeName = migration ? migration.theme : shared.themeNameFromConfig(session)
-	const themeModeLock = shared.themeModeFromConfig(session)
+	const themeName = migration ? migration.theme : shared.themeNameFromConfig(seam)
+	const themeModeLock = shared.themeModeFromConfig(seam)
 	// Skin wiring (contract §1 动效档位): replay the motion tier BEFORE the
 	// first paint — `DSH_OPENTUI_MOTION` (env) beats the persisted profile
 	// `motion` key (/motion), both beat the auto tier (reduced until the
 	// capability probe confirms truecolor; tmux/SSH stay reduced). e2e and
 	// screenshots force full through the env var.
 	setMotionTier(
-		resolveMotionPreference(process.env[shared.ENV_MOTION], shared.motionFromConfig(session)),
+		resolveMotionPreference(process.env[shared.ENV_MOTION], shared.motionFromConfig(seam)),
 	)
 	// Hint-bar persistence (footer-quickwins review): replay the persisted
 	// /hints selection (profile `footerHints` / `hintsLocale` keys — /motion
@@ -1857,37 +1793,15 @@ export async function bootClientV2(options: {
 	const shutdown = (): Promise<void> => {
 		shutdownPromise ??= (async () => {
 			shared.bootCallOrder.push("shutdown")
-			try {
-				await Promise.race([session.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
-			} catch {
-				/* dispose is best-effort on the quit path */
-			}
-			// Dispose the bridge seam and close its stdio child FIRST.
-			// Best-effort — a dead bridge must not block quit.
+			// T9: the bridge owns its child-process lifecycle. Only dispose the
+			// seam and close the stdio transport — no heartbeat, watchdog,
+			// last-one grace, host.release() or idle reaper.
 			try {
 				await Promise.race([seam.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
 			} catch {
-				/* best-effort */
+				/* best-effort — a dead bridge must not block quit */
 			}
 			options.bridgeTransport?.close?.()
-			// ADR-0009 decision 6: client-side bridge is closed before we drop
-			// our own heartbeat and let the last-one logic decide (after the grace
-			// window) whether to SIGTERM the host.
-			if (clientHeartbeat) {
-				clientHeartbeat.stop()
-				clientHeartbeat.remove()
-				try {
-					await clifecycle.lastOneGracefulShutdown(host.dshHome, { profile, hooks: clifecycle.psKillHooks })
-				} catch (error) {
-					console.error("[v2-entry] last-one shutdown failed:", error)
-				}
-			}
-			// Grace-window parity (client-entry): release — NOT dispose — the
-			// host, then hand the idle-exit to the detached reaper. ADR-0009:
-			// v2-backed hosts are governed by last-one grace + watchdog only;
-			// never arm the legacy idle-5s reaper on the production path.
-			host.release()
-			if (host.v2Managed !== true && host.refCount === 0 && idleExitMs > 0) shared.spawnIdleReaper(host, idleExitMs)
 		})()
 		return shutdownPromise
 	}

@@ -11,9 +11,6 @@
 
 /** Force-exit grace: dispose + release must never hang the quit path. */
 export const SHUTDOWN_GRACE_MS = 2_500
-/** How long the boot waits for the cold-boot model label before painting. */
-export const BOOT_LABEL_BUDGET_MS = 4_000
-
 /** Order the boot ran in (tests assert start-before-render etc.). */
 export const bootCallOrder: string[] = []
 
@@ -167,12 +164,11 @@ export function spawnIdleReaper(
 import { join } from "node:path"
 import { appendFileSync, existsSync } from "node:fs"
 import { spawn } from "node:child_process"
-import type { ShellSessionSurface } from "./shell-session.ts"
 import { ENV_THEME } from "./workspace-config.ts"
 
 /** The theme ShellHost boots with: configLoad().theme (post-start, so the
  * workspace overlay cache is warm); ShellHost keeps env precedence. */
-export function themeNameFromConfig(session: ShellSessionSurface): string | undefined {
+export function themeNameFromConfig(session: { configLoad(): Record<string, unknown> }): string | undefined {
 	try {
 		const theme = session.configLoad().theme
 		return typeof theme === "string" && theme ? theme : undefined
@@ -183,7 +179,7 @@ export function themeNameFromConfig(session: ShellSessionSurface): string | unde
 
 /** The pinned theme mode (α skin layer): configLoad().themeMode. Auto
  * (undefined) follows the terminal; only dark/light pin. */
-export function themeModeFromConfig(session: ShellSessionSurface): "dark" | "light" | undefined {
+export function themeModeFromConfig(session: { configLoad(): Record<string, unknown> }): "dark" | "light" | undefined {
 	try {
 		const mode = session.configLoad().themeMode
 		return mode === "dark" || mode === "light" ? mode : undefined
@@ -200,7 +196,7 @@ export const ENV_MOTION = "DSH_OPENTUI_MOTION"
 /** The persisted motion tier (/motion writes the profile `motion` key):
  * "full" | "reduced" | "off" | "auto" (auto = undefined here — follow the
  * auto tier); anything else falls through to the auto tier. */
-export function motionFromConfig(session: ShellSessionSurface): string | undefined {
+export function motionFromConfig(session: { configLoad(): Record<string, unknown> }): string | undefined {
 	try {
 		const motion = session.configLoad().motion
 		return typeof motion === "string" && motion ? motion : undefined
