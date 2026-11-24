@@ -211,7 +211,7 @@ const killSession = (session) => tmux('kill-session', '-t', session)
 /** Abort the running turn through the U6 stop contract (turn-cancel.tsx):
  * the first Esc only ARMS ("Press Esc again to stop"), a second Esc inside
  * the double-press window opens the `Stop everything?` confirm, and Enter
- * confirms it (the confirm card's active row defaults to Stop). A bare Esc
+ * confirms it (the confirm card's active row defaults to Yes). A bare Esc
  * or two Escapes without the confirm leave the turn running — and a left-open
  * confirm dialog breaks every later step. The settle predicate reads the
  * HINT row, not the editor: the composer paints its placeholder while busy. */

@@ -916,9 +916,9 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 
 	/**
 	 * Esc at the root opens the exit confirmation (kit confirm layer,
-	 * destructive => focus starts on 返回, the safe side). Nothing is pending
+	 * destructive => focus starts on 否, the safe side). Nothing is pending
 	 * here: every edit landed the moment it was chosen, so the dialog is a
-	 * courtesy, not a discard prompt. Only an explicit 确认退出 closes the panel.
+	 * courtesy, not a discard prompt. Only an explicit 是 closes the panel.
 	 */
 	async function requestExitConfirm() {
 		if (confirmingExit) return

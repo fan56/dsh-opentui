@@ -10,7 +10,7 @@
  * Semantics under test (instant-save model): choosing a value writes it
  * immediately through the production writers; there is no draft buffer, no
  * 确定 control and no Ctrl+S binding; Esc walks editor → section → 退出设置？
- * confirmation (default focus 取消).
+ * confirmation (default focus 否).
  */
 import { afterAll, beforeEach, describe, expect, test, beforeAll 
 } from "bun:test"
@@ -921,14 +921,14 @@ describe("settings modal: real keys", () => {
 			expect(frame()).toContain("Exit settings?")
 			expect(settingsPanelOpen()).toBe(true)
 
-			// Default focus is 取消: Esc cancels, panel stays.
+			// Default focus is 否: Esc cancels, panel stays.
 			setup.mockInput.pressEscape()
 			await settle(setup)
 			expect(frame()).not.toContain("Exit settings?")
 			expect(frame()).toContain("↑↓ select row")
 			expect(settingsPanelOpen()).toBe(true)
 
-			// Reopen and Enter: focus is still 取消, so Enter also cancels.
+			// Reopen and Enter: focus is still 否, so Enter also cancels.
 			setup.mockInput.pressEscape()
 			await settle(setup)
 			expect(frame()).toContain("Exit settings?")
@@ -937,7 +937,7 @@ describe("settings modal: real keys", () => {
 			expect(frame()).not.toContain("Exit settings?")
 			expect(settingsPanelOpen()).toBe(true)
 
-			// Tab moves the focus to 退出; Enter confirms and closes.
+			// Tab moves the focus to 是; Enter confirms and closes.
 			setup.mockInput.pressEscape()
 			await settle(setup)
 			expect(frame()).toContain("Exit settings?")
@@ -949,6 +949,54 @@ describe("settings modal: real keys", () => {
 			expect(closed).toHaveLength(1)
 		} finally {
 			await setup.dispose()
+		}
+	})
+
+	test("zh-CN: the exit confirmation buttons read 是 / 否", async () => {
+		setLanguage("zh-CN")
+		try {
+			const { setup } = await mount({})
+			try {
+				setup.mockInput.pressEscape() // browse → exit confirm
+				await settle(setup)
+				// Raw frame: the `frame()` helper flattens newlines, but the two
+				// buttons share one row — find that row, then compare within it.
+				const raw = setup.captureCharFrame()
+				expect(raw).toContain("退出设置？")
+				const row = raw.split("\n").find((line) => line.includes("是"))
+				if (row === undefined) throw new Error(`no button row with 是 in frame:\n${raw}`)
+				expect(row).toContain("否")
+				expect(row.indexOf("否")).toBeLessThan(row.indexOf("是"))
+			} finally {
+				await setup.dispose()
+			}
+		} finally {
+			setLanguage("en")
+		}
+	})
+
+	test("en: the exit confirmation buttons read Yes / No", async () => {
+		setLanguage("en")
+		try {
+			const { setup, frame } = await mount({})
+			try {
+				setup.mockInput.pressEscape() // browse → exit confirm
+				await settle(setup)
+				// Raw frame: the `frame()` helper flattens newlines, but the two
+				// buttons share one row — find that row, then compare within it.
+				const raw = setup.captureCharFrame()
+				expect(raw).toContain("Exit settings?")
+				const row = raw.split("\n").find((line) => line.includes("Yes"))
+				if (row === undefined) throw new Error(`no button row with Yes in frame:\n${raw}`)
+				expect(row).toContain("No")
+				expect(row.indexOf("No")).toBeLessThan(row.indexOf("Yes"))
+				expect(frame()).toContain("Yes")
+				expect(frame()).toContain("No")
+			} finally {
+				await setup.dispose()
+			}
+		} finally {
+			setLanguage("en")
 		}
 	})
 

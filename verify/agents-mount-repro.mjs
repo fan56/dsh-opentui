@@ -746,7 +746,7 @@ try {
   const waitSettingsClosed = (timeout = 15_000) => waitPane(SESS, (out) => !settingsUp(out) && idle(out), timeout)
   /**
    * Close the modal under the instant-save contract: Esc at the browse root
-   * opens the `退出设置？` confirm with the focus on 取消, Tab moves it to 退出,
+   * opens the `退出设置？` confirm with the focus on 否, Tab moves it to 是,
    * and Enter confirms. Nothing is pending (every edit landed on choice), so
    * there is no commit key and no other close path.
    */
@@ -755,7 +755,7 @@ try {
     // in a rows sub-pane, so ONE Escape only returns to the browse root — it
     // does NOT open the exit confirm. Parking there is the cascade that poisoned
     // pane-focus and palette. Step Escape until the confirm appears (or the
-    // modal is already gone), then Tab to 退出 + Enter. Check after each press:
+    // modal is already gone), then Tab to 是 + Enter. Check after each press:
     // another Escape at the confirm would cancel it.
     let confirm = { ok: false, out: capture(SESS) }
     for (let step = 0; step < 4 && !confirm.ok; step++) {
@@ -987,13 +987,13 @@ try {
     autoSaved.ok && autoConfig.motion === motionFirst.current && autoClose.ok,
     [`motion: ${JSON.stringify(autoConfig.motion)}`, `steps from ${motionBack.current}: ${restoreSteps}`])
 
-  // Browse root Esc opens the exit confirm; Tab + Enter on 退出 closes.
+  // Browse root Esc opens the exit confirm; Tab + Enter on 是 closes.
   await openSettings()
   const settingsClosed = await closeSettings(8_000)
   snap('24-settings-closed')
-  record('/settings Esc opens the exit confirm and 退出 closes the modal',
+  record('/settings Esc opens the exit confirm and 是 closes the modal',
     settingsClosed.ok && settingsClosed.confirmOk,
-    [settingsClosed.confirmOk ? `confirm: ${SETTINGS_EXIT_TITLE} (取消/退出)` : 'exit confirm missing',
+    [settingsClosed.confirmOk ? `confirm: ${SETTINGS_EXIT_TITLE} (否/是)` : 'exit confirm missing',
       settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
 
   // ---------------- 1c. pane focus + transcript scroll (focus batch) ----------------

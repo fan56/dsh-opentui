@@ -450,7 +450,7 @@ scenario('settings', '/settings writes a local preference to config.json and rev
   ctx.expect('config.json reverted', reverted.ok, `motion = "${originalMerged}"`, reverted.ok ? originalMerged : JSON.stringify(reverted.value), capture())
 
   // close the modal so the composer owns the keys again for /quit: Esc opens
-  // the exit confirmation (focus starts on 返回), ←→ cycles to 确认退出
+  // the exit confirmation (focus starts on 否), ←→ cycles to 是
   sendKeys('Escape'); await sleep(400)
   sendKeys('Right'); await sleep(200)
   sendKeys('Enter'); await sleep(400)

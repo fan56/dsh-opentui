@@ -437,7 +437,7 @@ const submit = async (session, text) => {
 /** Abort the running turn through the U6 stop contract (turn-cancel.tsx):
  * the first Esc only ARMS ("Press Esc again to stop"), a second Esc inside
  * the double-press window opens the `Stop everything?` confirm, and Enter
- * confirms it (the confirm card's active row defaults to Stop). A bare Esc
+ * confirms it (the confirm card's active row defaults to Yes). A bare Esc
  * or two Escapes without the confirm leave the turn running — and a left-open
  * confirm dialog makes the next busy submit take the vendored immediate-steer
  * path (delivery-choice: no stacking on an open dialog), so the whole busy

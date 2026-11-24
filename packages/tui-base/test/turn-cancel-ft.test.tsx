@@ -17,7 +17,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
-import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+import { bundledLocalesDir, loadLocales, setLanguage, setLanguages } from "@dsh-opentui/i18n"
 import { ConfigProvider, resolve } from "../src/config"
 import { ThemeProvider, createThemeSource } from "../src/context/theme"
 import { Keymap } from "../src/context/keymap"
@@ -39,6 +39,21 @@ const keymapConfig = {
 const ESC_HINT = "Press Esc again to stop"
 const QUIT_HINT = "Press Ctrl+C again to quit" // must be gone from the rendered frame
 const QUIT_TITLE = "Quit dsh-opentui?"
+const QUIT_YES = "Yes" // titlecased from t("turn.quit.confirmLabel") = "yes"
+const QUIT_NO = "No" // titlecased from t("turn.quit.cancelLabel") = "no"
+
+/**
+ * The legacy footer paints cancel and confirm on ONE row. Compare inside that
+ * row only: a whole-frame `indexOf("No")` can hit an unrelated line, and the
+ * two-character substring is too weak by itself. A swapped label pair (or a
+ * wrong locale table) fails here instead of passing on two loose contains().
+ */
+function expectAnswerButtons(frameText: string, yes: string, no: string): void {
+	const row = frameText.split("\n").find((line) => line.includes(yes))
+	if (row === undefined) throw new Error(`no footer row with "${yes}" in frame:\n${frameText}`)
+	expect(row).toContain(no)
+	expect(row.indexOf(no)).toBeLessThan(row.indexOf(yes))
+}
 
 const clipboard: ClipboardService = { read: async () => undefined, write: async () => {} }
 
@@ -219,6 +234,41 @@ describe("turn-cancel ctrl+c quit dialog (real renderer, DialogConfirm stack)", 
 			expect(frame()).not.toContain(QUIT_HINT)
 		} finally {
 			await setup.dispose()
+		}
+	})
+
+	test("the quit dialog buttons read Yes / No, not Quit / Cancel", async () => {
+		const calls: string[] = []
+		const { setup, frame } = await mountQuit({ busy: () => false, calls })
+		try {
+			setup.mockInput.pressCtrlC()
+			await settle(setup)
+			expect(frame()).toContain(QUIT_TITLE)
+			// The ambiguous Cancel button is gone; the title still says Quit.
+			expect(frame()).not.toContain("Cancel")
+			// dialog-confirm.tsx maps ["cancel", "confirm"], so No precedes Yes.
+			expectAnswerButtons(frame(), QUIT_YES, QUIT_NO)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("zh-CN: the quit dialog buttons read 是 / 否", async () => {
+		setLanguage("zh-CN")
+		try {
+			const calls: string[] = []
+			const { setup, frame } = await mountQuit({ busy: () => false, calls })
+			try {
+				setup.mockInput.pressCtrlC()
+				await settle(setup)
+				expect(frame()).toContain("退出 dsh-opentui？")
+				expectAnswerButtons(frame(), "是", "否")
+				expect(calls).toEqual([])
+			} finally {
+				await setup.dispose()
+			}
+		} finally {
+			setLanguage("en")
 		}
 	})
 
