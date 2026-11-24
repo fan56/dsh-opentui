@@ -258,7 +258,7 @@ describe('single aggregated skip summary', () => {
 
 describe('provision script wiring (source guards)', () => {
   test('companion step runs before verification and the verify step cross-checks declaration state', () => {
-    expect(scriptSrc).toContain('const TOTAL_STEPS = 7')
+    expect(scriptSrc).toContain('const TOTAL_STEPS = 8')
     expect(scriptSrc).toContain('await provisionCompanions()')
     expect(scriptSrc).toContain('verifyCompanionState()')
     const installAt = scriptSrc.indexOf('  await provisionCompanions()')

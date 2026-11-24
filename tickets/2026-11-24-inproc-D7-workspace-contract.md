@@ -2,6 +2,7 @@
 
 - 类型：task（实现前必须先设计）
 - 来源：oldfox 评审 P0-3
+- 状态：批次 1/2/3 已完成（provisioner step `[3/8] workspace` / `ensureWorkspaceContract()`；门禁 `fresh-home-provision` 的 `workspace:contract-keys`、`workspace:no-deepseek-copy`、`workspace:idempotent` 与负向场景 `workspace-conflict`）
 - 关联：[评审记录](2026-11-24-inproc-only-review-oldfox.md)、地图 `2026-11-24-inproc-only-map.md`
 
 ## Question

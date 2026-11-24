@@ -9,7 +9,7 @@
  *   node scripts/verify-fresh-home-provision.mjs --prefix <prefix> \
  *     [--with-dsh <absolute-dsh-bin>] [--scenario[=] <name|all>] [--keep] [--json] [--timeout-ms <n>]
  *
- * Scenarios: positive, no-dsh, live-lock, bad-bridge, bad-bridge-repair, all.
+ * Scenarios: positive, no-dsh, live-lock, bad-bridge, bad-bridge-repair, workspace-conflict, all.
  * Exit codes: 0 all selected checks PASS or NOT RUN, 1 a check FAILed, 2 usage/unresolvable prefix.
  */
 import { spawnSync } from 'node:child_process'
@@ -25,6 +25,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { createRequire } from 'node:module'
 import { homedir, platform, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -36,11 +37,22 @@ const SHIM_NAME = '@aiwayds/dsh-opentui-session-shim'
 const COMPANION_POLICY = join('scripts', 'lib', 'companion-policy.mjs')
 const MANAGED_PATCH_LINES = ['subagent', 'permission', 'llm-pi-ai', 'dsh-approval-policy']
 const LEGACY_PROFILES = ['opentui', 'opentui-inproc']
+const WORKSPACE_FILE = 'pnpm-workspace.yaml'
+const WORKSPACE_KEYS = 'packages=[.], nodeLinker=hoisted, autoInstallPeers=false'
+// Conflict fixture: nodeLinker alone is wrong so the fail-fast must name the
+// exact key, not just the file, and show expected/got for that key.
+const WORKSPACE_CONFLICT = `packages:
+  - .
+
+nodeLinker: isolated
+autoInstallPeers: false
+`
+const WORKSPACE_CONFLICT_KEY = 'nodeLinker'
 const FAIL_FAST_NOTICE = 'inproc bridge mode injects append-system via the bridge section; presets are standard only.'
 const MAX_OUTPUT = 4000
 const DEFAULT_TIMEOUT_MS = 180_000
 const NEG_TIMEOUT_MS = 20_000
-export const SCENARIOS = Object.freeze(['positive', 'no-dsh', 'live-lock', 'bad-bridge', 'bad-bridge-repair'])
+export const SCENARIOS = Object.freeze(['positive', 'no-dsh', 'live-lock', 'bad-bridge', 'bad-bridge-repair', 'workspace-conflict'])
 // DSH_* inherited by the provisioner. Everything else (user pins, user paths)
 // is dropped; these are the documented CI pins, never user config.
 const ENV_WHITELIST = [
@@ -282,7 +294,84 @@ function revisionFromSidecar(raw) {
   return undefined
 }
 
-function positiveChecks({ profileDir, desired, run }) {
+/**
+ * `yaml` is a runtime dependency of the installed shell package, so resolve it
+ * from the package root (npm global layout hoists it into lib/node_modules).
+ * This keeps the gate honest: a prefix missing its own parser is a hard error,
+ * not a silently skipped workspace assertion.
+ */
+function loadYamlParser(packageRoot) {
+  try {
+    const requireFromPackage = createRequire(pathToFileURL(join(packageRoot, 'package.json')).href)
+    const parse = requireFromPackage('yaml').parse
+    if (typeof parse !== 'function') throw new Error('yaml module has no parse() export')
+    return parse
+  } catch (error) {
+    throw Object.assign(new Error(`cannot load yaml from installed package ${packageRoot}: ${error?.message ?? error}`), { usage: true })
+  }
+}
+
+/** Relative paths of every file/dir/symlink in a tree; symlinks are not followed. */
+function walkPaths(root) {
+  const found = []
+  const visit = (dir, prefix) => {
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      found.push(rel)
+      if (entry.isDirectory()) visit(join(dir, entry.name), rel)
+    }
+  }
+  visit(root, '')
+  return found
+}
+
+const backupPaths = (root) => walkPaths(root).filter((path) => path.includes('.bak-')).sort()
+const deepseekPaths = (root) => walkPaths(root).filter((path) => path.includes('@deepseek-ai')).sort()
+
+function sha256Of(path) {
+  try { return createHash('sha256').update(readFileSync(path)).digest('hex') } catch { return undefined }
+}
+
+/** Returns a diagnosis string when the YAML contract is not exact, else undefined. */
+function workspaceContractIssue(text, parse) {
+  let doc
+  try { doc = parse(text) } catch (error) { return `unparseable YAML: ${error?.message ?? error}` }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return 'not a YAML mapping'
+  if (!Array.isArray(doc.packages) || !doc.packages.includes('.')) return `packages=${JSON.stringify(doc.packages)}`
+  if (doc.nodeLinker !== 'hoisted') return `nodeLinker=${JSON.stringify(doc.nodeLinker)}`
+  if (doc.autoInstallPeers !== false) return `autoInstallPeers=${JSON.stringify(doc.autoInstallPeers)}`
+  return undefined
+}
+
+/** Only installed dependency keys count: bundle IDs intentionally include
+ *  @deepseek-ai/dsh-base (a host-provided bundle), never a package copy. */
+function deepseekDependencyKeys(manifest) {
+  const keys = []
+  for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+    const deps = manifest?.[section]
+    if (deps && typeof deps === 'object' && !Array.isArray(deps)) {
+      keys.push(...Object.keys(deps).filter((name) => name.startsWith('@deepseek-ai/')))
+    }
+  }
+  return [...new Set(keys)].sort()
+}
+
+/** Fail-fast trio: filename + key + expected/got, plus the two repair paths. */
+function workspaceFailFastTrio(stderr, key) {
+  const parts = {
+    filename: stderr.includes(WORKSPACE_FILE),
+    key: stderr.includes(key),
+    expectedGot: /\bexpected\b/i.test(stderr) && /\bgot\b/i.test(stderr),
+    hand: /Repair by hand/i.test(stderr),
+    backup: /Repair with backup \+ rewrite/i.test(stderr) && /dsh-opentui --repair-bridge/.test(stderr),
+  }
+  const missing = Object.entries(parts).filter(([, present]) => !present).map(([name]) => name)
+  return { ok: missing.length === 0, detail: missing.length ? `missing: ${missing.join(', ')}; ${truncate(stderr).split('\n').slice(-6).join(' | ')}` : `filename=${WORKSPACE_FILE} key=${key} expected/got + 2 repair hints` }
+}
+
+function positiveChecks({ profileDir, desired, run, parse, reprovision }) {
   const checks = [check('positive:exit0', run.status === 0, `exit=${run.status} signal=${run.signal ?? 'none'}${run.error ? ` error=${run.error}` : ''}`)]
   if (run.status !== 0) return checks
 
@@ -353,6 +442,33 @@ function positiveChecks({ profileDir, desired, run }) {
 
   const lockPath = join(profileDir, '.provision.lock')
   checks.push(check('lock:released', !existsSync(lockPath), lockPath))
+
+  // D7 workspace contract: parse the REAL file the provisioner wrote with the
+  // installed package's yaml parser. Content is asserted, not mere existence.
+  const workspacePath = join(profileDir, WORKSPACE_FILE)
+  let workspaceText
+  try { workspaceText = readFileSync(workspacePath, 'utf8') } catch { /* checked below */ }
+  const issue = workspaceText === undefined ? 'file missing/unreadable'
+    : typeof parse !== 'function' ? 'installed yaml parser unavailable'
+      : workspaceContractIssue(workspaceText, parse)
+  checks.push(check('workspace:contract-keys', issue === undefined,
+    issue ? `${WORKSPACE_FILE}: ${issue}` : `${WORKSPACE_FILE}: ${WORKSPACE_KEYS}`))
+
+  const deepseekCopies = deepseekPaths(profileDir)
+  checks.push(check('workspace:no-deepseek-copy', deepseekCopies.length === 0,
+    deepseekCopies.length ? `found: ${deepseekCopies.slice(0, 8).join(', ')}` : 'no @deepseek-ai path in profile tree'))
+
+  // Idempotency: a second provisioner pass on the SAME scratch profile must
+  // leave the workspace bytes untouched and create no .bak-* files. Companion
+  // installs are pinned off for the replay so no registry access is required.
+  const beforeHash = sha256Of(workspacePath)
+  const beforeBackups = new Set(backupPaths(profileDir))
+  const replay = reprovision ? reprovision() : undefined
+  const afterHash = sha256Of(workspacePath)
+  const newBackups = [...new Set(backupPaths(profileDir))].filter((path) => !beforeBackups.has(path))
+  const replayOk = Boolean(replay && replay.status === 0 && beforeHash && afterHash === beforeHash && newBackups.length === 0)
+  checks.push(check('workspace:idempotent', replayOk,
+    `replay exit=${replay?.status ?? 'n/a'}; sha256 ${beforeHash?.slice(0, 12) ?? 'missing'} -> ${afterHash?.slice(0, 12) ?? 'missing'}; new backups=${newBackups.length ? newBackups.join(', ') : 'none'}`))
   return checks
 }
 
@@ -375,6 +491,10 @@ export async function runVerification({ prefix, dshBin, scenario = 'all', keep =
     located.companionPolicy,
     join(located.packageRoot, 'scripts', 'lib', 'inproc-companions.mjs'),
   )
+  // Loaded only when a workspace assertion can actually run: pass 1 (--scenario=no-dsh)
+  // stays independent of the installed package's parser availability.
+  const needsWorkspace = selectedSet.has('positive') || selectedSet.has('workspace-conflict')
+  const parse = needsWorkspace ? loadYamlParser(located.packageRoot) : undefined
   const scratchBase = platform() === 'darwin' ? '/private/tmp' : tmpdir()
   const scratchHome = mkdtempSync(join(scratchBase, 'dsh-fresh-home-'))
   const checks = []
@@ -424,7 +544,16 @@ export async function runVerification({ prefix, dshBin, scenario = 'all', keep =
         })
         const run = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: posHome, home: scratchHome, timeoutMs })
         scenarios.positive = run
-        checks.push(...positiveChecks({ profileDir, desired: desiredCompanions, run }))
+        const replayEnv = { ...env, DSH_OPENTUI_COMPANION_LATEST: 'off' }
+        const reprovision = () => runProvisioner({
+          provisioner: located.provisioner,
+          args: [],
+          env: replayEnv,
+          dshHome: posHome,
+          home: scratchHome,
+          timeoutMs,
+        })
+        checks.push(...positiveChecks({ profileDir, desired: desiredCompanions, run, parse, reprovision }))
       } else {
         scenarios.positive = { status: null, stdout: '', stderr: '', durationMs: 0 }
         checks.push(skip('positive:exit0', 'no dsh and no host-version pin; covered by negative #1'))
@@ -531,6 +660,61 @@ export async function runVerification({ prefix, dshBin, scenario = 'all', keep =
         }
         finishScenario('bad-bridge-repair', start)
       }
+    }
+
+    // ---- negative #4: conflicting workspace contract -------------------------
+    if (selectedSet.has('workspace-conflict')) {
+      const start = checks.length
+      const home = scenarioHome('workspace-conflict')
+      const profileDir = join(home, 'profiles', DEFAULT_PROFILE)
+      mkdirSync(profileDir, { recursive: true })
+      const workspacePath = join(profileDir, WORKSPACE_FILE)
+      writeFileSync(workspacePath, WORKSPACE_CONFLICT)
+      const env = buildEnv({
+        includeDshDir: dshBin ? dirname(dshBin) : undefined,
+        hostVersion: hostVersion ?? '0.2.2-rc.5',
+      })
+      // Companion installs are pinned off: this scenario asserts contract
+      // fail-fast + repair, never a registry install.
+      env.DSH_OPENTUI_COMPANION_LATEST = 'off'
+
+      const conflictRun = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
+      scenarios.workspaceConflict = conflictRun
+      checks.push(check('negative:workspace-conflict:exit-nonzero', conflictRun.status !== 0, `exit=${conflictRun.status}`))
+      const trio = workspaceFailFastTrio(conflictRun.stderr, WORKSPACE_CONFLICT_KEY)
+      checks.push(check('negative:workspace-conflict:fail-fast-trio', trio.ok, trio.detail))
+      let untouched
+      try { untouched = readFileSync(workspacePath, 'utf8') === WORKSPACE_CONFLICT } catch { /* checked below */ }
+      checks.push(check('negative:workspace-conflict:keeps-original', untouched === true && backupPaths(profileDir).length === 0,
+        untouched === true ? 'bad contract left byte-identical; no .bak-* on fail-fast' : 'bad contract was changed by a failing run'))
+
+      const repairRun = runProvisioner({ provisioner: located.provisioner, args: ['--repair-bridge'], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
+      scenarios.workspaceConflictRepair = repairRun
+      checks.push(check('negative:workspace-conflict:repair-exit0', repairRun.status === 0,
+        `exit=${repairRun.status}; ${truncate(repairRun.stderr).split('\n').slice(-3).join(' | ')}`))
+
+      let repairedText
+      try { repairedText = readFileSync(workspacePath, 'utf8') } catch { /* checked below */ }
+      const repairIssue = repairedText === undefined ? `${WORKSPACE_FILE} missing/unreadable after repair`
+        : typeof parse !== 'function' ? 'installed yaml parser unavailable'
+          : workspaceContractIssue(repairedText, parse)
+      checks.push(check('negative:workspace-conflict:contract-restored', repairIssue === undefined,
+        repairIssue ? `${WORKSPACE_FILE}: ${repairIssue}` : `${WORKSPACE_FILE}: ${WORKSPACE_KEYS}`))
+
+      const backups = backupPaths(profileDir).filter((path) => path.startsWith(`${WORKSPACE_FILE}.bak-`))
+      let backupKeepsConflict = false
+      if (backups.length > 0) {
+        try { backupKeepsConflict = readFileSync(join(profileDir, backups[0]), 'utf8') === WORKSPACE_CONFLICT } catch { /* checked below */ }
+      }
+      checks.push(check('negative:workspace-conflict:backup-exists', backups.length > 0 && backupKeepsConflict,
+        backups.length ? `${backups.join(', ')}; original bytes preserved=${backupKeepsConflict}` : `no ${WORKSPACE_FILE}.bak-* backup found`))
+
+      let manifest
+      try { manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) } catch { /* checked below */ }
+      const deepseekDeps = deepseekDependencyKeys(manifest)
+      checks.push(check('negative:workspace-conflict:manifest-clean', deepseekDeps.length === 0 && existsSync(join(profileDir, 'package.json')),
+        deepseekDeps.length ? `@deepseek-ai dependencies: ${deepseekDeps.join(', ')}` : 'no @deepseek-ai dependency in manifest (bundle IDs are host-provided)'))
+      finishScenario('workspace-conflict', start)
     }
   } finally {
     const failed = checks.some((c) => c.status === 'FAIL')

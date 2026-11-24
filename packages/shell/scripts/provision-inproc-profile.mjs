@@ -6,11 +6,11 @@
 // Invoked by the launcher on EVERY start (S6: bridge is the sole seam; the
 // former env escape hatch that skipped provisioning is removed with it).
 // The `opentui` profile path is otherwise untouched.
-// Seven steps (the first is the host-version gate). Steps 1, 3 and 5-7 are
-// local-FS only; step 4 (companions) is the one unfrozen step that MAY run a
+// Eight steps (the first is the host-version gate). Steps 1-4 and 6-8 are
+// local-FS only; step 5 (companions) is the one unfrozen step that MAY run a
 // package manager (user decision 2026-11-22 — "npm 安装好的时候，registry 和其他几个依赖插件，默认装好").
 //
-//   [1/7] host     — detect the running dsh version. OUTSIDE the supported
+//   [1/8] host     — detect the running dsh version. OUTSIDE the supported
 //                    window (>=0.2.2-rc.3 <0.3.0) => fail-fast with the three
 //                    fail-fast elements: the host would otherwise skip the
 //                    bridge bundle silently (it only records the conflict in
@@ -19,22 +19,23 @@
 //                    exact-version exemption in compatibility.json. Never
 //                    grants outside the window: --accept-risk is not a way to
 //                    mask a genuine incompatibility.
-//   [2/7] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
+//   [2/8] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
 //                    dsh.profile.bundles = [@deepseek-ai/dsh-base,
 //                    @aiwayds/dsh-opentui-bridge] PLUS any companion bundles
 //                    already declared in dependencies. NO @deepseek-ai
-//                    dependency is ever written: the host's installation-first
-//                    bundle resolution supplies those bundles from the running
-//                    dsh closure (wild-package shadowing is the historical
-//                    incident this guard prevents). Converged with the patch
-//                    in ONE package.json.lock critical section.
-//   [3/7] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
+//                    dependency (wild-package shadowing guard): the host's
+//                    installation-first resolution supplies them; ONE lock section.
+//   [3/8] workspace — ensure pnpm-workspace.yaml: packages [.], nodeLinker
+//                    hoisted, autoInstallPeers false. Write the fixed template
+//                    when absent; fail-fast on conflicts (or, with --repair,
+//                    back up as .bak-<timestamp> + rewrite) before companions.
+//   [4/8] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
 //                    REAL DIRECTORY COPY of THIS installation's dist/bridge.
 //                    S6 symlink-debt retirement: no absolute symlink (no path
 //                    binding, no multi-worktree last-writer-wins, no dangling
 //                    link when a worktree is removed). Converged every launch;
 //                    idempotent when the copy's index.js hash matches.
-//   [4/7] companions — install the minimal companion set (default: the
+//   [5/8] companions — install the minimal companion set (default: the
 //                    @aiwayds/dsh-subagent-registry bundle, which self-mounts
 //                    the `use_agent` tool through its own cordis.patch.yml).
 //                    Resolves `latest`, guards major/downgrade, skips when
@@ -43,20 +44,20 @@
 //                    missing global `dsh` is a WARN (never a boot blocker):
 //                    stale manifest declarations from a half-write are removed
 //                    and hosts without dsh skip companions with a warning.
-//                    Step 5 then verifies that whatever remains declared in
+//                    Step 6 then verifies that whatever remains declared in
 //                    the manifest is fully mounted.
-//   [5/7] verify   — confirm the bridge is a real directory carrying the
+//   [6/8] verify   — confirm the bridge is a real directory carrying the
 //                    shipped files; refuse any @deepseek-ai copy in the profile;
 //                    cross-check companion manifest deps <-> bundle entries <-
 //                    -> installed node_modules (no half-provisioned state).
-//                    Step 4 drops stale declarations an unsuccessful add left
+//                    Step 5 drops stale declarations an unsuccessful add left
 //                    behind, so this guard never blocks a boot for something
 //                    the provisioning pass itself could not install offline.
-//   [6/7] identity — T5 guard: hash the materialized bridge's index.js and
+//   [7/8] identity — T5 guard: hash the materialized bridge's index.js and
 //                    compare with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
-//   [2/7] patch    — converge cordis.patch.yml with the embedded template in the
+//   [2/8] patch    — converge cordis.patch.yml with the embedded template in the
 //                    SAME lock as the manifest (web-app
 //                    compensation rows removed, profileRevision stamped). The
 //                    template also registers the standalone sessionController
@@ -64,8 +65,8 @@
 //                    plugin — no dsh-web-app bundle is pulled in. Companion
 //                    mounts ride their own bundle patches (activated by the
 //                    manifest bundle entries), so no duplicate rows are added
-//                    here; the lock is released before step 3.
-//   [7/7] shim     — generate the local shim package under the profile's
+//                    here; the lock is released before step 4.
+//   [8/8] shim     — generate the local shim package under the profile's
 //                    node_modules (@aiwayds scope) that the patch row resolves.
 //                    Its
 //                    @deepseek-ai/cordis import is resolved by the host against
@@ -84,13 +85,15 @@
 // install's build-time fingerprint is left untouched; a stale directory, a
 // leftover symlink, or a missing entry is replaced with a fresh copy.
 //
-// `--repair` / `--repair-bridge`: still accepted for CLI/caller compatibility,
-// but a no-op for the bridge materialization — the copy converges
-// unconditionally on every provision. The T5 identity guard always runs after
-// convergence, so a fingerprint mismatch still fails loud.
+// `--repair` / `--repair-bridge`: a no-op for BRIDGE materialization (the copy
+// converges unconditionally on every provision), but NOT a no-op overall — with
+// the flag, a conflicting pnpm-workspace.yaml (step [3/8]) is backed up as
+// `pnpm-workspace.yaml.bak-<timestamp>` with a WARN and rewritten to the managed
+// template. The T5 identity guard always runs after convergence, so a
+// fingerprint mismatch still fails loud.
 //
 // Hard guard: this script only ever touches the ONE profile named
-// `opentui-inproc`. The ONLY package-manager call is step [4/7], scoped to the
+// `opentui-inproc`. The ONLY package-manager call is step [5/8], scoped to the
 // explicit companion catalog; it never writes a @deepseek-ai dependency into
 // the manifest (those bundles come from the running dsh closure).
 
@@ -121,7 +124,7 @@ import { fileURLToPath } from 'node:url'
 // BridgeBootstrapError (handshake) now carry the same three elements.
 import {
   BRIDGE_APPEND_PRESET_NOTICE,
-  BRIDGE_REPAIR_HINT,
+  BRIDGE_REPAIR_COMMAND, BRIDGE_REPAIR_HINT,
 } from './lib/bridge-failfast-text.mjs'
 // Host-version gate. The host only records an incompatible profile bundle in
 // `skippedBundles` (no stderr on this path), so the pre-boot check here is the
@@ -134,7 +137,7 @@ import {
   isHostVersionSupported,
 } from './lib/host-compat.mjs'
 // Companion policy is a pure table; only the spawn and registry query live
-// here (see step [4/7]). Mirrors dsh-tui-pi's companion-latest pattern.
+// here (see step [5/8]). Mirrors dsh-tui-pi's companion-latest pattern.
 import {
   COMPANIONS,
   COMPANION_LATEST_ENV,
@@ -172,13 +175,13 @@ const linkPath = join(profileDir, 'node_modules', ...BRIDGE_NAME.split('/'))
 // S6: the patch/shim steps are unconditional (the env escape hatch that used
 // to skip them is removed with the legacy seam). The launcher runs this script
 // on every start; --repair-bridge and direct invocation converge identically.
-const TOTAL_STEPS = 7
+const TOTAL_STEPS = 8
 const COMPANION_INSTALL_TIMEOUT_MS = 10 * 60 * 1000
 const PATCH_NAME = 'cordis.patch.yml'
 const patchPath = join(profileDir, PATCH_NAME)
 const PATCH_REVISION_MARKER = '# profileRevision: '
 // Local shim package generated under the profile's node_modules. It lives in
-// the @aiwayds scope (never @deepseek-ai — see the guard in step [5/7]) so the
+// the @aiwayds scope (never @deepseek-ai — see the guard in step [6/8]) so the
 // host resolves it from the profile scope; its own @deepseek-ai/cordis import
 // is routed by the host's runtime interception to the same dsh closure that
 // serves the bridge. The patch row uses this bare package name.
@@ -686,7 +689,7 @@ function activeProfile() {
 const KNOWN_PATCH_MD5 = new Set(['54b66bf37fbbb93a6f9dd204a24473f7'])
 
 // --- Standalone sessionController shim template -----------------------------
-// Generated into the profile's node_modules (step [7/7]) so its runtime imports
+// Generated into the profile's node_modules (step [8/8]) so its runtime imports
 // are resolved from the profile scope by the host, exactly like the bridge.
 // The real controller imports fileUploads / workspaceRegistry as TYPES ONLY;
 // only the narrow methods below are ever called, so no dsh-web-app closure is
@@ -814,7 +817,7 @@ function readManifest() {
 
 /**
  * Companion bundles already declared in the manifest must survive the step-2
- * convergence: otherwise every launch would strip them and step 4 would
+ * convergence: otherwise every launch would strip them and step 5 would
  * reinstall. Only packages from OUR catalog that the manifest already declares
  * are preserved, so a stray dependency can never smuggle a bundle in.
  */
@@ -847,7 +850,7 @@ function installedCompanionVersion(name) {
 
 /**
  * A failed `dsh plugin add` can leave a dependency + bundle row behind without
- * ever installing node_modules. Left alone, step [5/7] would turn that
+ * ever installing node_modules. Left alone, step [6/8] would turn that
  * half-write into a permanent boot blocker on later (offline) starts, with no
  * self-heal path. Drop only the stale declarations — healthy companions and
  * the user's own dependencies are untouched — so the failure stays a WARN and
@@ -855,7 +858,7 @@ function installedCompanionVersion(name) {
  */
 function dropUnmountedCompanions(reason, only = null) {
   // N4: this late manifest write uses the SAME host lock as step 2's manifest
-  // convergence. We acquire it only for this short read-modify-write — step 4
+  // convergence. We acquire it only for this short read-modify-write — step 5
   // as a whole must NOT hold package.json.lock (the host holds it for all of
   // pnpm during `dsh plugin add`). `dsh plugin add` itself writes the manifest
   // under the host's lock; we never rewrite the manifest after a successful
@@ -884,7 +887,7 @@ function dropUnmountedCompanions(reason, only = null) {
     const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
     writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
     renameSync(tmpPath, manifestPath)
-    say(4, 'companions', `dropped ${stale.length} stale companion declaration(s) — profile stays usable`)
+    say(5, 'companions', `dropped ${stale.length} stale companion declaration(s) — profile stays usable`)
     return stale.length
   })
 }
@@ -905,7 +908,7 @@ function dshOnPath() {
 }
 
 /**
- * Step [4/7] — install the minimal companion set.
+ * Step [5/8] — install the minimal companion set.
  *
  * The install is done through `dsh plugin add`, which is the one supported way
  * to put a @aiwayds package into a profile: it writes the dependency, appends
@@ -914,18 +917,18 @@ function dshOnPath() {
  * registry's `dsh-jev-core` dependency, which the client's spin-attention
  * probe then finds in the profile. With `nodeLinker: hoisted` +
  * `autoInstallPeers: false` in this profile, no @deepseek-ai peer is copied
- * into the profile, so step [5/7]'s no-@deepseek-ai guard still holds.
+ * into the profile, so step [6/8]'s no-@deepseek-ai guard still holds.
  *
  * Companions are optional: an install failure is a WARN, never a boot blocker.
  * A half-write (dependency declared, package missing) is cleaned up here —
- * immediately after a failed add, and on later offline starts — so step [5/7]
+ * immediately after a failed add, and on later offline starts — so step [6/8]
  * never hard-fails on a state this step itself could not resolve.
  */
 async function provisionCompanions() {
   const selected = selectCompanions(process.env)
   if (selected.length === 0) {
     const off = ['0', 'false', 'off'].includes(String(process.env[COMPANION_LATEST_ENV] ?? '').trim().toLowerCase())
-    say(4, 'companions', off ? `skipped (${COMPANION_LATEST_ENV}=off)` : 'none selected')
+    say(5, 'companions', off ? `skipped (${COMPANION_LATEST_ENV}=off)` : 'none selected')
     return
   }
 
@@ -948,7 +951,7 @@ async function provisionCompanions() {
         Object.prototype.hasOwnProperty.call(manifest.dependencies ?? {}, entry.name)) {
       // A previous add left the dependency behind but never mounted the
       // package. Offline there is no way to heal it: drop the stale declaration
-      // instead of handing step [5/7] an unrecoverable hard fail.
+      // instead of handing step [6/8] an unrecoverable hard fail.
       dropUnmountedCompanions('declared but not installed, and offline', [entry.name])
       note(`companion ${entry.name}: skip (offline-stale)`)
       unavailable++
@@ -979,7 +982,7 @@ async function provisionCompanions() {
   if (summary) warn(summary)
 
   if (specs.length === 0) {
-    say(4, 'companions', unavailable > 0
+    say(5, 'companions', unavailable > 0
       ? `skipped ${unavailable} of ${selected.length} (unavailable)`
       : `already satisfied (${selected.length}/${selected.length})`)
     return
@@ -993,9 +996,9 @@ async function provisionCompanions() {
         `Install dsh and re-run provisioning to auto-install them, or set ${COMPANION_LATEST_ENV}=off to skip them permanently.`,
     )
     // A previous failed add may have left a half-written declaration. Drop it
-    // so step [5/7] never blocks a boot over a package we cannot install here.
+    // so step [6/8] never blocks a boot over a package we cannot install here.
     dropUnmountedCompanions('no global dsh on PATH')
-    say(4, 'companions', 'skipped (no global `dsh` on PATH; companions are optional)')
+    say(5, 'companions', 'skipped (no global `dsh` on PATH; companions are optional)')
     return
   }
   const run = spawnSync('dsh', ['plugin', '--profile', activeProfile(), 'add', ...specs], {
@@ -1007,13 +1010,13 @@ async function provisionCompanions() {
   if (run.error) {
     warn(`companion install failed to start: ${run.error.message}`)
     dropUnmountedCompanions('install failed to start')
-    say(4, 'companions', `installed 0 of ${specs.length} (failed to start)`)
+    say(5, 'companions', `installed 0 of ${specs.length} (failed to start)`)
     return
   }
   if (run.status !== 0) {
     warn(`dsh plugin add exited ${run.status}; companions are optional — the client still launches`)
     dropUnmountedCompanions(`dsh plugin add exited ${run.status}`)
-    say(4, 'companions', `installed 0 of ${specs.length} (exit ${run.status})`)
+    say(5, 'companions', `installed 0 of ${specs.length} (exit ${run.status})`)
     return
   }
 
@@ -1030,11 +1033,11 @@ async function provisionCompanions() {
     warn(`companion version readback mismatch: ${missing.join(', ')}`)
     dropUnmountedCompanions('version readback mismatch')
   }
-  say(4, 'companions', `installed ${landed.length} of ${specs.length}`)
+  say(5, 'companions', `installed ${landed.length} of ${specs.length}`)
 }
 
 /**
- * Step [5/7] cross-check: the companion state has three views — manifest
+ * Step [6/8] cross-check: the companion state has three views — manifest
  * dependencies, manifest bundles and installed node_modules. A provisioning
  * pass that updated only one of them is a "two-state drift"; refuse to boot
  * rather than booting a profile that composes a bundle it cannot resolve.
@@ -1175,7 +1178,7 @@ function verifyBridgeIdentity() {
     )
   }
 
-  say(6, 'identity', `name=${fp.name} version=${fp.version} sha256=${fp.sha256.slice(0, 12)}…`)
+  say(7, 'identity', `name=${fp.name} version=${fp.version} sha256=${fp.sha256.slice(0, 12)}…`)
   note(`bridge identity OK — ${resolved}`)
 }
 
@@ -1338,9 +1341,178 @@ function provisionPatch({ externalCarry } = {}) {
   say(2, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION}, reason ${plan.reason})`)
 }
 
+// --- D7 workspace contract: pnpm-workspace.yaml -----------------------------
+// Mid-file import follows the existing migration import pattern below and
+// keeps the ledger-anchored PATCH_TEMPLATE block above byte-stable.
+import { isMap, isScalar, isSeq, parseDocument } from 'yaml'
+
+const WORKSPACE_FILE = 'pnpm-workspace.yaml'
+// Byte-for-byte template: the trailing newline is part of the contract; no
+// mode is declared. Extra keys in a conforming file are preserved (never
+// rewritten here).
+const WORKSPACE_TEMPLATE = `packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+`
+
+/** Human-readable description of the "got" side of a contract mismatch. */
+function describeWorkspaceNode(node) {
+  if (node === undefined) return 'missing key'
+  if (isSeq(node)) {
+    return `sequence [${node.items.map((item) => isScalar(item) ? JSON.stringify(item.value) : '<non-scalar>').join(', ')}]`
+  }
+  if (isScalar(node)) return `${typeof node.value} ${JSON.stringify(node.value)}`
+  if (isMap(node)) return 'mapping'
+  return node?.constructor?.name ?? 'unknown node'
+}
+
+/** Self-contained fail-fast: filename + key + expected/got + two repair paths.
+ *  The repair command name is the shared bridge wording, not a new string. */
+function workspaceContractError({ file, key, expected, got }) {
+  const diagnosis = `${file}: ${key} — expected ${expected}, got ${got}`
+  return new ProvisionError(
+    diagnosis,
+    [
+      `Diagnosis: ${diagnosis}; refusing to start with a conflicting workspace contract.`,
+      `Repair by hand: edit ${file} and set ${key} to ${expected}; provisioning left the file untouched.`,
+      `Repair with backup + rewrite: run \`${BRIDGE_REPAIR_COMMAND}\` (backs up a conflicting ${file} to ${file}.bak-<timestamp>, then rewrites the managed template).`,
+    ].join('\n'),
+  )
+}
+
+/** Validate an EXISTING workspace file against the contract. Throws the
+ *  self-contained ProvisionError on any conflict; returns normally when the
+ *  file conforms. Kept separate so `ensureWorkspaceContract` can decide whether
+ *  a conflict is fatal or recoverable without duplicating the checks. */
+function assertWorkspaceContract(current, file) {
+  let doc
+  try {
+    doc = parseDocument(current)
+  } catch (error) {
+    throw workspaceContractError({
+      file,
+      key: '<document> (packages/nodeLinker/autoInstallPeers)',
+      expected: 'parseable YAML mapping',
+      got: `parse error: ${error?.message ?? error}`,
+    })
+  }
+  if (doc.errors.length > 0) {
+    throw workspaceContractError({
+      file,
+      key: '<document> (packages/nodeLinker/autoInstallPeers)',
+      expected: 'parseable YAML mapping',
+      got: `parse error: ${doc.errors[0].message}`,
+    })
+  }
+  if (!isMap(doc.contents)) {
+    throw workspaceContractError({
+      file,
+      key: '<document> (packages/nodeLinker/autoInstallPeers)',
+      expected: 'a YAML mapping with packages/nodeLinker/autoInstallPeers',
+      got: describeWorkspaceNode(doc.contents),
+    })
+  }
+
+  const packages = doc.get('packages', true)
+  if (!isSeq(packages)
+    || !packages.items.every((item) => isScalar(item) && typeof item.value === 'string')
+    || !packages.items.some((item) => item.value === '.')) {
+    throw workspaceContractError({
+      file,
+      key: 'packages',
+      expected: 'a string sequence containing "."',
+      got: describeWorkspaceNode(packages),
+    })
+  }
+  const nodeLinker = doc.get('nodeLinker', true)
+  if (!isScalar(nodeLinker) || nodeLinker.value !== 'hoisted') {
+    throw workspaceContractError({
+      file,
+      key: 'nodeLinker',
+      expected: 'hoisted',
+      got: describeWorkspaceNode(nodeLinker),
+    })
+  }
+  const autoInstallPeers = doc.get('autoInstallPeers', true)
+  if (!isScalar(autoInstallPeers) || typeof autoInstallPeers.value !== 'boolean' || autoInstallPeers.value !== false) {
+    throw workspaceContractError({
+      file,
+      key: 'autoInstallPeers',
+      expected: 'false (boolean)',
+      got: describeWorkspaceNode(autoInstallPeers),
+    })
+  }
+}
+
+/** Atomic tmp+rename commit of the fixed workspace template. Shared by the
+ *  absent-file ("wrote") and repair ("repaired") paths: no window in which a
+ *  reader can observe a partially written workspace file. */
+function writeWorkspaceTemplate(file) {
+  mkdirSync(dirname(file), { recursive: true })
+  const tmpPath = `${file}.tmp-${process.pid}-${Date.now()}`
+  writeFileSync(tmpPath, WORKSPACE_TEMPLATE)
+  renameSync(tmpPath, file)
+}
+
+/**
+ * D7 workspace contract — ensure `pnpm-workspace.yaml` under `profileDir`.
+ * Reads the real FS. Three states:
+ *   - absent        -> write the fixed template, return "wrote";
+ *   - conforming    -> left byte-identical (allowBuilds / strictDepBuilds /
+ *                      unknown keys survive), return "ok";
+ *   - conflicting   -> fail fast, UNLESS `repair` is true: back up the original
+ *                      to `pnpm-workspace.yaml.bak-<timestamp>` with a WARN,
+ *                      atomically rewrite the whole file to the fixed template,
+ *                      and return "repaired".
+ * `repair` affects only this conflict recovery; the bridge copy converges
+ * unconditionally either way. Callers run this inside their write lock.
+ *
+ * @returns {'wrote'|'ok'|'repaired'}
+ */
+export function ensureWorkspaceContract({ profileDir: dir = profileDir, repair = false } = {}) {
+  const file = join(dir, WORKSPACE_FILE)
+  let current
+  try {
+    current = readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw workspaceContractError({
+        file,
+        key: WORKSPACE_FILE,
+        expected: 'a readable file',
+        got: `${error?.code ?? 'read error'}: ${error?.message ?? error}`,
+      })
+    }
+    current = undefined
+  }
+
+  if (current === undefined) {
+    writeWorkspaceTemplate(file)
+    return 'wrote'
+  }
+
+  try {
+    assertWorkspaceContract(current, file)
+  } catch (error) {
+    if (!repair) throw error
+    // Conflict + repair: preserve the foreign bytes first, then converge the
+    // whole file. Both happen inside the caller's withProfileWriteLock section
+    // (provisionProfileFiles), so a concurrent host rewrite cannot interleave.
+    // Backup naming matches the manifest/patch/shim writers in this script.
+    const backupPath = `${file}.bak-${Date.now()}`
+    copyFileSync(file, backupPath)
+    warn(`pnpm-workspace.yaml: contract conflict; backed up ${file} to ${backupPath}`)
+    writeWorkspaceTemplate(file)
+    return 'repaired'
+  }
+  return 'ok'
+}
+
 /** Manifest + patch + sidecar in ONE host-lock critical section (R7), before
- *  step 3's bridge copy and well before step 4's package-manager call. */
-function provisionProfileFiles({ externalCarry } = {}) {
+ *  step 4's bridge copy and well before step 5's package-manager call. */
+function provisionProfileFiles({ externalCarry, repair } = {}) {
   return withProfileWriteLock(profileDir, () => {
     const existing = existsSync(manifestPath) ? readManifest() : undefined
     if (existsSync(manifestPath) && existing === undefined) {
@@ -1362,6 +1534,15 @@ function provisionProfileFiles({ externalCarry } = {}) {
       renameSync(tmpPath, manifestPath)
       say(2, 'manifest', `wrote bundles [${managedBundles(existing ?? {}).join(', ')}]`)
     }
+    // D7 step 3 (N5): workspace contract is checked in the SAME host lock,
+    // immediately after the manifest write and before the patch copy — a
+    // whole-file host rewrite can therefore never drop this update.
+    const workspaceState = ensureWorkspaceContract({ profileDir, repair })
+    say(3, 'workspace', workspaceState === 'wrote'
+      ? `wrote ${join(profileDir, WORKSPACE_FILE)}`
+      : workspaceState === 'repaired'
+        ? `repaired ${join(profileDir, WORKSPACE_FILE)} (backup + rewrite)`
+        : 'already correct, skipping')
     provisionPatch({ externalCarry })
   })
 }
@@ -1445,17 +1626,18 @@ function provisionShim() {
   const indexChanged = convergeShimFile(SHIM_INDEX_PATH, SHIM_INDEX_CONTENT, 'session controller shim index.mjs', SHIM_REVISION)
   const pkgChanged = convergeShimFile(SHIM_PKG_PATH, SHIM_PKG_CONTENT, 'session controller shim package.json', undefined)
   if (!indexChanged && !pkgChanged) {
-    say(7, 'shim', 'already current, skipping')
+    say(8, 'shim', 'already current, skipping')
     return
   }
-  say(7, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
+  say(8, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
 }
 
 // --- The provision pass itself (runs under the lock) ------------------------
 async function runProvision({ repair = false } = {}) {
-  // S6: --repair is accepted for CLI compatibility but is a no-op — the bridge
-  // copy converges unconditionally on every provision (no symlink to repair).
-  if (repair) note('repair mode accepted (no-op — bridge copy converges every provision)')
+  // The bridge copy converges unconditionally on every provision (no symlink
+  // to repair). --repair is NOT a no-op overall: with it, a conflicting
+  // pnpm-workspace.yaml is backed up and rewritten in step [3/8].
+  if (repair) note('repair mode: a conflicting workspace contract will be backed up and rewritten')
   // Prerequisites (read-only) are checked before any mutation.
   if (!existsSync(bridgeDirRaw) || !statSync(bridgeDirRaw).isDirectory()) {
     fail(
@@ -1475,14 +1657,14 @@ async function runProvision({ repair = false } = {}) {
   // or symlinked-in path that could drift with cwd or a moved install.
   const bridgeDir = realpathSync(bridgeDirRaw)
 
-  // [1/7] Host compatibility: fail loud when the running dsh is outside the
+  // [1/8] Host compatibility: fail loud when the running dsh is outside the
   // supported window (the host would otherwise skip the bridge silently), and
   // grant the exact-version exemption when it is in-window but not exempted.
   verifyHostCompatibility(bridgeDir)
 
   // --- T8b one-shot migration (06 §7.4) --------------------------------------
   // This whole function runs inside main()'s `.provision.lock`, so planning here
-  // means neither step [2/7]'s patch converge nor step [4/7]'s companion install
+  // means neither step [2/8]'s patch converge nor step [5/8]'s companion install
   // can bypass migration. A present marker makes the planner a no-op (no legacy
   // read, no carry) and makes the helper short-circuit all writes and notices.
   const migrationInputs = readMigrationInputs({ dshHome, profileDir, templatePatchText: PATCH_CONTENT })
@@ -1519,9 +1701,9 @@ async function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [2/7] Manifest + patch + sidecar: the ONLY managed-segment writer, and it
+  // [2/8] Manifest + patch + sidecar: the ONLY managed-segment writer, and it
   // consumes migration externalCarry in the same converge pass (06 §4.5).
-  provisionProfileFiles({ externalCarry: migrationPlan.externalCarry })
+  provisionProfileFiles({ externalCarry: migrationPlan.externalCarry, repair })
 
   // Config -> keybindings -> backups -> marker. applyMigrationPlan writes the
   // marker LAST and only when allowed; the pre-backup above already wrote the
@@ -1537,7 +1719,7 @@ async function runProvision({ repair = false } = {}) {
   // start retries after the user repairs the legacy file.
   if (incompleteReason) throw migrationIncompleteError(incompleteReason)
 
-  // [3/7] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
+  // [4/8] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
   // retirement). The old design wrote an ABSOLUTE symlink to THIS
   // installation's dist/bridge: that bound the profile to one install path and
   // let multiple worktrees sharing a DSH_HOME leave the link pointing at
@@ -1561,17 +1743,17 @@ async function runProvision({ repair = false } = {}) {
       } catch (error) {
         fail(`could not materialize bridge copy at ${linkPath}: ${error?.message ?? error}`)
       }
-      say(3, 'bridge-copy', `copied ${bridgeDir} -> ${linkPath}`)
+      say(4, 'bridge-copy', `copied ${bridgeDir} -> ${linkPath}`)
     } else {
-      say(3, 'bridge-copy', `${linkPath} already matches this install, skipping`)
+      say(4, 'bridge-copy', `${linkPath} already matches this install, skipping`)
     }
   }
 
-  // [4/7] Companion installation. Runs after the bridge copy and before the
-  // verify step so a half-provisioned manifest is caught by step [5/7].
+  // [5/8] Companion installation. Runs after the bridge copy and before the
+  // verify step so a half-provisioned manifest is caught by step [6/8].
   await provisionCompanions()
 
-  // [5/7] Verify: linkPath is a REAL directory (never a symlink) carrying the
+  // [6/8] Verify: linkPath is a REAL directory (never a symlink) carrying the
   // shipped bridge files, and no @deepseek-ai package leaked into the profile.
   // Companion state is cross-checked too (deps <-> bundles <-> node_modules).
   {
@@ -1594,10 +1776,10 @@ async function runProvision({ repair = false } = {}) {
       )
     }
     const companionCount = verifyCompanionState()
-    say(5, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile; ${companionCount} companion(s) consistent`)
+    say(6, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile; ${companionCount} companion(s) consistent`)
   }
 
-  // [6/7] Identity guard always runs, including on the conflict path, so a
+  // [7/8] Identity guard always runs, including on the conflict path, so a
   // repointed / replaced bridge cannot slip through as a mere WARN.
   verifyBridgeIdentity()
 
@@ -1605,7 +1787,7 @@ async function runProvision({ repair = false } = {}) {
   // manifest rewrite here: `dsh plugin add` writes it itself under the host's
   // lock, and the only late cleanup (dropUnmountedCompanions) takes that same
   // lock for its short read-modify-write (N4).
-  // [7/7] The local shim package the patch row resolves. S6: unconditional.
+  // [8/8] The local shim package the patch row resolves. S6: unconditional.
   provisionShim()
 
   console.log(`${PREFIX}PASS`)
@@ -1641,21 +1823,37 @@ async function main(argv = []) {
   }
 }
 
-// main() is async (the companion step's registry query is a bounded concurrent
-// batch). Its rejection is handled exactly like a synchronous throw used to be,
-// so the lock-release `finally` still runs before this handler sets exitCode.
-main(process.argv.slice(2)).catch((error) => {
-  if (error instanceof ProvisionLockError || error?.name === 'ProfileLockTimeoutError') {
-    console.error(`${PREFIX}FAIL — ${error.message}`)
-    if (error.detail) console.error(error.detail)
-  } else if (error instanceof ProvisionError) {
-    console.error(`${PREFIX}FAIL — ${error.message}`)
-    if (error.detail) console.error(error.detail.trimEnd())
-  } else {
-    console.error(`${PREFIX}FAIL — unexpected error: ${error?.stack ?? String(error)}`)
+// Importable seam for workspace-contract.test.ts: the exported helpers are
+// imported in-process, so main() must only run when THIS file is the entry
+// point (both `bun script.mjs` and `node script.mjs` set argv[1] to it).
+function isDirectInvocation() {
+  const entry = process.argv[1]
+  if (typeof entry !== 'string' || entry.length === 0) return false
+  const self = fileURLToPath(import.meta.url)
+  try {
+    return realpathSync(entry) === realpathSync(self)
+  } catch {
+    return resolvePath(entry) === self
   }
-  // Lock timeouts carry exitCode 2 (distinct from a general provisioning
-  // failure) so the launcher can tell "another live run owns this profile"
-  // from a real error; either way the host is never started.
-  process.exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1
-})
+}
+
+if (isDirectInvocation()) {
+  // main() is async (the companion step's registry query is a bounded concurrent
+  // batch). Its rejection is handled exactly like a synchronous throw used to be,
+  // so the lock-release `finally` still runs before this handler sets exitCode.
+  main(process.argv.slice(2)).catch((error) => {
+    if (error instanceof ProvisionLockError || error?.name === 'ProfileLockTimeoutError') {
+      console.error(`${PREFIX}FAIL — ${error.message}`)
+      if (error.detail) console.error(error.detail)
+    } else if (error instanceof ProvisionError) {
+      console.error(`${PREFIX}FAIL — ${error.message}`)
+      if (error.detail) console.error(error.detail.trimEnd())
+    } else {
+      console.error(`${PREFIX}FAIL — unexpected error: ${error?.stack ?? String(error)}`)
+    }
+    // Lock timeouts carry exitCode 2 (distinct from a general provisioning
+    // failure) so the launcher can tell "another live run owns this profile"
+    // from a real error; either way the host is never started.
+    process.exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1
+  })
+}

@@ -15,11 +15,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   buildEnv,
@@ -32,6 +35,7 @@ import {
 } from '../../../scripts/verify-fresh-home-provision.mjs'
 
 const VERIFIER = fileURLToPath(new URL('../../../scripts/verify-fresh-home-provision.mjs', import.meta.url))
+const requireFromTest = createRequire(import.meta.url)
 const TMP = mkdtempSync(join(tmpdir(), 'dsh-verify-unit-'))
 const PREFIX = join(TMP, 'prefix')
 const PKG = join(PREFIX, 'lib', 'node_modules', '@aiwayds', 'dsh-opentui')
@@ -94,6 +98,40 @@ if (!process.env.DSH_OPENTUI_HOST_VERSION && !hasDsh) {
 const profileDir = path.join(home, 'profiles', DEFAULT_PROFILE)
 const lockPath = path.join(profileDir, '.provision.lock')
 fs.mkdirSync(profileDir, { recursive: true })
+
+// D7 workspace contract: conforming template on a fresh profile; a conflicting
+// file fails fast (with the shared two repair hints) unless --repair is set.
+const wsPath = path.join(profileDir, 'pnpm-workspace.yaml')
+const wsTemplate = 'packages:\\n  - .\\n\\nnodeLinker: hoisted\\nautoInstallPeers: false\\n'
+if (fs.existsSync(wsPath)) {
+  const current = fs.readFileSync(wsPath, 'utf8')
+  const conflict = current.indexOf('nodeLinker: hoisted') < 0 || current.indexOf('autoInstallPeers: false') < 0 || current.indexOf('- .') < 0
+  if (conflict) {
+    if (repair) {
+      fs.copyFileSync(wsPath, wsPath + '.bak-' + Date.now())
+      fs.writeFileSync(wsPath, wsTemplate)
+    } else {
+      console.error(P + 'FAIL - pnpm-workspace.yaml: nodeLinker — expected hoisted, got string "isolated"')
+      console.error('Diagnosis: pnpm-workspace.yaml: nodeLinker — expected hoisted, got string "isolated"; refusing to start with a conflicting workspace contract.')
+      console.error('Repair by hand: edit pnpm-workspace.yaml and set nodeLinker to hoisted; provisioning left the file untouched.')
+      console.error('Repair with backup + rewrite: run dsh-opentui --repair-bridge (backs up a conflicting pnpm-workspace.yaml to pnpm-workspace.yaml.bak-<timestamp>, then rewrites the managed template).')
+      process.exit(1)
+    }
+  } else if (fs.existsSync(new URL('./workspace-drift.flag', import.meta.url))) {
+    fs.copyFileSync(wsPath, wsPath + '.bak-' + Date.now())
+    fs.writeFileSync(wsPath, current + '# drift on replay\\n')
+  }
+}
+if (!fs.existsSync(wsPath)) {
+  const badWorkspace = fs.existsSync(new URL('./bad-workspace.flag', import.meta.url))
+  fs.writeFileSync(wsPath, badWorkspace
+    ? 'packages:\\n  - .\\n\\nnodeLinker: isolated\\nautoInstallPeers: false\\n'
+    : wsTemplate)
+}
+if (fs.existsSync(new URL('./deepseek-copy.flag', import.meta.url))) {
+  fs.mkdirSync(path.join(profileDir, 'node_modules', '@deepseek-ai', 'dsh-base'), { recursive: true })
+}
+
 if (fs.existsSync(lockPath)) {
   const rec = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
   let live = false
@@ -178,6 +216,10 @@ beforeAll(() => {
     `export const COMPANIONS = ${JSON.stringify(COMPANION_POLICY_IDS.map((short, i) => ({ short, name: COMPANION_NAMES[i], defaultOn: true })))}\n`
     + `export function selectCompanions() { return COMPANIONS }\n`)
   writeFileSync(join(PKG, 'scripts', 'provision-inproc-profile.mjs'), FAKE_PROVISIONER)
+  // The gate resolves `yaml` from the installed prefix (a runtime dependency of
+  // the shell package). Mirror the npm global layout with a symlink to the real
+  // workspace copy so the workspace assertions run without a registry install.
+  symlinkSync(resolve(requireFromTest.resolve('yaml'), '../..'), join(PREFIX, 'lib', 'node_modules', 'yaml'), 'dir')
 
   const indexSrc = '// fake bridge entry\n'
   writeFileSync(join(PKG, 'dist', 'bridge', 'index.js'), indexSrc)
@@ -268,7 +310,38 @@ describe('verifier against a fake provisioner', () => {
     expect(statusOf(report, 'bridge:copied')).toBe('PASS')
     expect(statusOf(report, 'bridge:identity')).toBe('PASS')
     expect(statusOf(report, 'lock:released')).toBe('PASS')
+    expect(statusOf(report, 'workspace:contract-keys')).toBe('PASS')
+    expect(statusOf(report, 'workspace:no-deepseek-copy')).toBe('PASS')
+    expect(statusOf(report, 'workspace:idempotent')).toBe('PASS')
     expect(existsSync(report.scratchHome)).toBe(false)
+  })
+
+  test('positive workspace assertions reject a bad contract, a @deepseek-ai copy and a drifting replay', async () => {
+    const badWorkspace = join(PKG, 'scripts', 'bad-workspace.flag')
+    const deepseekCopy = join(PKG, 'scripts', 'deepseek-copy.flag')
+    const drift = join(PKG, 'scripts', 'workspace-drift.flag')
+    try {
+      writeFileSync(badWorkspace, '1')
+      let report: any = await runVerification({ prefix: PREFIX, dshBin, keep: false })
+      expect(statusOf(report, 'workspace:contract-keys')).toBe('FAIL')
+      expect(String(report.checks.find((c: any) => c.name === 'workspace:contract-keys').detail)).toContain('nodeLinker="isolated"')
+      rmSync(badWorkspace, { force: true })
+
+      writeFileSync(deepseekCopy, '1')
+      report = await runVerification({ prefix: PREFIX, dshBin, keep: false })
+      expect(statusOf(report, 'workspace:no-deepseek-copy')).toBe('FAIL')
+      expect(String(report.checks.find((c: any) => c.name === 'workspace:no-deepseek-copy').detail)).toContain('@deepseek-ai')
+      rmSync(deepseekCopy, { force: true })
+
+      writeFileSync(drift, '1')
+      report = await runVerification({ prefix: PREFIX, dshBin, keep: false })
+      expect(statusOf(report, 'workspace:idempotent')).toBe('FAIL')
+      expect(String(report.checks.find((c: any) => c.name === 'workspace:idempotent').detail)).toContain('new backups=')
+    } finally {
+      rmSync(badWorkspace, { force: true })
+      rmSync(deepseekCopy, { force: true })
+      rmSync(drift, { force: true })
+    }
   })
 
   test('negative paths: no-dsh fail-fast, live-lock exit 2 without overwrite, bad bridge fail-fast + repair', async () => {
@@ -294,6 +367,7 @@ describe('verifier against a fake provisioner', () => {
       ['live-lock', ['liveLock']],
       ['bad-bridge', ['badBridge', 'badBridgeMissing']],
       ['bad-bridge-repair', ['badBridgeRepair']],
+      ['workspace-conflict', ['workspaceConflict', 'workspaceConflictRepair']],
     ] as const
     const savedPath = process.env.PATH
     const savedPin = process.env.DSH_OPENTUI_HOST_VERSION
@@ -319,6 +393,55 @@ describe('verifier against a fake provisioner', () => {
       if (savedPin === undefined) delete process.env.DSH_OPENTUI_HOST_VERSION
       else process.env.DSH_OPENTUI_HOST_VERSION = savedPin
     }
+  })
+
+  test('workspace-conflict: fail-fast on a bad contract, then --repair-bridge restores it with a backup', async () => {
+    const report: any = await runVerification({ prefix: PREFIX, scenario: 'workspace-conflict', dshBin, keep: true })
+    try {
+      expect(report.scenario).toBe('workspace-conflict')
+      expect(report.pass).toBe(true)
+      expect(report.scenarioStatus['workspace-conflict']).toBe('PASS')
+      expect(report.scenarios.workspaceConflict.status).not.toBe(0)
+      expect(report.scenarios.workspaceConflictRepair.status).toBe(0)
+      for (const name of ['exit-nonzero', 'fail-fast-trio', 'keeps-original', 'repair-exit0',
+        'contract-restored', 'backup-exists', 'manifest-clean']) {
+        expect(statusOf(report, `negative:workspace-conflict:${name}`)).toBe('PASS')
+      }
+      const stderr = String(report.scenarios.workspaceConflict.stderr)
+      expect(stderr).toContain('pnpm-workspace.yaml')
+      expect(stderr).toContain('nodeLinker')
+      expect(stderr).toContain('expected')
+      expect(stderr).toContain('got')
+      expect(stderr).toContain('Repair by hand')
+      expect(stderr).toContain('Repair with backup + rewrite')
+
+      const profileDir = join(report.scratchHome, 'home-workspace-conflict', 'profiles', PROFILE)
+      const workspacePath = join(profileDir, 'pnpm-workspace.yaml')
+      expect(readFileSync(workspacePath, 'utf8')).toBe(
+        'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n')
+      const backups = readdirSync(profileDir).filter((name) => name.startsWith('pnpm-workspace.yaml.bak-'))
+      expect(backups.length).toBeGreaterThan(0)
+      expect(readFileSync(join(profileDir, backups[0]), 'utf8')).toContain('nodeLinker: isolated')
+      const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+      expect(Object.keys(manifest.dependencies ?? {}).filter((name: string) => name.startsWith('@deepseek-ai/'))).toEqual([])
+    } finally {
+      rmSync(report.scratchHome, { recursive: true, force: true })
+    }
+  })
+
+  test('CLI --scenario=workspace-conflict dispatches both runs and exits 0 without dsh or a host pin', () => {
+    const { spawnSync } = require('node:child_process') as typeof import('node:child_process')
+    const env = { ...process.env, PATH: '/usr/bin:/bin' }
+    delete env.DSH_OPENTUI_HOST_VERSION
+    delete env.DSH_HOME
+    const result = spawnSync(process.execPath, [VERIFIER, '--prefix', PREFIX, '--scenario=workspace-conflict', '--json'], { encoding: 'utf8', env })
+    expect(result.status).toBe(0)
+    const report = JSON.parse(String(result.stdout).trim())
+    expect(report.scenario).toBe('workspace-conflict')
+    expect(Object.keys(report.scenarios)).toEqual(['workspaceConflict', 'workspaceConflictRepair'])
+    expect(report.scenarioStatus.positive).toBe('NOT RUN')
+    expect(statusOf(report, 'negative:workspace-conflict:fail-fast-trio')).toBe('PASS')
+    expect(statusOf(report, 'negative:workspace-conflict:repair-exit0')).toBe('PASS')
   })
 
   test('CLI --scenario=no-dsh emits JSON only with the three fail-fast assertions PASS', () => {
