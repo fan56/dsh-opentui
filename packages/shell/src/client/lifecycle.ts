@@ -4,7 +4,9 @@
  * still import `ensureHost`. Delete those legacy e2e scripts in T12, then
  * delete this file. Nothing in production imports it.
  */
-export const DEFAULT_PROFILE = "opentui"
+// T9: the one definition moved to profile-constants.ts. Re-exported here so
+// the out-of-scope legacy e2e scripts that still import this path keep working.
+export { DEFAULT_PROFILE } from "./profile-constants.ts"
 export type HostHandle = { authority: string; cookieHeader: string; dshHome: string }
 export type EnsureHostOptions = { profile?: string; idleExitSec?: number; dshHome?: string }
 

@@ -713,6 +713,13 @@ export interface SeamSettingsFace {
 	/** Profile name + dsh home (display only, never written). */
 	identity?(): { profile: string; dshHome: string }
 	/**
+	 * P0-3 — read-only fact for the /login pre-write consistency check: does the
+	 * directory the client's config/login faces write to match the profile the
+	 * running dsh process loads? A seam without the fact skips the check (never
+	 * fabricates one). The dirs are absolute so the notice can name both.
+	 */
+	profileConsistency?(): { ok: true } | { ok: false; clientDir: string; hostDir: string }
+	/**
 	 * Process permission catalog (`permissionPresets/catalog`): the real
 	 * options for `permission.defaultPreset` plus the effective default when
 	 * the settings field is omitted. Optional — a host without the service

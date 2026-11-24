@@ -106,6 +106,8 @@ class RecordingLoginFace implements LoginFace {
 	/** When set, routes() rejects — the dead-settings-seam arm. */
 	routesError: Error | undefined
 	registerOk = true
+	/** When set, registerRoute rejects instead of returning a plan (P1 reason test). */
+	registerError: Error | undefined
 	loginError: Error | undefined
 	logoutError: Error | undefined
 	/** Key refs that probe as configured (the /logout sweep's fixture). */
@@ -130,6 +132,7 @@ class RecordingLoginFace implements LoginFace {
 	}
 	async registerRoute(providerId: string, profile: Record<string, unknown> | undefined) {
 		this.calls.push(`route:${providerId}:${profile ? JSON.stringify(profile) : "unset"}`)
+		if (this.registerError) throw this.registerError
 		return this.registerOk
 			? { kind: "host-settings" as const, ns: "llm-pi-ai" as const, ops: [{ op: "set" as const, path: ["providers", providerId], value: profile ?? {} }] }
 			: { kind: "invalid" as const, reason: "host settings channel refused the route" }
@@ -168,6 +171,22 @@ function seamWith(face: LoginFace | undefined): SessionSeam {
 	return {
 		login: face,
 		settings: { mutate: async () => ({ ok: true }) },
+	} as unknown as SessionSeam
+}
+
+/** P0-3: a seam whose client profile directory differs from the one the dsh
+ *  process actually loads. The notice must name both dirs and the repair. */
+function seamWithMismatch(face: LoginFace | undefined): SessionSeam {
+	return {
+		login: face,
+		settings: {
+			mutate: async () => ({ ok: true }),
+			profileConsistency: () => ({
+				ok: false,
+				clientDir: "/home/u/.dsh/profiles/opentui",
+				hostDir: "/home/u/.dsh/profiles/opentui-inproc",
+			}),
+		},
 	} as unknown as SessionSeam
 }
 
@@ -305,6 +324,18 @@ describe("/login command (batch H4)", () => {
 		const { ctx, lines } = makeLoginCtx({ face: new RecordingLoginFace(), type: [] })
 		await runLogin({ ...ctx, seam: seamWith(undefined) } as any, "")
 		expect(lines).toEqual(["/login unavailable in this session"])
+	})
+
+	test("P0-3: a profile mismatch refuses the whole commit with both dirs", async () => {
+		const face = new RecordingLoginFace()
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: ["sk-secret"] })
+		;(ctx as any).seam = seamWithMismatch(face)
+		await runLogin(ctx as any, "deepseek")
+		expect(face.calls).toEqual([])
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui")
+		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui-inproc")
+		expect(lines[0]).toContain("restart dsh-opentui")
 	})
 })
 
@@ -500,13 +531,39 @@ describe("/logout command (C8 gap fix)", () => {
 		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
 		await runLogout(ctx as any, "")
 		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "logout:DEEPSEEK_API_KEY", "route:deepseek:unset"])
-		expect(lines).toEqual(["DeepSeek logged out — key removed, route removal failed"])
+		expect(lines).toEqual([
+			"DeepSeek logged out — key removed, but the deepseek route stayed: host settings channel refused the route. "
+			+ "Next: fix that settings write (retry after the host recovers) or remove the deepseek route in /settings; no key is stored now.",
+		])
 	})
 
 	test("degrades to a notice without the seam face", async () => {
 		const { ctx, lines } = makeLoginCtx({ face: new RecordingLoginFace(), type: [] })
 		await runLogout({ ...ctx, seam: seamWith(undefined) } as any, "")
 		expect(lines).toEqual(["/logout unavailable in this session"])
+	})
+
+	test("P0-3: a profile mismatch removes neither key nor route", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		;(ctx as any).seam = seamWithMismatch(face)
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY"])
+		expect(lines[0]).toContain("restart dsh-opentui")
+	})
+
+	test("P1: a rejecting registerRoute puts the reason and the next step on screen", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		face.registerError = new Error("settings channel down")
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		await runLogout(ctx as any, "")
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("settings channel down")
+		expect(lines[0]).toContain("Next:")
 	})
 })
 

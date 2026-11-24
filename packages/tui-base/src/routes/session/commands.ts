@@ -473,6 +473,22 @@ export function loginStepTitle(stepTitle: string, error?: string): string {
 }
 
 /**
+ * P0-3 — pre-write consistency check for the profile-directory writes that
+ * /login and /logout perform. Both the route plan and the key file land in the
+ * client's profile directory; if the dsh process that is actually running
+ * loads a DIFFERENT profile, a "successful" login is invisible to /model and
+ * the user gets no hint. Refuse before writing and say both directories plus
+ * the repair. A seam that does not publish the fact skips the check (it is
+ * never guessed from the client's own value).
+ */
+function profileDirsAgree(seam: SessionSeam, say: (text: string) => void): boolean {
+	const state = seam.settings?.profileConsistency?.()
+	if (!state || state.ok) return true
+	say(t("command.profile.mismatch", { clientDir: state.clientDir, hostDir: state.hostDir }))
+	return false
+}
+
+/**
  * The commit half both flows share (old-stack commitLogin): register the
  * route through the settings seam first, then store the key through the
  * credentials seam. Route failure keeps the key unstored (no garbage
@@ -484,6 +500,7 @@ export async function commitLoginRoute(
 	entry: CatalogEntry,
 	key: string,
 	settings?: SettingsMutate,
+	seam?: SessionSeam,
 ): Promise<void> {
 	// The old stack's empty-commit guard: an empty key fired a credentials.set
 	// the host rejects AND registered a garbage route. An empty key is a
@@ -492,6 +509,9 @@ export async function commitLoginRoute(
 		say(t("command.login.cancelledEmptyKey"))
 		return
 	}
+	// P0-3: refuse the WHOLE commit (route + key) before touching either file
+	// when the client's profile directory is not the one the host loads.
+	if (seam && !profileDirsAgree(seam, say)) return
 	const plan = await face.registerRoute(entry.id, providerProfileFor(entry))
 	const registered = await applyRoutePlan(plan, settings, () => {
 		say(t("command.login.routeRegistrationFailed", { id: entry.id }))
@@ -614,7 +634,7 @@ export async function commitCatalogLogin(
 ): Promise<void> {
 	const key = await ctx.promptText?.(`API key for ${entry.name} (${deriveKeyRef(entry.id)})`, { mask: true })
 	if (key === undefined) return
-	await commitLoginRoute(ctx.say, face, entry, key, ctx.seam.settings?.mutate?.bind(ctx.seam.settings))
+	await commitLoginRoute(ctx.say, face, entry, key, ctx.seam.settings?.mutate?.bind(ctx.seam.settings), ctx.seam)
 }
 
 /**
@@ -662,7 +682,7 @@ export async function runCustomLoginChain(
 		else {
 			// step 6 — the masked key; the commit consumes it directly.
 			const entry = buildCustomEntry(answers as { routeId: string; baseURL: string; models: string })
-			await commitLoginRoute(ctx.say, face, entry, trimmed, ctx.seam.settings?.mutate?.bind(ctx.seam.settings))
+			await commitLoginRoute(ctx.say, face, entry, trimmed, ctx.seam.settings?.mutate?.bind(ctx.seam.settings), ctx.seam)
 			return
 		}
 	}
@@ -1088,24 +1108,45 @@ export function coreCommands(): SlashCommand[] {
 					if (!picked) return
 					target = loggedIn.find((t) => t.id === picked)
 				}
-				if (!target) return
-				try {
-					await face.logout(target.ref)
-				} catch (error) {
-					ctx.say(t("command.logout.routeFailed", { id: target.id, reason: seamFailureReason(error) }))
-					return
-				}
-				if (target.custom) {
-					ctx.say(t("command.logout.done", { name: target.name }))
-					return
-				}
-				const plan = await face.registerRoute(target.id, undefined).catch(() => undefined as SeamRegisterRoutePlan | undefined)
-				const cleared = plan !== undefined && await applyRoutePlan(plan, ctx.seam.settings?.mutate?.bind(ctx.seam.settings), () => {})
-				ctx.say(
-					cleared
-						? t("command.logout.routeRemoved", { name: target.name })
-						: t("command.logout.routeRemoveFailed", { name: target.name }),
-				)
+			if (!target) return
+			// P0-3: same pre-write guard as /login — never remove a key or a
+			// route from a profile the running dsh process does not load.
+			if (!profileDirsAgree(ctx.seam, ctx.say)) return
+			try {
+				await face.logout(target.ref)
+			} catch (error) {
+				ctx.say(t("command.logout.routeFailed", { id: target.id, reason: seamFailureReason(error) }))
+				return
+			}
+			if (target.custom) {
+				ctx.say(t("command.logout.done", { name: target.name }))
+				return
+			}
+			// P1: keep the reason instead of swallowing it. A route-clear failure
+			// must tell the user what broke AND what to do next, not just "failed".
+			let plan: SeamRegisterRoutePlan | undefined
+			let planError: unknown
+			try {
+				plan = await face.registerRoute(target.id, undefined)
+			} catch (error) {
+				planError = error
+			}
+			let clearReason: string | undefined
+			const cleared = plan !== undefined && await applyRoutePlan(
+				plan,
+				ctx.seam.settings?.mutate?.bind(ctx.seam.settings),
+				(reason) => { clearReason = reason },
+			)
+			const reason = planError !== undefined
+				? seamFailureReason(planError)
+				: plan === undefined
+					? "no route-clear plan was produced"
+					: clearReason ?? "unknown failure"
+			ctx.say(
+				cleared
+					? t("command.logout.routeRemoved", { name: target.name })
+					: t("command.logout.routeRemoveFailed", { name: target.name, id: target.id, reason }),
+			)
 			},
 		},
 		{

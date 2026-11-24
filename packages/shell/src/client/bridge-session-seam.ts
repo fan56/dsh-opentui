@@ -224,6 +224,13 @@ export interface BridgeTransport {
 	request(method: string, params?: Record<string, unknown>): Promise<unknown>
 	/** Subscribe to `event{type,payload}` frames; returns a disposer. */
 	onEvent(listener: (event: BridgeEventFrame) => void): () => void
+	/**
+	 * The profile the dsh process was actually spawned under. `StdioBridgeTransport`
+	 * exposes it from its `--profile` argv. Optional: a transport that does not
+	 * expose it simply skips the /login write-time consistency check — the seam
+	 * never guesses or fabricates a host profile.
+	 */
+	readonly profile?: string
 }
 
 /** `ctx.logger` — the host logger shape (info/warn/error), structural so the
@@ -1475,6 +1482,8 @@ export class BridgeSessionSeam implements SessionSeam {
 				.then(projectHostMutateResult, hostMutateError)
 		},
 		identity: () => ({ profile: this.#profile, dshHome: this.#dshHome }),
+		/** P0-3: read-only fact for /login's pre-write profile consistency check. */
+		profileConsistency: () => this.profileConsistency,
 		// 025-w2-4 — real permissionPresets/catalog face. The old top-level
 		// permissionCatalog() (ADR-0011 one-shot notice) stays intact; this is a
 		// SEPARATE honest read: a service-absent / malformed reply -> undefined
@@ -1579,10 +1588,13 @@ export class BridgeSessionSeam implements SessionSeam {
 	 */
 	login: NonNullable<SessionSeam["login"]> = {
 		credentialStatus: (ref) => Promise.resolve(this.#localLogin.credentialStatus(ref)),
-		login: (ref, apiKey) => { this.#localLogin.login(ref, apiKey); return Promise.resolve() },
-		logout: (ref) => { this.#localLogin.logout(ref); return Promise.resolve() },
+		login: (ref, apiKey) => { this.#assertProfileConsistency(); this.#localLogin.login(ref, apiKey); return Promise.resolve() },
+		logout: (ref) => { this.#assertProfileConsistency(); this.#localLogin.logout(ref); return Promise.resolve() },
 		routes: () => Promise.resolve(this.#localLogin.routes()),
-		registerRoute: (providerId, profile) => Promise.resolve(this.#localLogin.registerRoute(providerId, profile)),
+		registerRoute: async (providerId, profile) => {
+			this.#assertProfileConsistency()
+			return this.#localLogin.registerRoute(providerId, profile)
+		},
 	}
 
 	/**
@@ -2268,7 +2280,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#transport = options.transport
 		this.#ctx = options.ctx
 		// S5 — resolve the client profile home/workspace with the SAME source the
-		// composition root uses (DEFAULT_PROFILE='opentui', $DSH_HOME or ~/.dsh).
+		// composition root uses (DEFAULT_PROFILE from profile-constants.ts,
+		// $DSH_HOME or ~/.dsh). T11 changes that one constant, not this line.
 		this.#dshHome = options.dshHome ?? resolveDshHome()
 		this.#profile = options.profile ?? DEFAULT_PROFILE
 		const workspaceDir = options.workspaceDir ?? process.cwd()
@@ -2300,6 +2313,39 @@ export class BridgeSessionSeam implements SessionSeam {
 			now: () => Date.now(),
 		}
 		this.#unsubEvent = this.#transport.onEvent((frame) => this.#onBridgeEvent(frame))
+	}
+
+	/**
+	 * Read-only consistency fact for /login's pre-write guard. Compares the
+	 * directory the client's config/login faces write to (`#profile`) with the
+	 * profile the running dsh process actually loads (`transport.profile`).
+	 * A transport that does not expose its profile is treated as "no fact" —
+	 * the seam never guesses or fabricates a host profile.
+	 */
+	get profileConsistency(): { ok: true } | { ok: false; clientDir: string; hostDir: string } {
+		const host = this.#transport.profile
+		if (host === undefined || host === this.#profile) return { ok: true }
+		return {
+			ok: false,
+			clientDir: join(this.#dshHome, "profiles", this.#profile),
+			hostDir: join(this.#dshHome, "profiles", host),
+		}
+	}
+
+	/**
+	 * Seam-side double guard: refuse any local profile-directory write when the
+	 * two names drifted. The message is plain language (both directories + the
+	 * repair), no transport-frame jargon; the command layer shows the localized
+	 * version of the same fact before it ever prompts for a key.
+	 */
+	#assertProfileConsistency(): void {
+		const state = this.profileConsistency
+		if (state.ok) return
+		throw new Error(
+			`Profile mismatch: profile files would be written to ${state.clientDir} ` +
+			`but the running dsh process reads ${state.hostDir}. Nothing was written. ` +
+			`Fix: restart dsh-opentui so both use ${state.hostDir} (remove any one-sided profile override), then retry.`,
+		)
 	}
 
 	/** Additive handshake helper (not one of the 19 seam members): ping fills
@@ -3810,6 +3856,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	configSave(patch: Record<string, unknown>): Record<string, unknown> {
+		this.#assertProfileConsistency()
 		return this.#configStore.configSave(patch)
 	}
 

@@ -26,6 +26,7 @@ import {
 	type BridgeEventFrame,
 	type BridgeTransport,
 } from "./bridge-session-seam.ts"
+import { DEFAULT_PROFILE } from "./profile-constants.ts"
 import {
 	BRIDGE_PROTOCOL_VERSION,
 	BridgeBootstrapError,
@@ -68,7 +69,7 @@ export interface StdioBridgeTransportOptions {
 	dshBin?: string
 	/** DSH_HOME (default: $DSH_HOME or ~/.dsh). Must be the shared home. */
 	dshHome?: string
-	/** Profile the bridge is mounted in (default: "opentui-inproc"). */
+	/** Profile the bridge is mounted in (default: `DEFAULT_PROFILE`). */
 	profile?: string
 	/** Extra env merged over process.env (DSH_* overrides applied last). */
 	env?: NodeJS.ProcessEnv
@@ -151,6 +152,16 @@ export class StdioBridgeTransport implements BridgeTransport {
 		return this.#stderrTail.slice(-12).join("\n")
 	}
 
+	/**
+	 * The profile the dsh host is actually spawned under — read-only, derived
+	 * from the exact `--profile` argv built in #spawn(). This is the authoritative
+	 * source for the /login pre-write consistency guard: the client's config
+	 * faces must write to the same profile directory the running host loads.
+	 */
+	get profile(): string {
+		return this.#opts.profile ?? DEFAULT_PROFILE
+	}
+
 	/** A3: the current bridge-link state (read-only). */
 	get state(): BridgeTransportState {
 		return this.#state
@@ -185,7 +196,7 @@ export class StdioBridgeTransport implements BridgeTransport {
 		const spawnFn: BridgeSpawnFn =
 			this.#opts.spawnFn ??
 			((command, args, options) => nodeSpawn(command, [...args], options as never) as unknown as SpawnedBridgeChild)
-		const child = spawnFn(this.#opts.dshBin ?? "dsh", ["--profile", this.#opts.profile ?? "opentui-inproc"], {
+		const child = spawnFn(this.#opts.dshBin ?? "dsh", ["--profile", this.profile], {
 			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		})
