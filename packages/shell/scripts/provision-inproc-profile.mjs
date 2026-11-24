@@ -6,11 +6,11 @@
 // Invoked by the launcher on EVERY start (S6: bridge is the sole seam; the
 // former env escape hatch that skipped provisioning is removed with it).
 // The `opentui` profile path is otherwise untouched.
-// Eight steps (the first is the host-version gate). Steps 1-3 and 5-8 are
+// Seven steps (the first is the host-version gate). Steps 1, 3 and 5-7 are
 // local-FS only; step 4 (companions) is the one unfrozen step that MAY run a
 // package manager (user decision 2026-11-22 — "npm 安装好的时候，registry 和其他几个依赖插件，默认装好").
 //
-//   [1/8] host     — detect the running dsh version. OUTSIDE the supported
+//   [1/7] host     — detect the running dsh version. OUTSIDE the supported
 //                    window (>=0.2.2-rc.3 <0.3.0) => fail-fast with the three
 //                    fail-fast elements: the host would otherwise skip the
 //                    bridge bundle silently (it only records the conflict in
@@ -19,22 +19,22 @@
 //                    exact-version exemption in compatibility.json. Never
 //                    grants outside the window: --accept-risk is not a way to
 //                    mask a genuine incompatibility.
-//   [2/8] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
+//   [2/7] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
 //                    dsh.profile.bundles = [@deepseek-ai/dsh-base,
 //                    @aiwayds/dsh-opentui-bridge] PLUS any companion bundles
 //                    already declared in dependencies. NO @deepseek-ai
 //                    dependency is ever written: the host's installation-first
 //                    bundle resolution supplies those bundles from the running
 //                    dsh closure (wild-package shadowing is the historical
-//                    incident this guard prevents).
-//   [3/8] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
-
+//                    incident this guard prevents). Converged with the patch
+//                    in ONE package.json.lock critical section.
+//   [3/7] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
 //                    REAL DIRECTORY COPY of THIS installation's dist/bridge.
 //                    S6 symlink-debt retirement: no absolute symlink (no path
 //                    binding, no multi-worktree last-writer-wins, no dangling
 //                    link when a worktree is removed). Converged every launch;
 //                    idempotent when the copy's index.js hash matches.
-//   [4/8] companions — install the minimal companion set (default: the
+//   [4/7] companions — install the minimal companion set (default: the
 //                    @aiwayds/dsh-subagent-registry bundle, which self-mounts
 //                    the `use_agent` tool through its own cordis.patch.yml).
 //                    Resolves `latest`, guards major/downgrade, skips when
@@ -45,40 +45,40 @@
 //                    and hosts without dsh skip companions with a warning.
 //                    Step 5 then verifies that whatever remains declared in
 //                    the manifest is fully mounted.
-//   [5/8] verify   — confirm the bridge is a real directory carrying the
+//   [5/7] verify   — confirm the bridge is a real directory carrying the
 //                    shipped files; refuse any @deepseek-ai copy in the profile;
 //                    cross-check companion manifest deps <-> bundle entries <-
 //                    -> installed node_modules (no half-provisioned state).
 //                    Step 4 drops stale declarations an unsuccessful add left
 //                    behind, so this guard never blocks a boot for something
 //                    the provisioning pass itself could not install offline.
-//   [6/8] identity — T5 guard: hash the materialized bridge's index.js and
+//   [6/7] identity — T5 guard: hash the materialized bridge's index.js and
 //                    compare with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
-//   [7/8] patch    — generate $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml
-//                    from the embedded inproc-only template (web-app
+//   [2/7] patch    — converge cordis.patch.yml with the embedded template in the
+//                    SAME lock as the manifest (web-app
 //                    compensation rows removed, profileRevision stamped). The
 //                    template also registers the standalone sessionController
 //                    shim plus the real @deepseek-ai/dsh-api-session-controller
 //                    plugin — no dsh-web-app bundle is pulled in. Companion
 //                    mounts ride their own bundle patches (activated by the
 //                    manifest bundle entries), so no duplicate rows are added
-//                    here.
-//   [8/8] shim     — generate the local shim package under the profile's
+//                    here; the lock is released before step 3.
+//   [7/7] shim     — generate the local shim package under the profile's
 //                    node_modules (@aiwayds scope) that the patch row resolves.
 //                    Its
 //                    @deepseek-ai/cordis import is resolved by the host against
 //                    the profile scope, exactly like the bridge. revision +
 //                    backup converge it.
 //
-// T4 — cross-instance mutual exclusion:
-//   The whole provisioning run is serialized by `.provision.lock` in the
-//   profile dir, created with O_EXCL ("wx"). A live holder makes late
-//   instances wait briefly (bounded retries) and then SKIP; a stale lock
-//   (holder pid gone, age over threshold, corrupt, or self-leftover) is
-//   taken over. The lock is released in `finally`, including on failure.
-//   Same-machine only: no cross-host / cross-user semantics.
+// T4 — cross-instance mutual exclusion (R14/R15):
+//   `.provision.lock` serializes the WHOLE run (O_EXCL). A live holder is
+//   waited for (<=30s, 50->500ms backoff) and then FAILS with exit 2 — never
+//   SKIP-0. Liveness is pid-only; a live record is never aged out, including
+//   a reused pid (manual recovery only); a dead holder is reclaimed under a sha256
+//   claim. `package.json.lock` replicates the host's `${pid}\n` protocol and is
+//   held only for the manifest+patch critical section, never across pnpm installs.
 //
 // Idempotency: an existing bridge directory whose index.js hash matches THIS
 // install's build-time fingerprint is left untouched; a stale directory, a
@@ -90,7 +90,7 @@
 // convergence, so a fingerprint mismatch still fails loud.
 //
 // Hard guard: this script only ever touches the ONE profile named
-// `opentui-inproc`. The ONLY package-manager call is step [4/8], scoped to the
+// `opentui-inproc`. The ONLY package-manager call is step [4/7], scoped to the
 // explicit companion catalog; it never writes a @deepseek-ai dependency into
 // the manifest (those bundles come from the running dsh closure).
 
@@ -102,7 +102,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  openSync,
+  copyFileSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -134,7 +134,7 @@ import {
   isHostVersionSupported,
 } from './lib/host-compat.mjs'
 // Companion policy is a pure table; only the spawn and registry query live
-// here (see step [4/8]). Mirrors dsh-tui-pi's companion-latest pattern.
+// here (see step [4/7]). Mirrors dsh-tui-pi's companion-latest pattern.
 import {
   COMPANIONS,
   COMPANION_LATEST_ENV,
@@ -148,11 +148,11 @@ const PROFILE = 'opentui-inproc'
 const BRIDGE_NAME = '@aiwayds/dsh-opentui-bridge'
 const BUNDLES = ['@deepseek-ai/dsh-base', BRIDGE_NAME]
 
-// --- T4 lock tuning (same-machine only) -------------------------------------
-const LOCK_NAME = '.provision.lock'
-const LOCK_STALE_MS = 30_000 // a live holder older than 30s is treated as stale
-const LOCK_RETRY_MS = 25 // backoff between attempts while a peer holds the lock
-const LOCK_MAX_ATTEMPTS = 40 // <= ~1s of waiting before a peer is skipped
+// --- Provision-run lock (R14): live holders are NEVER aged out ---------------
+// The protocol, claim file and constants live in scripts/lib/provision-run-lock.mjs.
+// A live holder is waited for up to 30s, then the run exits 2 (never SKIP-0).
+// The host-compatible lock lives in scripts/lib/profile-lock.mjs.
+// Lock order is always .provision.lock -> package.json.lock (never reversed).
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 // Testability seam: the fail-fast tests point this at a bogus bridge dir to
@@ -165,19 +165,19 @@ const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
 const profileDir = join(dshHome, 'profiles', PROFILE)
 const manifestPath = join(profileDir, 'package.json')
 const linkPath = join(profileDir, 'node_modules', ...BRIDGE_NAME.split('/'))
-const lockPath = join(profileDir, LOCK_NAME)
+// .provision.lock is owned by scripts/lib/provision-run-lock.mjs (R14).
 
 // --- Inproc patch ownership ------------------------------------------------
 // S6: the patch/shim steps are unconditional (the env escape hatch that used
 // to skip them is removed with the legacy seam). The launcher runs this script
 // on every start; --repair-bridge and direct invocation converge identically.
-const TOTAL_STEPS = 8
+const TOTAL_STEPS = 7
 const COMPANION_INSTALL_TIMEOUT_MS = 10 * 60 * 1000
 const PATCH_NAME = 'cordis.patch.yml'
 const patchPath = join(profileDir, PATCH_NAME)
 const PATCH_REVISION_MARKER = '# profileRevision: '
 // Local shim package generated under the profile's node_modules. It lives in
-// the @aiwayds scope (never @deepseek-ai — see the guard in step [5/8]) so the
+// the @aiwayds scope (never @deepseek-ai — see the guard in step [5/7]) so the
 // host resolves it from the profile scope; its own @deepseek-ai/cordis import
 // is routed by the host's runtime interception to the same dsh closure that
 // serves the bridge. The patch row uses this bare package name.
@@ -613,7 +613,7 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
     maxDepth: 1
 
 # Companion mounts (2026-11-22 unfreeze). The minimal set installed by
-# provision-inproc-profile.mjs step [4/8] is @aiwayds/dsh-subagent-registry,
+# provision-inproc-profile.mjs step [4/7] is @aiwayds/dsh-subagent-registry,
 # which registers the use_agent / ask_agent tools globally and carries its OWN
 # cordis.patch.yml mount row. That row is activated by the dsh.profile.bundles
 # entry that dsh plugin add writes into package.json — no duplicate row is added
@@ -624,7 +624,7 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
 # Standalone sessionController support (no dsh-web-app bundle). The real
 # controller needs 13 injects; 11 come from dsh-base, and the two web-only ones
 # (fileUploads, workspaceRegistry) are satisfied by the local shim package
-# generated in step [8/8]. No connection shim: dsh-api-gateway's optional
+# generated in step [7/7]. No connection shim: dsh-api-gateway's optional
 # ctx.inject(['connection']) calls connection.rpc.intercept(...), which a no-op
 # stub cannot honor; leaving connection absent only keeps the controller's
 # SessionMediaReferences sub-plugin pending, which does not block list().
@@ -665,7 +665,7 @@ const PATCH_CONTENT = `${PATCH_HEADER}${PATCH_TEMPLATE}`
 const KNOWN_PATCH_MD5 = new Set(['54b66bf37fbbb93a6f9dd204a24473f7'])
 
 // --- Standalone sessionController shim template -----------------------------
-// Generated into the profile's node_modules (step [8/8]) so its runtime imports
+// Generated into the profile's node_modules (step [7/7]) so its runtime imports
 // are resolved from the profile scope by the host, exactly like the bridge.
 // The real controller imports fileUploads / workspaceRegistry as TYPES ONLY;
 // only the narrow methods below are ever called, so no dsh-web-app closure is
@@ -776,109 +776,13 @@ function sleepSync(ms) {
   Atomics.wait(buf, 0, 0, ms)
 }
 
-// --- T4: lock helpers -------------------------------------------------------
+// --- JSON helpers (locks now live in scripts/lib/*-lock.mjs) ----------------
 function readJsonObject(path) {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
     return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined
   } catch {
     return undefined
-  }
-}
-
-function readLock() {
-  const raw = readJsonObject(lockPath)
-  if (!raw || !Number.isInteger(raw.pid) || !Number.isFinite(raw.ts)) return undefined
-  return raw
-}
-
-/** process.kill(pid, 0) probes existence without signalling. EPERM means the
- *  process exists but belongs to another user — treat it as alive (no
- *  cross-user takeover semantics by design). */
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error?.code === 'EPERM'
-  }
-}
-
-function staleReason(lock) {
-  if (lock === undefined) return 'lock file is unreadable or corrupt'
-  if (lock.pid === process.pid) return `held by self (pid ${lock.pid})`
-  if (!pidAlive(lock.pid)) return `holder pid ${lock.pid} no longer exists`
-  return `holder pid ${lock.pid} alive but lock age ${Date.now() - lock.ts}ms > ${LOCK_STALE_MS}ms`
-}
-
-function isStale(lock) {
-  if (lock === undefined) return true
-  if (lock.pid === process.pid) return true
-  if (!pidAlive(lock.pid)) return true
-  return Date.now() - lock.ts > LOCK_STALE_MS
-}
-
-/** Exclusive-create the lock. Returns the owned token, or undefined when a
- *  live peer kept it through all retries (caller then SKIPs). Stale locks are
- *  removed and re-contended. Ownership is re-read after create so a concurrent
- *  stale-takeover cannot make two processes both believe they hold it. */
-function acquireLock() {
-  for (let attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
-    const token = { pid: process.pid, ts: Date.now() }
-    let created = false
-    try {
-      const fd = openSync(lockPath, 'wx', 0o600)
-      try {
-        writeSync(fd, JSON.stringify(token))
-      } finally {
-        closeSync(fd)
-      }
-      created = true
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error
-    }
-
-    if (created) {
-      const held = readLock()
-      if (held && held.pid === token.pid && held.ts === token.ts) {
-        if (attempt > 1) note(`acquired provisioning lock on attempt ${attempt}`)
-        return token
-      }
-      // Our create was immediately replaced by another process — do NOT
-      // unlink (the lock now belongs to them); just retry.
-      sleepSync(LOCK_RETRY_MS)
-      continue
-    }
-
-    // EEXIST: inspect the holder.
-    const lock = readLock()
-    if (isStale(lock)) {
-      note(`stale provisioning lock (${staleReason(lock)}); taking over`)
-      try {
-        unlinkSync(lockPath)
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
-      }
-      continue
-    }
-    if (attempt === 1 || attempt % 5 === 0) {
-      note(`waiting for provisioning lock (holder pid ${lock.pid}, age ${Date.now() - lock.ts}ms) — attempt ${attempt}/${LOCK_MAX_ATTEMPTS}`)
-    }
-    sleepSync(LOCK_RETRY_MS)
-  }
-  return undefined
-}
-
-/** Only unlink a lock that is still ours, so a peer that took over after our
- *  stale threshold never loses its own lock to our cleanup. */
-function releaseLock(token) {
-  if (!token) return
-  try {
-    const held = readLock()
-    if (held && held.pid === token.pid && held.ts === token.ts) unlinkSync(lockPath)
-  } catch {
-    /* best effort cleanup: never mask the primary provisioning result */
   }
 }
 
@@ -922,34 +826,46 @@ function installedCompanionVersion(name) {
 
 /**
  * A failed `dsh plugin add` can leave a dependency + bundle row behind without
- * ever installing node_modules. Left alone, step [5/8] would turn that
+ * ever installing node_modules. Left alone, step [5/7] would turn that
  * half-write into a permanent boot blocker on later (offline) starts, with no
  * self-heal path. Drop only the stale declarations — healthy companions and
  * the user's own dependencies are untouched — so the failure stays a WARN and
  * provisioning always yields a usable profile.
  */
 function dropUnmountedCompanions(reason, only = null) {
-  const manifest = readManifest()
-  if (!manifest?.dependencies || typeof manifest.dependencies !== 'object') return 0
-  const bundles = Array.isArray(manifest.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : null
-  const stale = COMPANIONS.filter((entry) =>
-    (!only || only.includes(entry.name)) &&
-    Object.prototype.hasOwnProperty.call(manifest.dependencies, entry.name) &&
-    installedCompanionVersion(entry.name) === undefined)
-  if (stale.length === 0) return 0
-  for (const entry of stale) {
-    delete manifest.dependencies[entry.name]
-    if (bundles) {
-      const at = bundles.indexOf(entry.name)
-      if (at !== -1) bundles.splice(at, 1)
+  // N4: this late manifest write uses the SAME host lock as step 2's manifest
+  // convergence. We acquire it only for this short read-modify-write — step 4
+  // as a whole must NOT hold package.json.lock (the host holds it for all of
+  // pnpm during `dsh plugin add`). `dsh plugin add` itself writes the manifest
+  // under the host's lock; we never rewrite the manifest after a successful
+  // add, only clean up declarations that failed to mount.
+  return withProfileWriteLock(profileDir, () => {
+    const manifest = readManifest()
+    if (!manifest?.dependencies || typeof manifest.dependencies !== 'object') return 0
+    const bundles = Array.isArray(manifest.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : null
+    const stale = COMPANIONS.filter((entry) =>
+      (!only || only.includes(entry.name)) &&
+      Object.prototype.hasOwnProperty.call(manifest.dependencies, entry.name) &&
+      installedCompanionVersion(entry.name) === undefined)
+    if (stale.length === 0) return 0
+    for (const entry of stale) {
+      delete manifest.dependencies[entry.name]
+      if (bundles) {
+        const at = bundles.indexOf(entry.name)
+        if (at !== -1) bundles.splice(at, 1)
+      }
+      warn(`companion ${entry.name}: ${reason}; dropping stale declaration (companions are optional)`)
     }
-    warn(`companion ${entry.name}: ${reason}; dropping stale declaration (companions are optional)`)
-  }
-  const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
-  writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`)
-  renameSync(tmpPath, manifestPath)
-  say(4, 'companions', `dropped ${stale.length} stale companion declaration(s) — profile stays usable`)
-  return stale.length
+    // Copy, never rename: a crash between moving away the live manifest and
+    // writing its replacement used to leave the profile with no manifest.
+    const backupPath = `${manifestPath}.bak-${Date.now()}`
+    copyFileSync(manifestPath, backupPath)
+    const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
+    writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+    renameSync(tmpPath, manifestPath)
+    say(4, 'companions', `dropped ${stale.length} stale companion declaration(s) — profile stays usable`)
+    return stale.length
+  })
 }
 
 /**
@@ -968,7 +884,7 @@ function dshOnPath() {
 }
 
 /**
- * Step [4/8] — install the minimal companion set.
+ * Step [4/7] — install the minimal companion set.
  *
  * The install is done through `dsh plugin add`, which is the one supported way
  * to put a @aiwayds package into a profile: it writes the dependency, appends
@@ -977,11 +893,11 @@ function dshOnPath() {
  * registry's `dsh-jev-core` dependency, which the client's spin-attention
  * probe then finds in the profile. With `nodeLinker: hoisted` +
  * `autoInstallPeers: false` in this profile, no @deepseek-ai peer is copied
- * into the profile, so step [5/8]'s no-@deepseek-ai guard still holds.
+ * into the profile, so step [5/7]'s no-@deepseek-ai guard still holds.
  *
  * Companions are optional: an install failure is a WARN, never a boot blocker.
  * A half-write (dependency declared, package missing) is cleaned up here —
- * immediately after a failed add, and on later offline starts — so step [5/8]
+ * immediately after a failed add, and on later offline starts — so step [5/7]
  * never hard-fails on a state this step itself could not resolve.
  */
 function provisionCompanions() {
@@ -1002,7 +918,7 @@ function provisionCompanions() {
         Object.prototype.hasOwnProperty.call(manifest.dependencies ?? {}, entry.name)) {
       // A previous add left the dependency behind but never mounted the
       // package. Offline there is no way to heal it: drop the stale declaration
-      // instead of handing step [5/8] an unrecoverable hard fail.
+      // instead of handing step [5/7] an unrecoverable hard fail.
       dropUnmountedCompanions('declared but not installed, and offline', [entry.name])
       note(`companion ${entry.name}: skip (offline-stale)`)
       unavailable++
@@ -1037,7 +953,7 @@ function provisionCompanions() {
         `Install dsh and re-run provisioning to auto-install them, or set ${COMPANION_LATEST_ENV}=off to skip them permanently.`,
     )
     // A previous failed add may have left a half-written declaration. Drop it
-    // so step [5/8] never blocks a boot over a package we cannot install here.
+    // so step [5/7] never blocks a boot over a package we cannot install here.
     dropUnmountedCompanions('no global dsh on PATH')
     say(4, 'companions', 'skipped (no global `dsh` on PATH; companions are optional)')
     return
@@ -1078,7 +994,7 @@ function provisionCompanions() {
 }
 
 /**
- * Step [5/8] cross-check: the companion state has three views — manifest
+ * Step [5/7] cross-check: the companion state has three views — manifest
  * dependencies, manifest bundles and installed node_modules. A provisioning
  * pass that updated only one of them is a "two-state drift"; refuse to boot
  * rather than booting a profile that composes a bundle it cannot resolve.
@@ -1271,65 +1187,138 @@ function verifyHostCompatibility(bridgeDir) {
   }
 }
 
-// B1 S3 — runtime-field merge. Static import placed AFTER the template block
-// (ESM import declarations are hoisted and may sit at any top-level position)
-// so the ledger-evidenced template lines 566-578 never shift.
-import { mergeRuntimeFields } from './lib/patch-runtime-merge.mjs'
+// T4 — static imports placed AFTER the template block (ESM imports are hoisted
+// and may sit at any top-level position) so the ledger-evidenced template lines
+// 566-578 never shift. The old line-based mergeRuntimeFields writer is retired:
+// converge owns the patch now (design 06 R0-R29).
+import { converge, managedIds, splitPatch } from './lib/patch-ownership.mjs'
+import { readState, writeState } from './lib/patch-ownership-state.mjs'
+import { withProfileWriteLock } from './lib/profile-lock.mjs'
+import { acquireProvisionRunLock, ProvisionLockError, releaseProvisionRunLock } from './lib/provision-run-lock.mjs'
 
 // --- Inproc cordis.patch.yml ownership ------------------------------------
-/** Read the profileRevision stamped by this script, if present. */
-function readPatchRevision(content) {
-  const match = typeof content === 'string' ? content.match(/^# profileRevision: ([0-9a-f]+)$/m) : null
-  return match ? match[1] : undefined
-}
-
-/** Converge the profile patch to the embedded inproc template.
- *  - exact current content (revision matches) -> no-op (idempotent, no write)
- *  - known web/opentui template copy          -> replace silently (legacy template)
- *  - anything else, incl. a hand-edited output -> timestamped backup + WARN
- *
- *  Marker presence alone is NOT proof of ownership: a user can edit a generated
- *  file while leaving the marker intact. Only a byte-for-byte match with the
- *  current generated content counts as "this script's own output". */
-function provisionPatch() {
-  let current
+function readPatchText() {
   try {
-    current = readFileSync(patchPath, 'utf8')
+    return readFileSync(patchPath, 'utf8')
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
-    current = undefined
+    return undefined
+  }
+}
+
+/** Parse + completeness check. Used both before writing (refuse a bad plan)
+ *  and after the rename (detect a concurrent host write / truncated file). */
+function verifyPatchContent(content) {
+  try {
+    const written = managedIds(content)
+    for (const id of managedIds(PATCH_CONTENT)) {
+      if (!written.has(id)) return `missing managed id '${id}' after write`
+    }
+    // splitPatch also enforces the R28 structural assertions.
+    splitPatch(content)
+    return undefined
+  } catch (error) {
+    return `${error?.message ?? error} (line ${error?.line ?? 1}:${error?.col ?? 1})`
+  }
+}
+
+/**
+ * Converge the patch to the embedded inproc template (design 06 §4.6).
+ * Called ONLY from inside the package.json.lock critical section. A parse
+ * failure is fatal and never overwrites; backups are copies, not renames;
+ * the sidecar is written on write:true AND on N1's sidecar-only self-heal.
+ */
+function provisionPatch() {
+  const current = readPatchText()
+  const sidecar = readState(profileDir)
+  let plan
+  try {
+    plan = converge({
+      template: PATCH_CONTENT,
+      current,
+      sidecar,
+      templateRevision: PATCH_REVISION,
+    })
+  } catch (error) {
+    fail(`cordis.patch.yml: converge failed: ${error?.message ?? error}`)
+  }
+  if (plan.error) {
+    fail(
+      `cordis.patch.yml:${plan.error.line}:${plan.error.col}: ${plan.error.message}`,
+      'Refusing to overwrite a file we cannot parse; repair it by hand (or restore a .bak) first.',
+    )
+  }
+  for (const warning of plan.warnings) warn(`cordis.patch.yml: ${warning}`)
+
+  // A sidecar-only self-heal has no patch write, so it must never back up the
+  // file (converge may still report a base-unknown reason on that path).
+  if (plan.write && plan.backupReason && current !== undefined && current.length > 0) {
+    const backupPath = `${patchPath}.bak-${Date.now()}`
+    copyFileSync(patchPath, backupPath)
+    warn(`cordis.patch.yml: backup (${plan.backupReason}) -> ${backupPath}`)
+    for (const path of plan.backupPaths) warn(`cordis.patch.yml:   ${path}`)
   }
 
-  const localRevision = readPatchRevision(current)
-  // B1 S3 (design 05 §4.3a): carry runtime-written volatile scalars into the
-  // fresh template copy instead of discarding them on every launch. The merge
-  // is line-based and allow-listed (see lib/patch-runtime-merge.mjs); every
-  // other byte — including the ledger-evidenced template section — is intact.
-  const merged = mergeRuntimeFields(PATCH_CONTENT, current)
-  const nextContent = merged.content
-  if (current === nextContent && localRevision === PATCH_REVISION) {
-    say(7, 'patch', 'already current, skipping')
+  if (!plan.write) {
+    if (plan.writeSidecarOnly) {
+      writeState(profileDir, plan.sidecar)
+      say(2, 'patch', 'already current; rewrote missing/stale ownership sidecar')
+    } else {
+      say(2, 'patch', 'already current, skipping')
+    }
     return
   }
-  for (const note of merged.notes) warn(`cordis.patch.yml: ${note}`)
-  if (merged.mergedFields.length > 0) {
-    say(7, 'patch', `preserved runtime fields: ${merged.mergedFields.join(', ')}`)
-  }
 
-  if (current !== undefined && current.length > 0) {
-    const md5 = createHash('md5').update(current).digest('hex')
-    if (!KNOWN_PATCH_MD5.has(md5)) {
-      const backupPath = `${patchPath}.bak-${Date.now()}`
-      renameSync(patchPath, backupPath)
-      warn(`cordis.patch.yml was modified outside provisioning (local revision ${localRevision ?? 'absent'}, md5 ${md5} matches neither a known web/opentui template nor the current generated profileRevision ${PATCH_REVISION}); backed up to ${backupPath}`)
-    }
-  }
+  const invalid = verifyPatchContent(plan.content)
+  if (invalid) fail(`cordis.patch.yml: converged content failed validation: ${invalid}; refusing to write`)
 
-  // Atomic write: temp file in the same dir, then rename.
   const tmpPath = `${patchPath}.tmp-${process.pid}-${Date.now()}`
-  writeFileSync(tmpPath, nextContent)
+  writeFileSync(tmpPath, plan.content, { mode: 0o600 })
   renameSync(tmpPath, patchPath)
-  say(7, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
+
+  // Write-after verification: re-parse the file on disk, then re-read and
+  // compare bytes. A structurally bad result is fatal (exit 1); a fully valid
+  // but different file means a non-cooperating host writer landed (R16) —
+  // WARN, skip the sidecar, and let the next pass converge it.
+  const after = readPatchText()
+  if (after === undefined) fail('cordis.patch.yml: write verification failed: file disappeared after rename')
+  const postInvalid = verifyPatchContent(after)
+  if (postInvalid) fail(`cordis.patch.yml: write verification failed: ${postInvalid}`)
+  if (after !== plan.content) {
+    warn('concurrent-write: another host writer landed during the patch write; skipping the sidecar (next pass will converge)')
+    say(2, 'patch', `wrote ${patchPath} (external write detected; sidecar unchanged)`)
+    return
+  }
+  writeState(profileDir, plan.sidecar)
+  say(2, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION}, reason ${plan.reason})`)
+}
+
+/** Manifest + patch + sidecar in ONE host-lock critical section (R7), before
+ *  step 3's bridge copy and well before step 4's package-manager call. */
+function provisionProfileFiles() {
+  return withProfileWriteLock(profileDir, () => {
+    const existing = existsSync(manifestPath) ? readManifest() : undefined
+    if (existsSync(manifestPath) && existing === undefined) {
+      fail(`${manifestPath} is not a valid JSON object manifest — leaving it untouched`)
+    }
+    const desired = desiredManifest(existing ?? { name: `dsh-profile-${PROFILE}`, private: true })
+    if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(desired)) {
+      say(2, 'manifest', 'already correct, skipping')
+    } else {
+      mkdirSync(profileDir, { recursive: true })
+      if (existsSync(manifestPath)) {
+        const backupPath = `${manifestPath}.bak-${Date.now()}`
+        copyFileSync(manifestPath, backupPath)
+        console.log(`${PREFIX}backed up ${manifestPath} to ${backupPath}`)
+      }
+      // Copy-backup + tmp/rename commit: no window with a missing manifest.
+      const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
+      writeFileSync(tmpPath, `${JSON.stringify(desired, null, 2)}\n`, { mode: 0o600 })
+      renameSync(tmpPath, manifestPath)
+      say(2, 'manifest', `wrote bundles [${managedBundles(existing ?? {}).join(', ')}]`)
+    }
+    provisionPatch()
+  })
 }
 
 // --- Standalone sessionController shim ownership ---------------------------
@@ -1377,10 +1366,10 @@ function provisionShim() {
   const indexChanged = convergeShimFile(SHIM_INDEX_PATH, SHIM_INDEX_CONTENT, 'session controller shim index.mjs', SHIM_REVISION)
   const pkgChanged = convergeShimFile(SHIM_PKG_PATH, SHIM_PKG_CONTENT, 'session controller shim package.json', undefined)
   if (!indexChanged && !pkgChanged) {
-    say(8, 'shim', 'already current, skipping')
+    say(7, 'shim', 'already current, skipping')
     return
   }
-  say(8, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
+  say(7, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
 }
 
 // --- The provision pass itself (runs under the lock) ------------------------
@@ -1407,38 +1396,16 @@ function runProvision({ repair = false } = {}) {
   // or symlinked-in path that could drift with cwd or a moved install.
   const bridgeDir = realpathSync(bridgeDirRaw)
 
-  // [1/8] Host compatibility: fail loud when the running dsh is outside the
+  // [1/7] Host compatibility: fail loud when the running dsh is outside the
   // supported window (the host would otherwise skip the bridge silently), and
   // grant the exact-version exemption when it is in-window but not exempted.
   verifyHostCompatibility(bridgeDir)
 
-  // [2/8] Manifest: write / converge the profile manifest. Only
-  // dsh.profile.bundles is managed; every other field is preserved.
-  {
-    const existing = existsSync(manifestPath) ? readManifest() : undefined
-    if (existsSync(manifestPath) && existing === undefined) {
-      fail(`${manifestPath} is not a valid JSON object manifest — leaving it untouched`)
-    }
-    const desired = desiredManifest(existing ?? { name: `dsh-profile-${PROFILE}`, private: true })
-    if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(desired)) {
-      say(2, 'manifest', 'already correct, skipping')
-    } else {
-      mkdirSync(profileDir, { recursive: true })
-      if (existsSync(manifestPath)) {
-        const backupPath = `${manifestPath}.bak-${Date.now()}`
-        renameSync(manifestPath, backupPath)
-        console.log(`${PREFIX}backed up ${manifestPath} to ${backupPath}`)
-      }
-      // Atomic write: a temp file in the same dir, then rename, so a
-      // concurrent reader never observes a partially written package.json.
-      const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
-      writeFileSync(tmpPath, `${JSON.stringify(desired, null, 2)}\n`)
-      renameSync(tmpPath, manifestPath)
-      say(2, 'manifest', `wrote bundles [${managedBundles(existing ?? {}).join(', ')}]`)
-    }
-  }
+  // [2/7] Manifest + patch + sidecar: one package.json.lock critical section,
+  // deliberately BEFORE step 4 (dsh plugin add holds that lock for all of pnpm).
+  provisionProfileFiles()
 
-  // [3/8] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
+  // [3/7] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
   // retirement). The old design wrote an ABSOLUTE symlink to THIS
   // installation's dist/bridge: that bound the profile to one install path and
   // let multiple worktrees sharing a DSH_HOME leave the link pointing at
@@ -1468,11 +1435,11 @@ function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [4/8] Companion installation. Runs after the bridge copy and before the
-  // verify step so a half-provisioned manifest is caught by step [5/8].
+  // [4/7] Companion installation. Runs after the bridge copy and before the
+  // verify step so a half-provisioned manifest is caught by step [5/7].
   provisionCompanions()
 
-  // [5/8] Verify: linkPath is a REAL directory (never a symlink) carrying the
+  // [5/7] Verify: linkPath is a REAL directory (never a symlink) carrying the
   // shipped bridge files, and no @deepseek-ai package leaked into the profile.
   // Companion state is cross-checked too (deps <-> bundles <-> node_modules).
   {
@@ -1498,13 +1465,15 @@ function runProvision({ repair = false } = {}) {
     say(5, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile; ${companionCount} companion(s) consistent`)
   }
 
-  // [6/8] Identity guard always runs, including on the conflict path, so a
+  // [6/7] Identity guard always runs, including on the conflict path, so a
   // repointed / replaced bridge cannot slip through as a mere WARN.
   verifyBridgeIdentity()
 
-  // [7/8] Inproc patch generation + [8/8] the local shim package the patch row
-  // resolves. S6: unconditional (no env escape hatch).
-  provisionPatch()
+  // The patch was already converged in step 2's critical section (R7). No
+  // manifest rewrite here: `dsh plugin add` writes it itself under the host's
+  // lock, and the only late cleanup (dropUnmountedCompanions) takes that same
+  // lock for its short read-modify-write (N4).
+  // [7/7] The local shim package the patch row resolves. S6: unconditional.
   provisionShim()
 
   console.log(`${PREFIX}PASS`)
@@ -1528,29 +1497,32 @@ function main(argv = []) {
   // The lock lives inside the profile dir, so make sure it exists first.
   mkdirSync(profileDir, { recursive: true })
 
-  const token = acquireLock()
-  if (!token) {
-    // A live peer kept the lock: it is provisioning the same profile, so this
-    // instance skips its own pass rather than corrupting the shared state.
-    note(`SKIP — could not acquire provisioning lock after ${LOCK_MAX_ATTEMPTS} attempts (${LOCK_RETRY_MS}ms backoff); another live instance is provisioning; skipping.`)
-    return
-  }
-
+  // R14: wait for a live holder, then FAIL with exit 2. There is no SKIP-0
+  // path — launching a host on a half-provisioned profile is the bug P0-1.
+  const token = acquireProvisionRunLock(profileDir, {
+    onWait: (message) => note(message),
+  })
   try {
     runProvision({ repair })
   } finally {
-    releaseLock(token)
+    releaseProvisionRunLock(token, (message) => warn(message))
   }
 }
 
 try {
   main(process.argv.slice(2))
 } catch (error) {
-  if (error instanceof ProvisionError) {
+  if (error instanceof ProvisionLockError || error?.name === 'ProfileLockTimeoutError') {
+    console.error(`${PREFIX}FAIL — ${error.message}`)
+    if (error.detail) console.error(error.detail)
+  } else if (error instanceof ProvisionError) {
     console.error(`${PREFIX}FAIL — ${error.message}`)
     if (error.detail) console.error(error.detail.trimEnd())
   } else {
     console.error(`${PREFIX}FAIL — unexpected error: ${error?.stack ?? String(error)}`)
   }
-  process.exitCode = 1
+  // Lock timeouts carry exitCode 2 (distinct from a general provisioning
+  // failure) so the launcher can tell "another live run owns this profile"
+  // from a real error; either way the host is never started.
+  process.exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1
 }

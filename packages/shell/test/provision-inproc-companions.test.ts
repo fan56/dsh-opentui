@@ -125,7 +125,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const fx = fixture()
     const run = provision(fx)
     expect(run.exitCode).toBe(0)
-    expect(text(run.stdout)).toContain('[4/8] companions — installed 1 of 1')
+    expect(text(run.stdout)).toContain('[4/7] companions — installed 1 of 1')
     expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${REGISTRY}@0.21.0`])
     const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8'))
     expect(manifest.dependencies[REGISTRY]).toBe('0.21.0')
@@ -185,7 +185,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(text(run.stderr)).toContain('no global `dsh`')
     expect(text(run.stderr)).toContain('Install dsh')
     expect(text(run.stderr)).toContain('DSH_OPENTUI_COMPANION_LATEST=off')
-    expect(text(run.stdout)).toContain('[4/8] companions — skipped (no global `dsh`')
+    expect(text(run.stdout)).toContain('[4/7] companions — skipped (no global `dsh`')
     // No add attempted, but the profile is fully provisioned and bootable.
     expect(stubCalls(fx)).toEqual([])
     const profile = join(fx.home, 'profiles', 'opentui-inproc')
@@ -198,7 +198,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
   test('a half-written manifest from a failed add is dropped, not a boot blocker', () => {
     const fx = fixture()
     // The stub writes the dependency + bundle row but fails before installing
-    // node_modules — the exact half-write that used to hard-fail step [5/8].
+    // node_modules — the exact half-write that used to hard-fail step [5/7].
     const run = provision(fx, { DSH_STUB_ADD_HALF_FAIL: '1' })
     expect(run.exitCode).toBe(0)
     expect(text(run.stderr)).toContain('companions are optional')
@@ -231,7 +231,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const fx = fixture()
     // Provision once to materialise everything, then delete only the mounted
     // package while the manifest still declares it; disable the step so it
-    // cannot self-heal and step [5/8] is the one that reports the drift.
+    // cannot self-heal and step [5/7] is the one that reports the drift.
     expect(provision(fx).exitCode).toBe(0)
     rmSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...REGISTRY.split('/')), { recursive: true, force: true })
     const run = provision(fx, { DSH_OPENTUI_COMPANION_LATEST: 'off' })

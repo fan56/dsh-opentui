@@ -143,7 +143,7 @@ describe('queryDistTagLatest', () => {
 
 describe('provision script wiring (source guards)', () => {
   test('companion step runs before verification and the verify step cross-checks declaration state', () => {
-    expect(scriptSrc).toContain('const TOTAL_STEPS = 8')
+    expect(scriptSrc).toContain('const TOTAL_STEPS = 7')
     expect(scriptSrc).toContain('provisionCompanions()')
     expect(scriptSrc).toContain('verifyCompanionState()')
     const installAt = scriptSrc.indexOf('  provisionCompanions()')

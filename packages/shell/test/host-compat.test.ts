@@ -172,7 +172,7 @@ describe('provision-inproc-profile.mjs host gate', () => {
     try {
       const run = runProvision(root, { [HOST_VERSION_ENV]: '0.2.2-rc.4' })
       expect(run.status).toBe(0)
-      expect(run.stdout).toContain('[1/8] host')
+      expect(run.stdout).toContain('[1/7] host')
       expect(run.stdout).toContain('granted exact-version exemption')
       expect(run.stdout).toContain('PASS')
       const compat = JSON.parse(readFileSync(join(root, 'profiles', 'opentui-inproc', COMPATIBILITY_FILENAME), 'utf8'))
