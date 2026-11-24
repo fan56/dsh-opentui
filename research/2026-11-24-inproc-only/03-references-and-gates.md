@@ -6,6 +6,8 @@
 - 证据格式：`文件:行`（仓库相对路径）。grep 均排除 `node_modules` / `.git` / `.proof` / `pnpm-lock.yaml`。
 - 配套报告：`research/2026-11-24-inproc-only/01-provisioning.md`（供给面）；本报告聚焦引用面与门禁。
 
+> 2026-11-24 批次 2 更新：upgrade 子命令及其实现/专属测试已退役；相关条目已标记，旧行号仅作历史快照。
+
 ---
 
 ## 一、结论先行
@@ -75,8 +77,8 @@
 | `packages/shell/bin/lib/launcher.mjs:42` | `export const PROFILE = 'opentui'` | stale 进程判定与 `--force` 依据 |
 | `packages/shell/bin/lib/launcher.mjs:452-455,482` | `classifyProcess()` 匹配 `--profile <PROFILE>` | 只把老 profile 的 dsh 识别为 host |
 | `packages/shell/scripts/lib/provision-plan.mjs:15` | `export const PROFILE = 'opentui'` | provision/upgrade 的 profile 名真源 |
-| `packages/shell/scripts/lib/provision-plan.mjs:147-159` | `['plugin','--profile','opentui','add',...]` | 装插件走老 profile（`upgrade.mjs` 复用） |
-| `packages/shell/scripts/upgrade.mjs:55-61,84,102,972,1133` | 导入 `PROFILE`，写老 profile 的 override/backup | upgrade 子命令只服务老 profile |
+| `packages/shell/scripts/lib/provision-plan.mjs:147-159` | `['plugin','--profile','opentui','add',...]` | 装插件走老 profile（`upgrade 子命令（已退役）` 复用） |
+| `upgrade 子命令（批次 2 已退役）` | 退役前导入 `PROFILE`，写老 profile 的 override/backup | 批次 2 已删除 |
 | `packages/shell/scripts/provision-opentui-profile.mjs:8,87,111,137,173-200` | 建/收敛老 profile（从 `web` 模板） | 整个脚本只服务老 profile |
 | `packages/shell/scripts/provision-inproc-profile.mjs:8,92-95,651-653,1313` | 注释/"known web/opentui template" MD5/WARN 文案 | **硬 guard 只碰 inproc**；老 profile 名仅出现在文案/历史模板检测，逻辑不依赖 |
 
@@ -98,7 +100,7 @@
 | `packages/shell/bin/lib/launcher.mjs:23-29,427,441-455,691` | host 识别规则与 help 文案 |
 | `packages/shell/bin/dsh-opentui.mjs:20-33,205,261-265,341` | step 3/迁移/`--force` 说明 |
 | `legacy client-topology gate (retired):4,166` / `legacy command-surface sweep (retired).mjs:32,37` | 脚本头部拓扑说明 |
-| `packages/shell/scripts/lib/provision-plan.mjs:107,724,888` / `upgrade.mjs:5` / `inproc-companions.mjs:18` | 文案 |
+| `packages/shell/scripts/lib/provision-plan.mjs:107,724,888` / `upgrade 子命令（已退役）` / `inproc-companions.mjs:18` | 文案 |
 | `dsh-opentui:3` | 顶层 wrapper 注释："resident `dsh --profile opentui` host" |
 | `packages/tui-base/src/routes/welcome-hero.tsx:80` | tree-root 标签注释（描述 profile 名） |
 
@@ -126,8 +128,8 @@
 | `s5-local-faces.test.ts:17-20,43,59,70,98,138,152,168,176,207,219,231,246,259,278-298,316,336,349` | `LocalSettingsStore`/`LocalConfigStore`/`LocalPresetFace`/`LocalLoginFace` 全部以 `profile='opentui'` 构造，patch/config/provider-keys 落在 `profiles/opentui/` |
 | `agents-mount-client.test.ts:35-36` | 真机门禁前置：`~/.dsh/profiles/opentui` 必须存在，否则 skipped/FAIL；随后跑 `verify/agents-mount-repro.mjs` |
 | `append-system.test.ts:44-45,109,111,116,127,129,136,140,148,157,164-165,171,176,184,189,194,198,204,206,209,215,223,230,232-233` | 大量调用 `syncAppendSystemPreset(home,'opentui')` / `profilePatchPath(home,'opentui')`，假设老 profile patch 的 managed span 语义 |
-| `upgrade-apply.test.ts:12,258,343,410` | `PROFILE_DIR=${DSH_HOME}/profiles/opentui`；`plugin --profile opentui add` argv |
-| `upgrade-run.test.ts:12` | 同上：`profiles/opentui` 作为 upgrade 目标 |
+| `upgrade apply 专属测试（批次 2 已删除）` | `PROFILE_DIR=${DSH_HOME}/profiles/opentui`；`plugin --profile opentui add` argv |
+| `upgrade run 专属测试（批次 2 已删除）` | 同上：`profiles/opentui` 作为 upgrade 目标 |
 | `provision-plan.test.ts:179-180,675-676` | `pluginAddArgs/Command('opentui',...)` 与 `[1/5] profile reusing /dsh/profiles/opentui` 文案 |
 | `provision-script.test.ts:20,33,79,86-98,124,137,159` | 真 wiring：stub `plugin --profile opentui add`；fixture 建 `profiles/opentui/package.json` |
 | `provision-state.test.ts:1` | 纯重试状态逻辑，无 profile 字面量 → 本身无需改，但调用方若退役需评估是否连带删除 |
@@ -166,7 +168,7 @@
 
 | 文件:行 | 内容 |
 |---|---|
-| `README.md:54,56,69-70,83,86,97,127,134,143-146,156-157,206,225,268` | 产品文档：upgrade 作用于 `opentui` profile；每次启动 provision 两个 profile；legacy 迁移目标；插件修复命令；idle 配置路径 |
+| `README.md`（批次 2 已更新） | upgrade 段已改为退役提示；其余双 profile、legacy 迁移与插件说明仍属后续批次 |
 | `CONTEXT.md:52-54,65,74` | 术语表：产品 profile 固定 `opentui`；host 定义为 profile `opentui` 的常驻进程；lockfile 命名 |
 | `docs/verification-gates.md:39,120` | 真机 gate 前置条件含 `~/.dsh/profiles/opentui` |
 | `docs/testing.md:17` | ui tier 前置条件含老 profile |
@@ -255,8 +257,8 @@
 |---|---|---|
 | `packages/shell/bin/dsh-opentui.mjs` | **删代码** | step 3 老 profile provision `:267-302`；legacy 迁移 `:323-402`；step 6a 预启 HTTP host `:499-528`（尤其 `:505`）；头部/注释 `:20-33,205,261-265,341` |
 | `packages/shell/scripts/provision-opentui-profile.mjs` | **删代码** | 整文件退役（`:8-12,111,173-200`） |
-| `packages/shell/scripts/upgrade.mjs` | **删代码 / 重写** | `PROFILE` 来自老 profile（`:55-61,84,972,1133`）；需决策 upgrade 子命令退役或改服务 inproc companion |
-| `packages/shell/scripts/lib/provision-plan.mjs` | **删代码 / 改常量** | `PROFILE='opentui'` `:15`；插件 pin/tier/patch 行 `:29-115,125-159,720-885`；先解耦 upgrade 再删 |
+| upgrade 子命令 | **批次 2 已退役** | 实现、planner、bin/launcher 分支与专属测试已删除；不改变 inproc companion |
+| `packages/shell/scripts/lib/provision-plan.mjs` | **删代码 / 改常量** | `PROFILE='opentui'` `:15`；插件 pin/tier/patch 行 `:29-115,125-159,720-885`；upgrade 消费方已于批次 2 删除 |
 | `packages/shell/bin/lib/launcher.mjs` | **改常量 / 删代码** | `PROFILE` `:42`；`classifyProcess` host 判定 `:452-455,482`；help 文案 `:691`。若去掉 HTTP 预启，此面整体退役 |
 | `retired HTTP lifecycle module` | **改常量 / 删代码** | `DEFAULT_PROFILE` `:91`；`:1009,1078-1079,1095,1113`。若 HTTP host 整个退役，v1+v2 boot 路径一起删 |
 | `packages/shell/src/client-entry.tsx`、`packages/tui-base/examples/v2-entry.tsx` | **改常量 / 删代码** | `client-entry.tsx:258,266-268,298,323,376`；`v2-entry.tsx:1609,1616,1636,1651-1657,1940`。决定 ensureV2Host 是否保留 |
@@ -272,7 +274,7 @@
 | `legacy client-topology gate (retired)`、`legacy command-surface sweep (retired).mjs` | **改脚本 / 删代码** | `:96,114,166-172`、`:49,74,94-98,122,365`。若 HTTP host 退役，legacy client-topology gate (retired) 的 host 拓扑断言需重写或删除 |
 | `scripts/test-tier.mjs`、`verify/*`（8 个）、`verify/e2e-flows/*` | **改脚本** | 常量、preflight、seed 源、lock 名（见 2.4） |
 | `.github/workflows/ci.yml` | **改文档/门禁** | `real-client` job 注释与 preflight `:88,94,129-134`；`test` 与 `pack-cold-start` 无需改 |
-| `README.md`、`CONTEXT.md`、`docs/verification-gates.md:39,120`、`docs/testing.md:17`、`docs/adr/0005-client-mode.md:43`、`docs/adr/0009-server-lifecycle-singleton.md:71`、`packages/shell/src/client/README.md` | **改文档** | 产品语义与 gate 前置；`CHANGELOG.md` / `tickets/*` / `research/*` 的历史记录建议保留 |
+| `README.md`、`CONTEXT.md`、`docs/verification-gates.md:39,120`、`docs/testing.md:17`、`docs/adr/0005-client-mode.md:43`、`docs/adr/0009-server-lifecycle-singleton.md:71`、`packages/shell/src/client/README.md` | **改文档** | 产品语义与 gate 前置；`CHANGELOG.md` / `tickets/*` 保留原文；`research/*` 保留历史内容并加退役注记 |
 | 本机 `~/.dsh/profiles/opentui` | **不在本次改动范围** | 本任务只读；删除动作须在单独变更中执行，并先完成配置迁移 |
 
 ---
@@ -282,6 +284,6 @@
 1. **HTTP host 是否仍承担功能**：`docs/architecture/01-system-topology.md:42` 把 `HTTP client carrier`/`HTTP session facade` 称为独立于 session seam 的"host 客户端层"，`v2-entry.tsx:1616` 仍 `ensureV2Host`；但 bridge 是唯一 session seam（`v2-entry.tsx:1674-1682`）。HTTP host 除 registry/health 外是否仍被实际消费，需运行时/odot 侧确认；本只读调研不启动任何 dsh 进程。
 2. **用户配置归属的产品决策**：inproc provisioner 每轮整体收敛 `cordis.patch.yml`（`provision-inproc-profile.mjs:1275-1322`），把本地配置面直接改指向 inproc 会冲突。是迁到 inproc、新增第三个 user profile、还是改为 workspace/config 文件，仓库内没有既定结论。
 3. **`dsh` CLI 自身行为**：`dsh --profile <missing>` 是否自动 provision、`dsh opentui --from-default-profile web --dump-config` 生成哪些文件，源码不在本仓（`01-provisioning.md:143`）。删目录后 dsh 是否立即重建，无法从仓库判断。
-4. **`upgrade` 子命令去向**：当前只服务老 profile（`upgrade.mjs:55-61`）；是否退役、或改造为 inproc companion 升级，需决策。
+4. **`upgrade` 子命令去向已决**：批次 2 已退役；不改造为 inproc companion 升级。
 5. **历史行号漂移**：`v2-entry ≈ :1617/:1660` 与 `lifecycle ≈ :1079` 的旧记录可能来自 0.22 之前的行号体系或另一文件；本报告按 tag v0.22.0/v0.23.0/v0.23.3/v0.24.0 与 HEAD 逐行核对，结论以本文第三节为准。
 6. **未运行的验证**：本任务禁止源码改动与门禁执行，报告中的"失效/不失效"为静态依赖推导，未实跑 CI 或真机 gate。

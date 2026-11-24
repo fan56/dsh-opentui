@@ -411,13 +411,6 @@ describe('P3-3 flag-combination conflicts', () => {
     expect(r.stderr.split('\n').filter((line) => line === RESERVED_FLAGS_WARNING)).toHaveLength(1)
     expect(r.stderr).not.toContain('[1/5]')
   })
-
-  test('bin integration: --repair-bridge with upgrade prints a skip notice, still runs upgrade help', () => {
-    const r = spawnSync('node', [binPath, '--repair-bridge', 'upgrade', '--help'], { encoding: 'utf8', timeout: 30_000 })
-    expect(r.status).toBe(0)
-    expect(r.stderr).toContain('--repair-bridge is skipped')
-    expect(r.stdout).toContain('Usage: dsh-opentui upgrade')
-  })
 })
 
 describe('formatUsage', () => {
@@ -472,9 +465,6 @@ describe('formatUsage', () => {
     expect(usage).toContain("  other  the client's own exit code is passed through (e.g. 130 on SIGINT)")
     expect(usage).not.toContain('host failed to boot')
     expect(usage).not.toContain('provisioning failed')
-
-    // The upgrade subcommand has its own, separate usage text.
-    expect(usage).not.toContain('Usage: dsh-opentui upgrade')
   })
 })
 

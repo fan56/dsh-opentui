@@ -6,6 +6,8 @@
 
 本次调研未做任何写操作：无 merge/commit/push/tag/pack/publish/install。
 
+> 2026-11-24 批次 2：本文所述 upgrade 命令及相关工作树文件已退役；正文保留为历史发版调研记录。
+
 ---
 
 ## 1. 包与版本
@@ -107,7 +109,7 @@
 - 两者指向同一提交：`main` = `feat/upgrade-command` = `ff31d6f chore(release): 0.17.3`；`git rev-list --left-right --count origin/main...HEAD`（wt-upgrade）→ `0 0`。
 - **`feat/upgrade-command` 上没有任何提交**：upgrade 的全部改动都在 `/Users/qingguee/repo/dsh-opentui-wt-upgrade` 的 **working tree** 里：
   - 已修改 9 个：`CHANGELOG.md`、`README.md`、`e2e/README.md`、`e2e/scenarios/run-all.sh`、`packages/shell/bin/dsh-opentui.mjs`、`packages/shell/bin/lib/launcher.mjs`、`packages/shell/scripts/lib/provision-plan.mjs`、`packages/shell/scripts/provision-opentui-profile.mjs`、`packages/shell/test/provision-plan.test.ts`（`git diff --stat` = 9 files, +439/−11）
-  - 未跟踪新增 11 个：`packages/shell/scripts/upgrade.mjs`、`scripts/lib/upgrade-plan.mjs`、4 个 `test/upgrade-*.test.ts`/`bin-upgrade-args.test.ts`、`e2e/fixtures/upgrade-registry/*`(3)、`e2e/scenarios/11-upgrade.sh`
+  - 未跟踪新增 11 个：退役的 upgrade 实现、planner 与 4 个专属测试、`e2e/fixtures/upgrade-registry/*`(3)、`e2e/scenarios/11-upgrade.sh`
   - 未改 `pnpm-lock.yaml`、未改任何 `package.json`。
 - `git ls-remote --heads origin feat/upgrade-command` → **无输出**（分支未 push）。
 

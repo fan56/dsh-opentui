@@ -186,7 +186,6 @@ describe('provision-opentui-profile.mjs — real wiring', () => {
 
       expect(run.status).toBe(0)
       expect(run.stderr).toContain('provision-opentui-profile: degraded — 1 plugin(s) not at the pinned version')
-      expect(run.stderr).toContain('run "dsh-opentui upgrade" after the registry catches up')
       expect(run.stderr).not.toMatch(/^provision: /m)
       // The summary must not claim the failed install next to the degraded line.
       expect(run.stdout).toContain(

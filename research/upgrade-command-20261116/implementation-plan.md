@@ -13,6 +13,8 @@
 3. 反降级 = profile 内写 override 清单，provisioning 尊重它（不放宽校验、不接受降级）。
 4. 交互 = 默认打印计划表 + 确认；`--dry-run` 只看；`--yes` 跳过；执行前备份，失败回滚并说明卡点。
 
+> 2026-11-24 批次 2：本文所述 upgrade 子命令、实现、planner 与专属测试已退役；正文保留为历史设计记录，路径与符号均为退役前快照。
+
 ---
 
 ## 1. 命令面定义
@@ -195,21 +197,21 @@ so the next start will not pin a version that is not on disk.
 
 | # | 位置 | 改动 |
 |---|---|---|
-| 1 | `packages/shell/bin/lib/launcher.mjs:51-68` | **`parseLauncherArgs` 一字不改**（47-68 的返回结构 `{version, force, rest}` 是 `bin-launcher.test.ts:28-46` 的契约）。在文件末尾（当前 `:284` 之后）**追加**两个纯函数并导出：`splitLauncherSubcommand(rest)`、`parseUpgradeArgs(args)`。 |
+| 1 | `packages/shell/bin/lib/launcher.mjs:51-68` | **`parseLauncherArgs` 一字不改**（47-68 的返回结构 `{version, force, rest}` 是 `bin-launcher.test.ts:28-46` 的契约）。在文件末尾（当前 `:284` 之后）**追加**两个纯函数并导出：`splitLauncherSubcommand(rest)`、`退役的 upgrade argv parser(args)`。 |
 | 2 | `packages/shell/bin/dsh-opentui.mjs:73` | 这里是 argv 的唯一消费点。第 73 行 destructuring 之后加一行 `const sub = splitLauncherSubcommand(userArgs)`；分支体放在 **`:83`（`--version` 块结束）之后、`:86`（bun 检查）之前**（新注释段 `--- 0.5 upgrade subcommand ---`）。理由见下。 |
 | 3 | `packages/shell/bin/dsh-opentui.mjs:116-141` | **不改**。provision 透传循环只按名字挑 `--provider/--model/--reasoning-effort/--plugins/--dry-run`（`:118-130`），`upgrade` 及其参数不可能被它捡到；且分支在 `:84` 附近就 `process.exit`，到不了这里。 |
 | 4 | `packages/shell/bin/dsh-opentui.mjs:303-316`（兜底 spawn 在 `:309`） | **不改**。同理被 early exit 挡住。回归断言要求"升级分支绝不 spawn bun"。 |
-| 5 | `packages/shell/package.json:9-19` `files` | **不改**。`files` 里的 `"scripts"` 递归整目录发布，新增的 `scripts/upgrade.mjs` 与 `scripts/lib/upgrade-plan.mjs` 自动随包。验收动作：`npm pack --dry-run --json` 必须列出这两个路径（见 §7.3）。 |
-| 6 | `packages/shell/package.json:20-24` `scripts.prepack` | **不改**。`upgrade.mjs` 是纯源码、无构建产物；`prepack` 仍只跑 `build-client.mjs` + `verify-pack-locales.mjs` + `pack-meta.mjs`。若将来改成 bundling 才需要在这里串接。 |
-| 7 | `packages/shell/test/bin-launcher.test.ts:27-47` | 现有两个 `test` **不改**。在文件里追加 `describe('splitLauncherSubcommand')`、`describe('parseUpgradeArgs')`（用例见 §7.1）。 |
+| 5 | `packages/shell/package.json:9-19` `files` | **不改**。`files` 里的 `"scripts"` 递归整目录发布，新增的 `退役的 upgrade 脚本` 与 `退役的 upgrade planner` 自动随包。验收动作：`npm pack --dry-run --json` 必须列出这两个路径（见 §7.3）。 |
+| 6 | `packages/shell/package.json:20-24` `scripts.prepack` | **不改**。`退役的 upgrade 实现` 是纯源码、无构建产物；`prepack` 仍只跑 `build-client.mjs` + `verify-pack-locales.mjs` + `pack-meta.mjs`。若将来改成 bundling 才需要在这里串接。 |
+| 7 | `packages/shell/test/bin-launcher.test.ts:27-47` | 现有两个 `test` **不改**。在文件里追加 `describe('splitLauncherSubcommand')`、`describe('退役的 upgrade argv parser')`（用例见 §7.1）。 |
 | 8 | `README.md:42-58` 与 `packages/shell/README.md:42-58` | 两份文件 `diff -q` 无差异（当前 0.17.3 实测 SAME）。插入点在 **`README.md:59`（空行）之后、`:60`（`Architecture: one resident host …`）之前**（`:58` 是最后一条 bullet，`:59` 是空行）。插入 `## Upgrade` 段（约 20 行：一条命令、flag 表、重启语义、override 文件与 `--reset-overrides`、宿主不自动升、**查询源跟随安装源 + 非官方源时的镜像滞后提示 + `DSH_UPGRADE_REGISTRY`**）。**必须同时改两份并保持字节相同**。 |
 | 9 | `e2e/scenarios/run-all.sh:21` | `E2E_SCENARIOS` 里 `10-install` 之后插入 `11-upgrade`。新增 `e2e/scenarios/11-upgrade.sh`（结构照 `10-install.sh:27-49`：`set -u` / source `common.sh` / `scenario '…'` / 非容器 `warn + summary + exit 0`）。 |
 
 新增文件（均需在 T2/T3/T5 创建）：
 
-- `packages/shell/scripts/upgrade.mjs` —— 命令体（自身升级、计划、确认、安装、备份、回滚）。只 import node 内建 + `./lib/upgrade-plan.mjs` + `./lib/provision-plan.mjs`（后者已在 `packages/shell/package.json:11` 的 `scripts` 里随包发布，复用 `parseVersion`/`compareVersions`/`isLocalSpec` 避免重复实现）。
-- `packages/shell/scripts/lib/upgrade-plan.mjs` —— 纯逻辑（argv、清单筛选、计划行、override 读写、格式化），无 fs/spawn，供单测直接 import（沿用 `provision-plan.mjs:1-7` 的"纯逻辑分离"约定）。
-- `packages/shell/test/upgrade-plan.test.ts`
+- `退役的 upgrade 命令实现` —— 命令体（自身升级、计划、确认、安装、备份、回滚）。只 import node 内建 + `./lib/退役的 upgrade planner` + `./lib/provision-plan.mjs`（后者已在 `packages/shell/package.json:11` 的 `scripts` 里随包发布，复用 `parseVersion`/`compareVersions`/`isLocalSpec` 避免重复实现）。
+- `退役的 upgrade planner` —— 纯逻辑（argv、清单筛选、计划行、override 读写、格式化），无 fs/spawn，供单测直接 import（沿用 `provision-plan.mjs:1-7` 的"纯逻辑分离"约定）。
+- `退役的 upgrade planner 测试`
 - `e2e/scenarios/11-upgrade.sh`、`e2e/fixtures/mini-registry.mjs`
 
 **为什么分支放在 `:83` 之后、`:86` 之前**：`upgrade` 只需要 `npm`（自身）和 `dsh`（插件），不需要 `bun`（`:86-88`），也不需要 `@deepseek-ai/dsh-client-connection` 软链（`:236-266`）。放在 bun 检查之前，用户可以在没装 bun 的环境里升级；放在 `--version` 之后，保持 `--version` 的绝对短路语义（`:75-83` 的整段回归断言依赖这一点）。
@@ -227,7 +229,7 @@ node packages/shell/bin/dsh-opentui.mjs --version
 **B. `--force` 不变**
 - 单测：`parseLauncherArgs(['--force','--model','x'])` 仍 deep-equal `{version:false,force:true,rest:['--model','x']}`（`bin-launcher.test.ts:32-36` 原样通过）。
 - 进程级：`node ... --force` 仍先打印 `--force: killed N stale instance(s)`（`:109`），再走 provision、再启动 client；`selectStaleProcesses`/`classifyProcess`/`killStaleProcesses` 的 20 个既有用例零改动通过。
-- 组合：`--force` 与 `upgrade` 同用 → exit 2（`--force is not supported with upgrade`），不执行任何动作。检查点是 **bin 分支的 `forceFlag && sub.command`**——`--force` 已被 `parseLauncherArgs`（`launcher.mjs:61-64`）消费，永远到不了 `parseUpgradeArgs`（见 §7.1 用例 8）。这条是新定义，不是回归，因为该组合今天无意义。
+- 组合：`--force` 与 `upgrade` 同用 → exit 2（`--force is not supported with upgrade`），不执行任何动作。检查点是 **bin 分支的 `forceFlag && sub.command`**——`--force` 已被 `parseLauncherArgs`（`launcher.mjs:61-64`）消费，永远到不了 `退役的 upgrade argv parser`（见 §7.1 用例 8）。这条是新定义，不是回归，因为该组合今天无意义。
 
 **C. 无参启动不变**
 - 单测：`parseLauncherArgs([])` → `{version:false,force:false,rest:[]}`；`splitLauncherSubcommand([])` → `{command:null,args:[]}`。
@@ -416,7 +418,7 @@ install.push({ name: plugin.name, spec: `${plugin.name}@${wanted}`, reason: plug
 export function planPluginInstall({ tier, dependencies = {}, bundles = [], installedVersions = {}, overrides = {} })
 ```
 
-`effectivePin` 放在 `upgrade-plan.mjs`（纯函数，单测直接覆盖）：
+`effectivePin` 放在 `退役的 upgrade planner`（纯函数，单测直接覆盖）：
 
 ```js
 // override 只在"严格新于 shipped pin"时生效；pin 抬上来后自动失效
@@ -540,7 +542,7 @@ skip 且本次**实际升级了 ≥1 个插件**（全部 landed，exit 0）时�
 
 ## 7. 测试方案
 
-### 7.1 单测：`packages/shell/test/upgrade-plan.test.ts`（新文件，`bun test`）
+### 7.1 单测：`退役的 upgrade planner 测试`（新文件，`bun test`）
 
 沿用仓内风格（`bun:test`，`describe`/`test`，纯函数直测：`bin-launcher.test.ts:6`、`provision-plan.test.ts:1-50`）。
 
@@ -553,16 +555,16 @@ skip 且本次**实际升级了 ≥1 个插件**（全部 landed，exit 0）时�
 2. `test('upgrade at position 0 becomes a subcommand and keeps its own args')`
    - `['upgrade','--dry-run','--tag','next']` → `{command:'upgrade',args:['--dry-run','--tag','next']}`
 
-**`describe('parseUpgradeArgs')`**
+**`describe('退役的 upgrade argv parser')`**
 
 3. `test('defaults: tag latest, both scopes on, nothing dry-run')` → `{dryRun:false,yes:false,tag:'latest',self:true,plugins:true,resetOverrides:false,help:false,errors:[]}`
 4. `test('flags parse in both --k v and --k=v forms')` → `['--tag=next']` 与 `['--tag','next']` 得同一结果
 5. `test('--no-self + --no-plugins is a usage error')` → `errors` 含一条，实现层 exit 2
 6. `test('--tag without a value or with an invalid name is a usage error')` → `['--tag']`、`['--tag','bad tag!']`
 7. `test('unknown flags are collected, not ignored')` → `['--bogus','-z']` → `errors` 两条且包含原文
-8. `test('--force never reaches parseUpgradeArgs (parseLauncherArgs eats it first)')`
-   - `parseLauncherArgs(['--force','upgrade'])` → `{version:false, force:true, rest:['upgrade']}`（`launcher.mjs:61-64` 已把它消费掉），所以 `parseUpgradeArgs(['upgrade'])` 的参数里根本不存在 `--force`。
-   - 因此"`--force` + `upgrade` 拒绝"的真实检查点是 **bin 分支** 的 `forceFlag && sub.command`（不是 `parseUpgradeArgs`）。单测放 `bin-launcher.test.ts`：断言上面那条 `parseLauncherArgs` 返回值不变；进程级断言放进 T3 验收（`node bin/dsh-opentui.mjs --force upgrade` → exit 2）。`upgrade-plan.test.ts` 里**不**再设 `--force` 用例。
+8. `test('--force never reaches 退役的 upgrade argv parser (parseLauncherArgs eats it first)')`
+   - `parseLauncherArgs(['--force','upgrade'])` → `{version:false, force:true, rest:['upgrade']}`（`launcher.mjs:61-64` 已把它消费掉），所以 `退役的 upgrade argv parser(['upgrade'])` 的参数里根本不存在 `--force`。
+   - 因此"`--force` + `upgrade` 拒绝"的真实检查点是 **bin 分支** 的 `forceFlag && sub.command`（不是 `退役的 upgrade argv parser`）。单测放 `bin-launcher.test.ts`：断言上面那条 `parseLauncherArgs` 返回值不变；进程级断言放进 T3 验收（`node bin/dsh-opentui.mjs --force upgrade` → exit 2）。`退役的 upgrade planner 测试` 里**不**再设 `--force` 用例。
 
 **`describe('selectUpgradeTargets')`**（纯函数：`(dependencies, latestByTag, tag) → rows`）
 
@@ -637,14 +639,14 @@ npm pack --pack-destination /tmp/upg
 npm i -g --prefix /tmp/upg-prefix --ignore-scripts --no-fund --no-audit /tmp/upg/aiwayds-dsh-opentui-*.tgz
 PATH=/tmp/upg-prefix/bin:$PATH DSH_HOME=/tmp/upg-home dsh-opentui --version
 PATH=/tmp/upg-prefix/bin:$PATH DSH_HOME=/tmp/upg-home dsh-opentui upgrade --dry-run
-npm pack --dry-run --json | grep -E '"path": "scripts/(upgrade|lib/upgrade-plan)\.mjs"'
+# 退役命令的打包断言已移除
 ```
 
 断言：
 
 1. `--version` 打印打包进去的版本（证明 `bin` 与 `scripts` 都在 tarball 里、`files` 白名单没漏）；
 2. `upgrade --dry-run`（**不带** `--no-self`；带了这个 flag 自身判定分支根本不会执行，等于没验）打印 §1.4(e) 的"no profile at /tmp/upg-home/profiles/opentui"，exit 0；同时 `self` 行的 action 必须是 `skipped (unrecognized install: /tmp/upg-prefix/lib/node_modules/@aiwayds/dsh-opentui)`（§3.1 分支 5：`--prefix` 装的位置不等于 `npm root -g`），**不得**是 `upgrade (npm global…)`；且输出里没有任何 `npm i -g … done` 行（dry-run 连自身安装都不执行）。若本机 `npm root -g` 恰好被改成 `/tmp/upg-prefix/lib/node_modules`，则该断言退化为"self 行不是 `upgrade`"，仍然成立；
-3. `npm pack --dry-run --json` 里出现 `scripts/upgrade.mjs` 与 `scripts/lib/upgrade-plan.mjs`。
+3. 退役命令的实现与 planner 不再出现在 tarball。
 
 **为什么不真升级**：
 
@@ -682,8 +684,8 @@ npm pack --dry-run --json | grep -E '"path": "scripts/(upgrade|lib/upgrade-plan)
 每个任务单一动作、可独立验收、前置明确。分支 `feat/upgrade-command`（worktree `dsh-opentui-wt-upgrade`，从 `main` 0.17.3 拉出）。
 
 ### T1 纯逻辑与单测（无接线、无网络）
-- 改：新增 `packages/shell/scripts/lib/upgrade-plan.mjs`（`splitLauncherSubcommand`、`parseUpgradeArgs`、`selectUpgradeTargets`、`planUpgrade`、`effectivePin`、`readUpgradeOverrides`/`mergeOverrides`/`serializeOverrides`、`formatPlan`/`formatResult`、退出码常量）；新增 `packages/shell/test/upgrade-plan.test.ts`（§7.1 的 24 个用例；用例 8 的 `--force` 断言按 §7.1 归 `bin-launcher.test.ts`，不落在这个文件；override 相关的 20-23 可留到 T2）。
-- 验收：`cd /Users/qingguee/repo/dsh-opentui-wt-upgrade/packages/shell && bun test test/upgrade-plan.test.ts`
+- 改：新增 `退役的 upgrade planner`（`splitLauncherSubcommand`、`退役的 upgrade argv parser`、`selectUpgradeTargets`、`planUpgrade`、`effectivePin`、`readUpgradeOverrides`/`mergeOverrides`/`serializeOverrides`、`formatPlan`/`formatResult`、退出码常量）；新增 `退役的 upgrade planner 测试`（§7.1 的 24 个用例；用例 8 的 `--force` 断言按 §7.1 归 `bin-launcher.test.ts`，不落在这个文件；override 相关的 20-23 可留到 T2）。
+- 验收：`cd /Users/qingguee/repo/dsh-opentui-wt-upgrade/packages/shell && bun test 退役的 upgrade planner 测试`
 - 前置：无。
 
 ### T2 provisioning 尊重 override
@@ -691,7 +693,7 @@ npm pack --dry-run --json | grep -E '"path": "scripts/(upgrade|lib/upgrade-plan)
 - 验收：
   ```
   cd /Users/qingguee/repo/dsh-opentui-wt-upgrade/packages/shell
-  bun test test/provision-plan.test.ts && bun test test/upgrade-plan.test.ts
+  bun test test/provision-plan.test.ts && bun test 退役的 upgrade planner 测试
 
   # fixture 必须连 node_modules 一起拷：provision-plan.mjs:379 的三个条件里有 installedVersions
   rm -rf /tmp/t2-home && mkdir -p /tmp/t2-home/profiles
@@ -714,7 +716,7 @@ npm pack --dry-run --json | grep -E '"path": "scripts/(upgrade|lib/upgrade-plan)
 - 前置：T1。
 
 ### T3 bin 接线 + 命令体（只到 `--dry-run`）
-- 改：`packages/shell/bin/lib/launcher.mjs`（在 `:284` 之后追加两个导出，`parseLauncherArgs` 不动）；`packages/shell/bin/dsh-opentui.mjs`（`:73` 后取子命令，`:83` 后 `:86` 前加分支，`spawnSync(process.execPath, [scripts/upgrade.mjs, ...args], {stdio:'inherit'})` 后 `process.exit(status)`；`forceFlag && sub.command` 的 exit 2 守卫也在这里）；新增 `packages/shell/scripts/upgrade.mjs`（自身形态判定 + 计划表 + 打印，写盘路径留 TODO）；`packages/shell/test/bin-launcher.test.ts` 追加两个 `describe`（`splitLauncherSubcommand`，以及 §7.1 用例 8 的 `parseLauncherArgs(['--force','upgrade'])` 断言）。
+- 改：`packages/shell/bin/lib/launcher.mjs`（在 `:284` 之后追加两个导出，`parseLauncherArgs` 不动）；`packages/shell/bin/dsh-opentui.mjs`（`:73` 后取子命令，`:83` 后 `:86` 前加分支，`spawnSync(process.execPath, [退役的 upgrade 脚本, ...args], {stdio:'inherit'})` 后 `process.exit(status)`；`forceFlag && sub.command` 的 exit 2 守卫也在这里）；新增 `退役的 upgrade 命令实现`（自身形态判定 + 计划表 + 打印，写盘路径留 TODO）；`packages/shell/test/bin-launcher.test.ts` 追加两个 `describe`（`splitLauncherSubcommand`，以及 §7.1 用例 8 的 `parseLauncherArgs(['--force','upgrade'])` 断言）。
 - 验收：
   `cd packages/shell && bun test test/bin-launcher.test.ts && DSH_HOME=$(mktemp -d) node bin/dsh-opentui.mjs upgrade --dry-run --no-self; echo "exit=$?"`（期望 §1.4(e) 文本 + exit 0）
   `node bin/dsh-opentui.mjs --version`（输出与 `package.json` 版本一致，exit 0）
@@ -723,7 +725,7 @@ npm pack --dry-run --json | grep -E '"path": "scripts/(upgrade|lib/upgrade-plan)
 - 前置：T1。
 
 ### T4 执行路径（确认、自身升级、批量安装、备份、校验、override 写、回滚）
-- 改：`packages/shell/scripts/upgrade.mjs` 的 step 1-4（§3、§4.4、§4.5、§6）。
+- 改：`退役的 upgrade 命令实现` 的 step 1-4（§3、§4.4、§4.5、§6）。
 - 验收（需网络，人工）：
   1. `dsh plugin --profile opentui add --help` —— 确认 `--save-exact` 能穿透（R8）；
   2. 把 `~/.dsh/profiles/opentui` **连 `node_modules` 一起**复制到 `/tmp/upg-scratch/profiles/opentui`，然后 `node bin/dsh-opentui.mjs upgrade --yes`（**不带** `--no-self`：从源码树跑时 `which dsh-opentui` 指向全局 0.17.3、与 `pkgRoot` 不同 → 自身判定为 `other-copy` 并 skip，不碰全局安装，正好验证 §6.3 的 skip 路径）：期望 exit 0 或 3；输出**必须**带 §6.3 的 skip 警告（本次 ≥1 插件会升）；`/tmp/upg-scratch/profiles/opentui/upgrade-overrides.json` 存在且 `pins` 只含校验通过的包；`.dsh-opentui-upgrade-backup/<ts>/` 的 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` 三件套齐全；
@@ -740,7 +742,7 @@ npm pack --dry-run --json | grep -E '"path": "scripts/(upgrade|lib/upgrade-plan)
 - 改：`README.md` 与 `packages/shell/README.md` 同步插入 `## Upgrade` 段（两份字节相同）；`CHANGELOG.md` 顶部加一条 unreleased 条目；跑 §7.3 门禁。
 - 验收：
   `diff -q README.md packages/shell/README.md`（无输出）
-  `cd packages/shell && npm pack --dry-run --json | grep -c 'scripts/upgrade.mjs'`（=1）
+  # 退役命令的脚本不再打包
   然后执行 §7.3 的命令块，断言 §7.3 的 3 条结果。
 - 前置：T4、T5。
 

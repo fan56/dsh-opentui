@@ -7,7 +7,7 @@
 # publish landed, and the GitHub Release in its own job so it can be re-run
 # without re-publishing.
 #
-# Repo-specific shape (survey: research/upgrade-command-20261116/ci-publish-survey.md):
+# Repo-specific shape (prior release survey):
 # - The published package is packages/shell; the root manifest is private and
 #   has no version field, so `npm version`/`npm publish` run in packages/shell.
 # - prepack runs scripts/build-client.mjs, which imports

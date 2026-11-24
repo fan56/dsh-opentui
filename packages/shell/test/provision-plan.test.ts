@@ -33,7 +33,6 @@ import {
   pluginAddArgs,
   pluginAddCommand,
   pluginAddRetryDecision,
-  resolveEffectivePin,
   satisfiesVersion,
   selectPlugins,
   verifyInstalledPins,
@@ -705,90 +704,5 @@ describe('progress and verify', () => {
     expect(isDryRun(['--dry-run'], {})).toBe(true)
     expect(isDryRun([], { DSH_PROVISION_DRY_RUN: '1' })).toBe(true)
     expect(isDryRun([], { DSH_PROVISION_DRY_RUN: '0' })).toBe(false)
-  })
-})
-
-// `dsh-opentui upgrade` records the versions it installed in
-// upgrade-overrides.json; provisioning then treats those as the pin so the next
-// start neither reinstalls nor downgrades them.
-describe('upgrade overrides', () => {
-  const CRON = '@aiwayds/dsh-cron' // shipped pin 0.7.0
-  const CRON_PIN = '0.7.0'
-
-  const planWith = (overrides: unknown, fixture = fullyProvisioned()) =>
-    planPluginInstall({
-      tier: 'recommended',
-      ...fixture,
-      overrides: overrides as Record<string, { version: string }>,
-    })
-
-  test('an absent or empty override map plans exactly like no overrides at all', () => {
-    for (const fixture of [fullyProvisioned(), {}, (() => {
-      const partial = fullyProvisioned()
-      partial.dependencies[CRON] = '0.6.1'
-      partial.installedVersions[CRON] = '0.6.1'
-      return partial
-    })()]) {
-      const base = planPluginInstall({ tier: 'recommended', ...fixture })
-      expect(planWith({}, fixture)).toEqual(base)
-      expect(planWith(undefined, fixture)).toEqual(base)
-    }
-  })
-
-  test('an override newer than the pin satisfies an installed override version (no reinstall, no downgrade)', () => {
-    const fixture = fullyProvisioned()
-    fixture.dependencies[CRON] = '0.7.2'
-    fixture.installedVersions[CRON] = '0.7.2'
-    const plan = planWith({ [CRON]: { version: '0.7.2', shippedPin: CRON_PIN } }, fixture)
-    expect(plan.install).toEqual([])
-    expect(plan.satisfied).toBe(12)
-    expect(resolveEffectivePin({ name: CRON, shippedPin: CRON_PIN, overrides: { [CRON]: { version: '0.7.2' } } })).toBe('0.7.2')
-  })
-
-  test('an override raises the install spec when node_modules still has the shipped pin', () => {
-    const plan = planWith({ [CRON]: { version: '0.7.2', shippedPin: CRON_PIN } })
-    expect(plan.install).toEqual([{ name: CRON, pin: '0.7.2', spec: `${CRON}@0.7.2`, reason: expect.any(String) }])
-    expect(plan.satisfied).toBe(11)
-  })
-
-  test('an override equal to or older than the pin is ignored (the shipped pin wins)', () => {
-    for (const version of [CRON_PIN, '0.6.9', '0.6.9-rc.1']) {
-      expect(resolveEffectivePin({ name: CRON, shippedPin: CRON_PIN, overrides: { [CRON]: { version } } })).toBe(CRON_PIN)
-      // installed at the pin: satisfied, and the spec would name the pin
-      expect(planWith({ [CRON]: { version } }).install).toEqual([])
-      expect(planWith({ [CRON]: { version } }, {})).toEqual(planWith({}, {}))
-    }
-  })
-
-  test('an override version that is not semver is ignored', () => {
-    for (const version of ['latest', 'garbage', '0.7', '^0.7.2', '', '0.7.0.1']) {
-      expect(resolveEffectivePin({ name: CRON, shippedPin: CRON_PIN, overrides: { [CRON]: { version } } })).toBe(CRON_PIN)
-      expect(planWith({ [CRON]: { version } })).toEqual(planWith({}))
-    }
-    // a string instead of the documented entry object is ignored too
-    expect(planWith({ [CRON]: '0.7.2' })).toEqual(planWith({}))
-  })
-
-  test('an override for a package outside PLUGIN_SET is silently ignored', () => {
-    const rogue = { '@aiwayds/dsh-not-managed': { version: '9.9.9', shippedPin: '0.0.1' } }
-    expect(resolveEffectivePin({ name: '@aiwayds/dsh-not-managed', shippedPin: '0.0.1', overrides: rogue })).toBe('0.0.1')
-    expect(planWith(rogue)).toEqual(planWith({}))
-    expect(planWith({ ...rogue, [CRON]: { version: '0.7.2', shippedPin: CRON_PIN } }).install.map((entry) => entry.name)).toEqual([CRON])
-  })
-
-  test('damaged override data degrades to "no overrides" (array / null / non-object entry)', () => {
-    const base = planWith({})
-    expect(planWith([])).toEqual(base)
-    expect(planWith(null)).toEqual(base)
-    expect(planWith({ [CRON]: null })).toEqual(base)
-    expect(planWith({ [CRON]: ['0.7.2'] })).toEqual(base)
-    // the script's reader must never throw: a damaged file is caught and
-    // replaced by {}, and the map it returns is handed to the planner.
-    const script = readFileSync(new URL('../scripts/provision-opentui-profile.mjs', import.meta.url), 'utf8')
-    expect(script).toContain('function readUpgradeOverrides()')
-    expect(script).toContain("JSON.parse(readFileSync(overridePath, 'utf8'))")
-    expect(script).toContain('upgrade-overrides.json')
-    expect(script).toContain('const overrides = readUpgradeOverrides()')
-    expect(script).toContain('planPluginInstall({ tier, dependencies, bundles, installedVersions, overrides })')
   })
 })

@@ -5,19 +5,21 @@
 - 范围：只读调研。未修改任何源码/profile，未运行写 profile 的命令，未读取/打印任何凭据值。
 - 证据格式：`文件:行`（仓库相对路径）。
 
+> 2026-11-24 批次 2 更新：upgrade 子命令已退役；文中相关文件与行号为退役前快照，不再作为现行引用。
+
 ---
 
 ## 一、结论先行（10 条）
 
 1. **老 `opentui` profile 的"创建"由 dsh-opentui 脚本驱动 dsh CLI 完成，不是 dsh 默认自动 provision。** 目录不存在时，脚本显式调用 `dsh opentui --from-default-profile web --dump-config`，让 dsh 从 `web` 模板建目录（`--dump-config` 使 dsh compose-and-exit，不启动 profile）。模板选择、创建时机、后续所有写入都在 dsh-opentui 侧。（`packages/shell/scripts/provision-opentui-profile.mjs:8-12,173-200`；模板常量 `TEMPLATE='web'` 同文件 `:111`）
 
-2. **老 profile 的文件写入分工明确**：`package.json`（deps + `dsh.profile.bundles`，`writeManifest` 先做 `.bak-<ts>` 备份）、`cordis.patch.yml`（provider 路由 + `tool-web` 重开 + `web.searchProvider=anysearch` + `mcp-context7`）、`pnpm-workspace.yaml`（清 orphan patch / 写 allowBuilds）、`.provision-state.json`（失败记忆，脚本自写自读）；`upgrade-overrides.json` 与 `config.json` 由**别处**写（upgrade / launcher 迁移）。（`provision-opentui-profile.mjs:304-315,322,369-423,430-450,691-779`；`:158-160,267-294`；`packages/shell/scripts/upgrade.mjs:84,972`；`packages/shell/bin/dsh-opentui.mjs:344-401`）
+2. **老 profile 的文件写入分工明确**：`package.json`（deps + `dsh.profile.bundles`，`writeManifest` 先做 `.bak-<ts>` 备份）、`cordis.patch.yml`（provider 路由 + `tool-web` 重开 + `web.searchProvider=anysearch` + `mcp-context7`）、`pnpm-workspace.yaml`（清 orphan patch / 写 allowBuilds）、`.provision-state.json`（失败记忆，脚本自写自读）；`upgrade-overrides.json` 是退役命令留下的历史 override 文件，`config.json` 由 launcher 迁移写入。（`provision-opentui-profile.mjs:304-315,322,369-423,430-450,691-779`；`:158-160,267-294`；`退役前 upgrade 实现（本批删除）`；`packages/shell/bin/dsh-opentui.mjs:344-401`）
 
 3. **`opentui-inproc` 完全独立**：`provision-inproc-profile.mjs` 8 步收敛自己的目录，`PROFILE='opentui-inproc'`，hard guard 只碰这一个 profile，不读写 `opentui` 目录。（`packages/shell/scripts/provision-inproc-profile.mjs:2-11,92-95,147`）
 
 4. **启动脚本目前同时供给两个 profile**：bin step 3 对 `opentui` 做 best-effort provision（退出非 0 只打 WARN、继续启动）；step 3b 对 `opentui-inproc` 做 fatal provision（失败即退出）；step 6a 还用 `profile:'opentui'` 预启 HTTP host。（`packages/shell/bin/dsh-opentui.mjs:267-302,304-321,499-528`）`--repair-bridge` 只走 inproc provisioner，不碰老 profile。（同文件 `:202-231`）
 
-5. **`upgrade` 子命令只作用于老 profile**：`upgrade.mjs` 从 `provision-plan.mjs` 导入 `PROFILE`（= `'opentui'`），在 `~/.dsh/profiles/opentui` 下备份/改 `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`upgrade-overrides.json`，写 `.upgrade-backup/`，完全不涉及 inproc。（`packages/shell/scripts/upgrade.mjs:55-61,84,102,972,1133`；`packages/shell/scripts/lib/provision-plan.mjs:15`）
+5. **`upgrade` 子命令已退役**：退役前只作用于老 profile，会备份/改 `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`upgrade-overrides.json`，完全不涉及 inproc；批次 2 已删除实现与 planner。
 
 6. **`DSH_OPENTUI_INPROC` 已从源码删除**（0.24.0 移除 legacy remote seam 的逃生门；仓库中唯一残留是测试断言"usage 不应再出现它"，其余仅文档/历史）。当前 provision 相关开关是 `DSH_OPENTUI_COMPANION_LATEST`、`DSH_OPENTUI_COMPANIONS`（inproc companions）、`DSH_OPENTUI_PLUGINS`（老 tier）、`DSH_PROVISION_DRY_RUN`、`DSH_OPENTUI_APPROVAL_GATE`、`DSH_OPENTUI_HOST_VERSION`、`DSH_HOME`。**不存在"按 env 决定是否 provision opentui"的开关——step 3 每次启动都跑**。（`packages/shell/test/bin-launcher.test.ts:463`；`CONTEXT.md:96`；`README.md:12,118`；`packages/shell/scripts/lib/inproc-companions.mjs:23-25`；`provision-opentui-profile.mjs:138-139`；`provision-plan.mjs:135-137`；`provision-inproc-profile.mjs:161,164`）
 
@@ -44,7 +46,7 @@
 | 老 profile 清 patch/写 workspace | `planOrphanPatchCleanup` 删 `pnpm-workspace.yaml` 中 orphan `patchedDependencies`；`approvePrintedBuilds` 写 allowBuilds | `provision-opentui-profile.mjs:430-450,710-722,759-778`；`provision-plan.mjs:624-718` |
 | 老 profile verify | `dsh opentui --dump-config`；`skipping profile bundle` 行转 WARN，不作为失败 | `provision-opentui-profile.mjs:781-803`；`provision-plan.mjs:890-899` |
 | 老 profile 失败记忆 | `.provision-state.json` 写在 profile 内，只减少重试；读坏静默降级 | `provision-opentui-profile.mjs:161-163,262-294`；`provision-state.mjs:17-25` |
-| upgrade 写 override | `upgrade-overrides.json`（packages map）由 `dsh-opentui upgrade` 写，provision 只读；`.upgrade-backup/` 在老 profile 内 | `provision-plan.mjs:352-371`；`upgrade.mjs:84,102,972,1133`；`provision-opentui-profile.mjs:158-160,229-260` |
+| 历史 upgrade override | `upgrade-overrides.json` 由已退役的 upgrade 命令写入，provision 仍只读；命令本身已删除 | `provision-plan.mjs:352-371`；`provision-opentui-profile.mjs:158-160,229-260` |
 | launcher 迁移写 config.json | 老 `dsh-opentui` 偏好合并进 `opentui/config.json`，写 marker，旧 profile 不动 | `bin/dsh-opentui.mjs:28-33,323-402` |
 | inproc  manifest | 只写 `dsh.profile.bundles`（`dsh-base` + bridge + 已声明 catalog companions），不写 `@deepseek-ai` 依赖 | `provision-inproc-profile.mjs:143-149,879-901,1404-1428` |
 | inproc  bridge copy | `cpSync(dist/bridge → profile/node_modules/@aiwayds/dsh-opentui-bridge)`，实目录非 symlink | `provision-inproc-profile.mjs:30-36,1430-1458` |
@@ -59,7 +61,7 @@
 |---|---|---|---|
 | `provision-opentui-profile.mjs` | 创建/收敛：写 package.json、patch、装插件、清 bundles/ orphan patch、verify、WARN | 无 | `:1-75,126-806` |
 | `provision-inproc-profile.mjs` | 无（开头注释明确 "The `opentui` profile path is otherwise untouched"） | 全部 8 步 | `:6-11,92-95,147,1399-1499` |
-| `upgrade.mjs` | 升级受管插件 pin、写 override、备份/回滚、WARN；`PROFILE` 取自 provision-plan | 无 | `:55-61,84-102,732-870,972,1133` |
+| `upgrade 子命令（已退役）` | 退役前升级受管插件 pin、写 override、备份/回滚、WARN | 无 | 批次 2 已删除 |
 | `install-profile.mjs` | 无（建第三个 profile `dsh-opentui`，死代码） | 无 | `:3-5,25,34` |
 | `legacy client-topology gate (retired).mjs` | 只读预检存在性 + 按 `dsh --profile opentui --no-open` 找 host pid | 无 | `:96,114,166-172` |
 | `legacy command-surface sweep (retired).mjs` | 从真实 home 拷贝 `profiles/opentui` 到 scratch（不写真实 profile）；真实目录不存在则 skip | 在 scratch 中链接 bridge | `:32,49,74,94-95` |
@@ -67,7 +69,7 @@
 | `pack-meta.mjs` | 无（仅拷贝 LICENSE/NOTICE/README/CHANGELOG） | 无 | 文件全文 |
 | `lib/provision-plan.mjs` | 纯逻辑：`PROFILE='opentui'`、12 插件+pin、tier、patch 行定义、override 规则、WARN 文案 | 无 | `:15-19,29-121,352-403,720-885` |
 | `lib/provision-state.mjs` | 纯逻辑：失败记忆策略（文件由调用方写在老 profile 内） | 无 | `:1-25` |
-| `lib/upgrade-plan.mjs` | 纯逻辑：registry/NPMRC 解析（`<profile>/.npmrc` 占位）、override 序列化 | 无 | `:25,75-76,190-192` |
+| `upgrade planner（已退役）` | 退役前纯逻辑：registry/NPMRC 解析、override 序列化 | 无 | 批次 2 已删除 |
 | `lib/host-compat.mjs` | 无 | 窗口、检测、豁免读写 | `:1-16,23-42,103-114,203-224` |
 | `lib/inproc-companions.mjs` | 无 | companion 目录/选择/版本决策 | `:1-25,35-124,163-213` |
 | `lib/patch-runtime-merge.mjs` | 无 | patch 运行时字段（maxActiveSubagents/defaultPreset 等）合并 | `:1-19` |
@@ -92,7 +94,7 @@
 | 老 profile 名常量 | `provision-plan.mjs:15`、`bin/lib/launcher.mjs:42`、`bin/dsh-opentui.mjs:272,505`、`legacy client-topology gate (retired):96`、`legacy command-surface sweep (retired):49`、`legacy HTTP lifecycle:91`（`DEFAULT_PROFILE`）、`src/client/host-launch.ts:69`（`DEFAULT_LAUNCH_PROFILE`）、`src/client/safe-kill.ts:31`（`HOST_PROFILE`）、`src/client/client-lifecycle.ts:393,557,657`、`src/client/remote-restart.ts:165`、`src/client/watchdog-cli.ts:25`、`legacy HTTP session facade:547`、`scripts/verify-sk-keymap-ans.mjs:31`、`scripts/verify-s1-model-ans.mjs:20`、`scripts/test-tier.mjs:22` |
 | 新 profile 名常量 | `provision-inproc-profile.mjs:147`、`src/client/bridge-transport.ts:71,188`（默认 spawn `dsh --profile opentui-inproc`） |
 | 版本 pin | 老 profile 全部插件 pin 在 `provision-plan.mjs:29-102`（`PLUGIN_SET[].version`）；override 抬升 `provision-plan.mjs:392-403`；inproc 不 pin 插件版本（companion 走 `npm view dist-tags latest`：`inproc-companions.mjs:199-213`），bridge 自身身份/版本由 `bundle-fingerprint.json` 守护（`provision-inproc-profile.mjs:55-58,1490-1492`） |
-| 升级/降级 | 老 profile：`upgrade.mjs` 批量 `dsh plugin add` + override（只升不降：`provision-plan.mjs:368-371,392-403`）；inproc：`decideCompanionInstall` 明确 `downgrade → skip`（`inproc-companions.mjs:185-191`） |
+| 升级/降级 | 老 profile：`upgrade 子命令（已退役）` 批量 `dsh plugin add` + override（只升不降：`provision-plan.mjs:368-371,392-403`）；inproc：`decideCompanionInstall` 明确 `downgrade → skip`（`inproc-companions.mjs:185-191`） |
 | 窗口校验 | 仅 inproc：`host-compat.mjs:32,103-114,203-224`，被 `build-bridge.mjs:38,103`、`provision-inproc-profile.mjs:129-135,1231-1254`、`seam-bootstrap.ts:35-37,176-179` 复用；老 profile 无对应校验 |
 | UI 中的 "opentui" | `packages/tui-base/src/routes/session/settings-modal.tsx:99,370`（settings section id）、`welcome-hero.tsx:80`（tree-root 注释）——是 UI id/文案，不是 profile 名，删除 profile 时不必改 |
 
@@ -107,13 +109,13 @@
    - 删除 step 4 一次性迁移（`:28-33,323-402`，含 `opentuiProfileDir`、`migrateLegacyPreferences()`）；若保留对 `dsh-opentui` 旧 profile 的迁移，目标需改为 inproc 或取消。
    - 删除 step 6a 以 `profile:'opentui'` 预启 HTTP host（`:499-528`，尤其 `:505`），或改为 inproc/取消；同时清理 `--force` 说明中残留的 `--profile opentui` 措辞（`:261-265`）。
    - 头部注释 `:20-27`（step 3 描述）同步更新；`repairBridge` 分支注释 `:205-206` 提到的 "default `opentui` profile bootstrap" 同步。
-   - `upgrade` 子命令 branch（`:102-146`）：如 upgrade 只服务老 profile，需决定一同退役还是改造成 incompanion 升级（见 B）。
+   - `upgrade` 子命令 branch 已于批次 2 退役，不再保留。
 
 2. **`packages/shell/scripts/provision-opentui-profile.mjs`** — 整个文件退役（它唯一作用就是老 profile）。其 import 的 `provision-plan.mjs` 逻辑随之处理（见 4）。
 
-3. **`packages/shell/scripts/upgrade.mjs`** — 其 `PROFILE` 来自 `provision-plan.mjs`（= `opentui`），全部逻辑针对老 profile（`:972` 等）。删除或重写为 inproc companion 升级；否则会继续在已删除的目录里写 `upgrade-overrides.json`/`.upgrade-backup/`。
+3. **upgrade 子命令（已退役）** — 批次 2 已删除实现与 planner；退役前只服务老 profile，不覆盖 inproc companion。
 
-4. **`packages/shell/scripts/lib/provision-plan.mjs`** — `PROFILE='opentui'`（`:15`）、`PLUGIN_SET` 12 项与 pin（`:29-102`）、`EXCLUDED_PLUGINS`（`:106-115`）、`RETIRED_PROFILE_ENTRIES`（`:121`）、tier 与 patch 行定义（`:18-19,125-145,720-885`）、override 抬升（`:352-403`）都只服务老 profile。但 `upgrade.mjs` 当前复用其 `PROFILE/PLUGIN_SET/compareVersions/parseVersion/resolveEffectivePin`（`upgrade.mjs:55-61`），删除前需先处理 upgrade。纯函数 `classifyPluginAddFailure` 等若是老 profile 专用，也一并退役。
+4. **`packages/shell/scripts/lib/provision-plan.mjs`** — `PROFILE='opentui'`（`:15`）、`PLUGIN_SET` 12 项与 pin（`:29-102`）、`EXCLUDED_PLUGINS`（`:106-115`）、`RETIRED_PROFILE_ENTRIES`（`:121`）、tier 与 patch 行定义（`:18-19,125-145,720-885`）、override 抬升（`:352-403`）都只服务老 profile。退役前 upgrade 曾复用其 `PROFILE/PLUGIN_SET/compareVersions/parseVersion/resolveEffectivePin`；该消费方已删除。纯函数 `classifyPluginAddFailure` 等若是老 profile 专用，也一并退役。
 
 5. **`packages/shell/bin/lib/launcher.mjs`** — `PROFILE='opentui'`（`:42`）与 `classifyProcess()` 的 host 判定（`:433-466`，匹配 `--profile opentui`）为老 profile 的 stale-process/`--force` 服务；若 HTTP host 预启被删，此面需改判定或退役。
 
@@ -132,7 +134,7 @@
 ### D. 只停 provision 不删目录的后果（直接回答）
 
 - `~/.dsh/profiles/opentui` 不会被自动删除（所有 provisioner 都是"复用已存在"策略：`provision-opentui-profile.mjs:173-175`；inproc 从不删它）。
-- 仍写入者：`upgrade.mjs`（override/backup）、客户端本地配置面（patch/config/provider-keys）、launcher 迁移（config.json，仅 marker 未写时）、HTTP host 启动（registry/lock 在 `<dshHome>` 根，profile 目录本身被 dsh 读取）。
+- 仍写入者：客户端本地配置面（patch/config/provider-keys）、launcher 迁移（config.json，仅 marker 未写时）、HTTP host 启动（registry/lock 在 `<dshHome>` 根，profile 目录本身被 dsh 读取）。
 - 仍读取者：`dsh --profile opentui --no-open --port N` 宿主启动（bin step 6a + client-entry ensureV2Host）、launcher stale-kill 判定、e2e/verify preflight。
 - 换言之，"停 provision"只能阻止 dsh-opentui 对该目录做 pin/patch/install 收敛，不能阻止运行时读写。
 
@@ -144,4 +146,4 @@
 2. **本机实际状态**：未检查本机 `~/.dsh/profiles/opentui` / `opentui-inproc` 是否存在及其内容（只读任务且避免触碰凭据），"只停 provision 后目录会怎样"的结论基于代码行为而非本机快照。
 3. **HTTP host 当前是否仍承担功能**：文档称 0.24.0 起 bridge 是唯一 seam（`CONTEXT.md:90-96`），但 bin 与 client-entry 仍启动 `opentui` HTTP host（`bin/dsh-opentui.mjs:499-528`、`client-entry.tsx:266`）。该 HTTP host 除 registry/health 外是否还被客户端实际使用，属运行时面，超出本次供给面调研，需另案确认。
 4. **`install-profile.mjs` 的历史分发状态**：仓库中无调用方且 import 缺失模块（`install-profile.mjs:25`），是否曾被发布版本调用、外部脚本是否依赖它，无法从仓库判定。
-5. **`upgrade` 对 inproc 的适用意图**：当前 upgrade 完全不覆盖 inproc companion 升级（`upgrade.mjs:55-61` 仅老 profile）；"删除 opentui 后 upgrade 该何去何从"是需要产品/技术决策的问题，本报告不代替决策。
+5. **`upgrade` 子命令已退役**：退役前完全不覆盖 inproc companion 升级；批次 2 只删除命令，不改变 inproc companion 供给链。
