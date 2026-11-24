@@ -24,8 +24,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   buildEnv,
   locatePackage,
+  parseArgs,
   resolveHostVersion,
   runVerification,
+  SCENARIOS,
   stripDshFromPath,
 } from '../../../scripts/verify-fresh-home-provision.mjs'
 
@@ -105,6 +107,9 @@ if (fs.existsSync(lockPath)) {
 const bridgeSrc = process.env.DSH_OPENTUI_TEST_BRIDGE_DIR
   || fileURLToPath(new URL('../dist/bridge/', import.meta.url))
 const badFp = path.join(bridgeSrc, 'bundle-fingerprint.json')
+if (!fs.existsSync(badFp)) {
+  fail('bridge fingerprint is missing', 'bridge directory is missing or incomplete')
+}
 if (fs.existsSync(badFp)) {
   const fp = JSON.parse(fs.readFileSync(badFp, 'utf8'))
   if (typeof fp.version === 'string' && fp.version.indexOf('BROKEN') >= 0) {
@@ -210,6 +215,17 @@ describe('fake prefix plumbing', () => {
     expect(mod.DEFAULT_PROFILE).toBe(PROFILE)
   })
 
+  test('parseArgs defaults to all and accepts only the declared scenarios', () => {
+    expect(parseArgs(['--prefix', PREFIX]).scenario).toBe('all')
+    for (const scenario of [...SCENARIOS, 'all']) {
+      expect(parseArgs(['--prefix', PREFIX, '--scenario', scenario]).scenario).toBe(scenario)
+      expect(parseArgs(['--prefix', PREFIX, `--scenario=${scenario}`]).scenario).toBe(scenario)
+    }
+    expect(() => parseArgs(['--prefix', PREFIX, '--scenario', 'unknown'])).toThrow('--scenario must be one of')
+    expect(() => parseArgs(['--prefix', PREFIX, '--scenario='])).toThrow('--scenario must be one of')
+    expect(() => parseArgs(['--prefix', PREFIX, '--scenario'])).toThrow('--scenario must be one of')
+  })
+
   test('stripDshFromPath drops user-level dsh dirs, resolveHostVersion reads a pin first', () => {
     const pathWithUserDsh = `${userDshDir}:${originalPath}`
     const stripped = stripDshFromPath(pathWithUserDsh)
@@ -264,10 +280,75 @@ describe('verifier against a fake provisioner', () => {
     expect(statusOf(report, 'negative:live-lock:exit-2')).toBe('PASS')
     expect(statusOf(report, 'negative:live-lock:not-overwritten')).toBe('PASS')
     expect(statusOf(report, 'negative:bad-bridge:fail-fast')).toBe('PASS')
+    expect(statusOf(report, 'negative:bad-bridge:missing-dir-fail-fast')).toBe('PASS')
     expect(statusOf(report, 'negative:bad-bridge:repair-restores')).toBe('PASS')
     expect(report.scenarios.liveLock.status).toBe(2)
     expect(report.scenarios.badBridge.status).toBe(1)
+    expect(report.scenarios.badBridgeMissing.status).toBe(1)
     expect(report.scenarios.badBridgeRepair.status).toBe(0)
+  })
+
+  test('negative scenario selection runs without dsh or a host pin and marks positive NOT RUN', async () => {
+    const cases = [
+      ['no-dsh', ['noDsh']],
+      ['live-lock', ['liveLock']],
+      ['bad-bridge', ['badBridge', 'badBridgeMissing']],
+      ['bad-bridge-repair', ['badBridgeRepair']],
+    ] as const
+    const savedPath = process.env.PATH
+    const savedPin = process.env.DSH_OPENTUI_HOST_VERSION
+    try {
+      process.env.PATH = '/usr/bin:/bin'
+      delete process.env.DSH_OPENTUI_HOST_VERSION
+      for (const [scenario, keys] of cases) {
+        const report: any = await runVerification({ prefix: PREFIX, scenario, keep: false })
+        expect(report.scenario).toBe(scenario)
+        expect(report.pass).toBe(true)
+        expect(report.result).toBe('PASS')
+        expect(report.scenarioStatus[scenario]).toBe('PASS')
+        expect(report.scenarioStatus.positive).toBe('NOT RUN')
+        expect(Object.keys(report.scenarios)).toEqual(keys)
+        for (const other of SCENARIOS) {
+          if (other === scenario) continue
+          expect(report.scenarioStatus[other]).toBe('NOT RUN')
+          expect(statusOf(report, `scenario:${other}`)).toBe('NOT RUN')
+        }
+      }
+    } finally {
+      process.env.PATH = savedPath
+      if (savedPin === undefined) delete process.env.DSH_OPENTUI_HOST_VERSION
+      else process.env.DSH_OPENTUI_HOST_VERSION = savedPin
+    }
+  })
+
+  test('CLI --scenario=no-dsh emits JSON only with the three fail-fast assertions PASS', () => {
+    const { spawnSync } = require('node:child_process') as typeof import('node:child_process')
+    const env = { ...process.env, PATH: '/usr/bin:/bin' }
+    delete env.DSH_OPENTUI_HOST_VERSION
+    delete env.DSH_HOME
+    const result = spawnSync(process.execPath, [VERIFIER, '--prefix', PREFIX, '--scenario=no-dsh', '--json'], {
+      encoding: 'utf8',
+      env,
+    })
+    expect(result.status).toBe(0)
+    const report = JSON.parse(String(result.stdout).trim())
+    expect(report.scenario).toBe('no-dsh')
+    expect(report.scenarioStatus.positive).toBe('NOT RUN')
+    expect(Object.keys(report.scenarios)).toEqual(['noDsh'])
+    for (const name of ['exit-nonzero', 'fail-fast-trio', 'no-profile-artifacts']) {
+      expect(statusOf(report, `negative:no-dsh:${name}`)).toBe('PASS')
+    }
+  })
+
+  test('CLI rejects an illegal --scenario name with exit 2', () => {
+    const { spawnSync } = require('node:child_process') as typeof import('node:child_process')
+    const result = spawnSync(process.execPath, [VERIFIER, '--prefix', PREFIX, '--scenario=unknown', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: '/usr/bin:/bin' },
+    })
+    expect(result.status).toBe(2)
+    expect(String(result.stderr)).toContain('--scenario must be one of')
+    expect(String(result.stdout)).toBe('')
   })
 
   test('scratch HOME isolation: no user dsh on PATH, both HOME vars point into scratch, --keep retains', async () => {

@@ -154,6 +154,8 @@ jobs:
     name: Pack / cold start / bridge handshake
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      DSH_OPENTUI_HOST_VERSION: 0.2.2-rc.3
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -221,20 +223,14 @@ jobs:
 
       - name: Assert tarball / fresh install / cold start / handshake
         shell: bash
-        env:
-          # The host is installed into a private prefix (not on PATH), so the
-          # provisioner's `dsh --version` auto-detection cannot see it. Pin the
-          # documented override to the exact version installed above; the
-          # handshake child inherits it via process.env.
-          DSH_OPENTUI_HOST_VERSION: 0.2.2-rc.3
         run: |
           set -eo pipefail
 
           WORK="$(mktemp -d)"
-          PREFIX="$WORK/prefix"
-          HOST_PREFIX="$WORK/host-prefix"
+          PREFIX="$RUNNER_TEMP/dsh-opentui-prefix"
+          HOST_PREFIX="$RUNNER_TEMP/dsh-opentui-host-prefix"
           FRESH_DSH_HOME="$WORK/dsh-home"
-          PROFILE_DIR="$FRESH_DSH_HOME/profiles/opentui-inproc"
+          PROFILE_DIR=""
           REPAIR_OUT="$WORK/repair.out"
           HANDSHAKE_OUT="$WORK/handshake.out"
           HANDSHAKE_ERR="$WORK/handshake.err"
@@ -284,10 +280,18 @@ jobs:
           # the host is pinned to the bridge's peer version (not on hosted
           # runners). A failed host install is a real failure, never a skip.
           npm i -g --prefix "$PREFIX" "$TARBALL" || fail "fresh-prefix install of the tarball failed"
-          npm i -g --prefix "$HOST_PREFIX" @deepseek-ai/dsh@0.2.2-rc.3 \
-            || fail "pinned host install (@deepseek-ai/dsh@0.2.2-rc.3) failed"
+          npm i -g --prefix "$HOST_PREFIX" "@deepseek-ai/dsh@$DSH_OPENTUI_HOST_VERSION" \
+            || fail "pinned host install (@deepseek-ai/dsh@$DSH_OPENTUI_HOST_VERSION) failed"
           DSH_BIN="$HOST_PREFIX/bin/dsh"
           [ -x "$DSH_BIN" ] || fail "installed dsh binary not found at $DSH_BIN"
+          PROFILE_NAME="$(node --input-type=module -e '
+            import { pathToFileURL } from "node:url";
+            const { DEFAULT_PROFILE } = await import(pathToFileURL(process.argv[1]).href);
+            if (typeof DEFAULT_PROFILE !== "string" || !DEFAULT_PROFILE) process.exit(1);
+            process.stdout.write(DEFAULT_PROFILE);
+          ' "$PREFIX/lib/node_modules/@aiwayds/dsh-opentui/scripts/lib/profile-name.mjs")" \
+            || fail "installed package did not export a valid DEFAULT_PROFILE"
+          PROFILE_DIR="$FRESH_DSH_HOME/profiles/$PROFILE_NAME"
 
           # 5. cold start (headless): provisioning + T5 identity + T7 repair.
           set +e
@@ -316,4 +320,105 @@ jobs:
           echo "profile @deepseek-ai find output: ${DS_COPY:-<empty>}"
           [ -z "$DS_COPY" ] || fail "profile contains @deepseek-ai copies: $DS_COPY"
           echo "T8 pack / cold start / handshake gate PASS"
+
+      - name: Fresh-home verifier pass 1 (negative only; no dsh or host pin)
+        shell: bash
+        run: |
+          set -eo pipefail
+          NODE_DIR="$(dirname "$(command -v node)")"
+          SYSTEM_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$NODE_DIR"
+          if env PATH="$SYSTEM_PATH" bash -c 'command -v dsh >/dev/null 2>&1'; then
+            echo "::error::pass 1 PATH unexpectedly contains dsh"
+            exit 1
+          fi
+          PASS1_HOME="$RUNNER_TEMP/fresh-home-pass1-home"
+          REPORT="$RUNNER_TEMP/fresh-home-no-dsh.json"
+          mkdir -p "$PASS1_HOME"
+          set +e
+          env -u DSH_OPENTUI_HOST_VERSION -u DSH_HOME \
+            HOME="$PASS1_HOME" PATH="$SYSTEM_PATH" \
+            node "$GITHUB_WORKSPACE/scripts/verify-fresh-home-provision.mjs" \
+              --prefix "$RUNNER_TEMP/dsh-opentui-prefix" --scenario=no-dsh --json > "$REPORT"
+          VERIFIER_RC=$?
+          set -e
+          node - "$REPORT" <<'NODE'
+          const fs = require('node:fs')
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const required = [
+            'negative:no-dsh:exit-nonzero',
+            'negative:no-dsh:fail-fast-trio',
+            'negative:no-dsh:no-profile-artifacts',
+          ]
+          const bad = required.filter((name) => report.checks.find((check) => check.name === name)?.status !== 'PASS')
+          const notRun = Object.entries(report.scenarioStatus ?? {})
+            .filter(([name, status]) => name !== 'no-dsh' && status !== 'NOT RUN')
+            .map(([name]) => name)
+          if (report.scenario !== 'no-dsh' || report.result !== 'PASS'
+              || Object.keys(report.scenarios).join(',') !== 'noDsh' || bad.length > 0 || notRun.length > 0) {
+            console.error(`pass 1 assertion failed: ${bad.join(', ') || 'unexpected report status'}; unexpected scenarios: ${notRun.join(', ')}`)
+            process.exit(1)
+          }
+          console.log(`pass 1 PASS: ${required.length} negative:no-dsh assertions PASS; all other scenarios NOT RUN`)
+          NODE
+          [ "$VERIFIER_RC" -eq 0 ] || { echo "::error::pass 1 verifier exited $VERIFIER_RC"; exit "$VERIFIER_RC"; }
+          echo "pass 1 JSON report: $REPORT"
+
+      - name: Fresh-home verifier pass 2 (scoped dsh + host pin; all scenarios)
+        shell: bash
+        run: |
+          set -eo pipefail
+          NODE_DIR="$(dirname "$(command -v node)")"
+          SYSTEM_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$NODE_DIR"
+          DSH_BIN="$RUNNER_TEMP/dsh-opentui-host-prefix/bin/dsh"
+          PASS2_PATH="$(dirname "$DSH_BIN"):$SYSTEM_PATH"
+          RESOLVED_DSH="$(env PATH="$PASS2_PATH" bash -c 'command -v dsh')"
+          [ "$RESOLVED_DSH" = "$DSH_BIN" ] || { echo "::error::pass 2 resolved $RESOLVED_DSH, expected $DSH_BIN"; exit 1; }
+          PASS2_HOME="$RUNNER_TEMP/fresh-home-pass2-home"
+          REPORT="$RUNNER_TEMP/fresh-home-all.json"
+          mkdir -p "$PASS2_HOME"
+          set +e
+          env -u DSH_HOME HOME="$PASS2_HOME" PATH="$PASS2_PATH" \
+            DSH_OPENTUI_HOST_VERSION="$DSH_OPENTUI_HOST_VERSION" \
+            node "$GITHUB_WORKSPACE/scripts/verify-fresh-home-provision.mjs" \
+              --prefix "$RUNNER_TEMP/dsh-opentui-prefix" --with-dsh "$DSH_BIN" \
+              --scenario=all --json > "$REPORT"
+          VERIFIER_RC=$?
+          set -e
+          node - "$REPORT" <<'NODE'
+          const fs = require('node:fs')
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const required = [
+            'positive:exit0',
+            'profile:exists',
+            'companions:desired',
+            'companions:manifest-exact',
+            'companions:ondisk-exact',
+          ]
+          const bad = required.filter((name) => report.checks.find((check) => check.name === name)?.status !== 'PASS')
+          if (report.scenario !== 'all' || report.result !== 'PASS'
+              || report.scenarioStatus?.positive !== 'PASS'
+              || report.desiredCompanionIds?.length !== 11 || report.desiredCompanions?.length !== 11
+              || bad.length > 0) {
+            console.error(`pass 2 assertion failed: ${bad.join(', ') || 'positive scenario or 11-companion contract missing'}`)
+            process.exit(1)
+          }
+          const notRun = report.checks.filter((check) => check.status === 'NOT RUN')
+          console.log(`pass 2 PASS: positive scenario installed all 11 policy companions; ${notRun.length} NOT RUN check(s)`)
+          if (notRun.length === 0) console.log('NOT RUN <none>')
+          for (const check of notRun) {
+            console.log(`NOT RUN ${check.name}${check.detail ? ` — ${check.detail}` : ''}`)
+          }
+          NODE
+          [ "$VERIFIER_RC" -eq 0 ] || { echo "::error::pass 2 verifier exited $VERIFIER_RC"; exit "$VERIFIER_RC"; }
+          echo "pass 2 JSON report: $REPORT"
+
+      - name: Upload fresh-home verifier JSON reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-home-provision-reports
+          path: |
+            ${{ runner.temp }}/fresh-home-no-dsh.json
+            ${{ runner.temp }}/fresh-home-all.json
+          if-no-files-found: ignore
 

@@ -7,9 +7,10 @@
  * user's ~/.dsh, never uses a static fake profile, never shells out.
  *
  *   node scripts/verify-fresh-home-provision.mjs --prefix <prefix> \
- *     [--with-dsh <absolute-dsh-bin>] [--keep] [--json] [--timeout-ms <n>]
+ *     [--with-dsh <absolute-dsh-bin>] [--scenario[=] <name|all>] [--keep] [--json] [--timeout-ms <n>]
  *
- * Exit codes: 0 all checks PASS, 1 a check FAILed, 2 usage/unresolvable prefix.
+ * Scenarios: positive, no-dsh, live-lock, bad-bridge, bad-bridge-repair, all.
+ * Exit codes: 0 all selected checks PASS or NOT RUN, 1 a check FAILed, 2 usage/unresolvable prefix.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -39,6 +40,7 @@ const FAIL_FAST_NOTICE = 'inproc bridge mode injects append-system via the bridg
 const MAX_OUTPUT = 4000
 const DEFAULT_TIMEOUT_MS = 180_000
 const NEG_TIMEOUT_MS = 20_000
+export const SCENARIOS = Object.freeze(['positive', 'no-dsh', 'live-lock', 'bad-bridge', 'bad-bridge-repair'])
 // DSH_* inherited by the provisioner. Everything else (user pins, user paths)
 // is dropped; these are the documented CI pins, never user config.
 const ENV_WHITELIST = [
@@ -61,11 +63,13 @@ function usageError(message) {
 }
 
 export function parseArgs(argv = []) {
-  const out = { prefix: undefined, dshBin: undefined, keep: false, keepOnFailure: true, json: false, timeoutMs: DEFAULT_TIMEOUT_MS }
+  const out = { prefix: undefined, dshBin: undefined, scenario: 'all', keep: false, keepOnFailure: true, json: false, timeoutMs: DEFAULT_TIMEOUT_MS }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--prefix') out.prefix = argv[++i]
     else if (arg === '--with-dsh') out.dshBin = argv[++i]
+    else if (arg === '--scenario') out.scenario = argv[++i]
+    else if (arg.startsWith('--scenario=')) out.scenario = arg.slice('--scenario='.length)
     else if (arg === '--keep') out.keep = true
     else if (arg === '--no-keep-on-failure') out.keepOnFailure = false
     else if (arg === '--json') out.json = true
@@ -73,6 +77,9 @@ export function parseArgs(argv = []) {
     else usageError(`unknown argument: ${arg}`)
   }
   if (!out.prefix) usageError('--prefix is required')
+  if (out.scenario !== 'all' && !SCENARIOS.includes(out.scenario)) {
+    usageError(`--scenario must be one of: ${[...SCENARIOS, 'all'].join(', ')}`)
+  }
   if (out.dshBin && !resolvePathArg(out.dshBin)) usageError('--with-dsh must be an absolute path')
   if (!Number.isFinite(out.timeoutMs) || out.timeoutMs <= 0) usageError('--timeout-ms must be a positive number')
   return out
@@ -350,10 +357,16 @@ function positiveChecks({ profileDir, desired, run }) {
 }
 
 /**
- * Run the whole gate. Exported so the unit tests can drive a fake prefix.
- * Options: { prefix, dshBin, keep, keepOnFailure, timeoutMs }
+ * Run the gate. Exported so the unit tests can drive a fake prefix.
+ * Options: { prefix, dshBin, scenario, keep, keepOnFailure, timeoutMs }
  */
-export async function runVerification({ prefix, dshBin, keep = false, keepOnFailure = true, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export async function runVerification({ prefix, dshBin, scenario = 'all', keep = false, keepOnFailure = true, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  if (scenario !== 'all' && !SCENARIOS.includes(scenario)) {
+    usageError(`--scenario must be one of: ${[...SCENARIOS, 'all'].join(', ')}`)
+  }
+  const selected = scenario === 'all' ? SCENARIOS : [scenario]
+  const selectedSet = new Set(selected)
+  const scenarioStatus = Object.fromEntries(SCENARIOS.map((name) => [name, 'NOT RUN']))
   const located = locatePackage(prefix)
   const DEFAULT_PROFILE = await loadProfileName(located.profileName)
   // Authoritative desired set: fail-fast (exit 2) before any scratch I/O if the
@@ -369,13 +382,17 @@ export async function runVerification({ prefix, dshBin, keep = false, keepOnFail
   const scenarios = {}
   const envPinned = buildEnv({})
   let hostVersion
-  try {
-    hostVersion = resolveHostVersion({ dshBin, env: envPinned })
-  } catch (error) {
-    rmSync(scratchHome, { recursive: true, force: true })
-    throw error
+  // The no-dsh scenario is defined by the absence of a host and must not probe
+  // one, even when a caller supplied --with-dsh for a different scenario.
+  if ([...selected].some((name) => name !== 'no-dsh')) {
+    try {
+      hostVersion = resolveHostVersion({ dshBin, env: envPinned })
+    } catch (error) {
+      rmSync(scratchHome, { recursive: true, force: true })
+      throw error
+    }
   }
-  if (!hostVersion && !dshBin) {
+  if (selectedSet.has('positive') && !hostVersion && !dshBin) {
     notes.push('No --with-dsh and no DSH_OPENTUI_HOST_VERSION pin: positive pass cannot exit 0; negative #1 exercises this case.')
   }
 
@@ -384,27 +401,41 @@ export async function runVerification({ prefix, dshBin, keep = false, keepOnFail
     mkdirSync(home, { recursive: true })
     return home
   }
+  const finishScenario = (name, start) => {
+    const scoped = checks.slice(start)
+    scenarioStatus[name] = scoped.some((c) => c.status === 'FAIL') ? 'FAIL'
+      : scoped.some((c) => c.status === 'PASS') ? 'PASS' : 'NOT RUN'
+  }
 
   try {
+    for (const name of SCENARIOS) {
+      if (!selectedSet.has(name)) checks.push(skip(`scenario:${name}`, `not selected by --scenario ${scenario}`))
+    }
+
     // ---- positive pass -------------------------------------------------------
-    const posHome = scenarioHome('positive')
-    const profileDir = join(posHome, 'profiles', DEFAULT_PROFILE)
-    if (hostVersion) {
-      const env = buildEnv({
-        includeDshDir: dshBin ? dirname(dshBin) : undefined,
-        hostVersion,
-      })
-      const run = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: posHome, home: scratchHome, timeoutMs })
-      scenarios.positive = run
-      checks.push(...positiveChecks({ profileDir, desired: desiredCompanions, run }))
-    } else {
-      scenarios.positive = { status: null, stdout: '', stderr: '', durationMs: 0 }
-      checks.push(skip('positive:exit0', 'no dsh and no host-version pin; covered by negative #1'))
-      notes.push('positive path NOT RUN')
+    if (selectedSet.has('positive')) {
+      const start = checks.length
+      const posHome = scenarioHome('positive')
+      const profileDir = join(posHome, 'profiles', DEFAULT_PROFILE)
+      if (hostVersion) {
+        const env = buildEnv({
+          includeDshDir: dshBin ? dirname(dshBin) : undefined,
+          hostVersion,
+        })
+        const run = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: posHome, home: scratchHome, timeoutMs })
+        scenarios.positive = run
+        checks.push(...positiveChecks({ profileDir, desired: desiredCompanions, run }))
+      } else {
+        scenarios.positive = { status: null, stdout: '', stderr: '', durationMs: 0 }
+        checks.push(skip('positive:exit0', 'no dsh and no host-version pin; covered by negative #1'))
+        notes.push('positive path NOT RUN')
+      }
+      finishScenario('positive', start)
     }
 
     // ---- negative #1: no dsh + no host version -------------------------------
-    {
+    if (selectedSet.has('no-dsh')) {
+      const start = checks.length
       const home = scenarioHome('no-dsh')
       const env = buildEnv({})
       // Explicitly drop a caller-supplied pin: this scenario is defined by its absence.
@@ -420,10 +451,12 @@ export async function runVerification({ prefix, dshBin, keep = false, keepOnFail
       checks.push(skip('negative:no-dsh:strict-no-profile-dir', existsSync(profileDirNeg)
         ? 'real provisioner mkdir(profile) as lock parent before the host gate; empty dir only, no profile written'
         : 'profile dir absent'))
+      finishScenario('no-dsh', start)
     }
 
     // ---- negative #2: live .provision.lock ----------------------------------
-    {
+    if (selectedSet.has('live-lock')) {
+      const start = checks.length
       const home = scenarioHome('live-lock')
       const lockProfile = join(home, 'profiles', DEFAULT_PROFILE)
       mkdirSync(lockProfile, { recursive: true })
@@ -438,42 +471,65 @@ export async function runVerification({ prefix, dshBin, keep = false, keepOnFail
       let after = ''
       try { after = readFileSync(lockPath, 'utf8') } catch { /* checked below */ }
       checks.push(check('negative:live-lock:not-overwritten', after === lockRecord, after === lockRecord ? 'pid+nonce unchanged' : `lock changed: ${truncate(after)}`))
+      finishScenario('live-lock', start)
     }
 
-    // ---- negative #3: corrupted bridge (source artifact) --------------------
-    {
+    // ---- negative #3: corrupted/missing bridge (source artifact) ------------
+    if (selectedSet.has('bad-bridge') || selectedSet.has('bad-bridge-repair')) {
       const home = scenarioHome('bad-bridge')
       const bridgeSrc = join(located.packageRoot, 'dist', 'bridge')
       const badDir = join(scratchHome, 'bad-bridge-src')
-      if (!existsSync(join(bridgeSrc, 'bundle-fingerprint.json'))) {
-        checks.push(skip('negative:bad-bridge:fail-fast', `no dist/bridge artifact in ${located.packageRoot}`))
-        checks.push(skip('negative:bad-bridge:repair-restores', 'no dist/bridge artifact to corrupt'))
-      } else {
+      const missingDir = join(scratchHome, 'missing-bridge-src')
+      const hasBridge = existsSync(join(bridgeSrc, 'bundle-fingerprint.json'))
+      const env = buildEnv({
+        includeDshDir: dshBin ? dirname(dshBin) : undefined,
+        hostVersion: hostVersion ?? '0.2.2-rc.5',
+      })
+      env.DSH_OPENTUI_COMPANION_LATEST = 'off'
+      if (hasBridge) {
         cpSync(bridgeSrc, badDir, { recursive: true })
         const fpPath = join(badDir, 'bundle-fingerprint.json')
         const fp = JSON.parse(readFileSync(fpPath, 'utf8'))
         writeFileSync(fpPath, JSON.stringify({ ...fp, version: '0.0.0-BROKEN-FIXTURE' }))
-        const env = buildEnv({
-          includeDshDir: dshBin ? dirname(dshBin) : undefined,
-          hostVersion: hostVersion ?? '0.2.2-rc.5',
-        })
-        env.DSH_OPENTUI_TEST_BRIDGE_DIR = badDir
-        env.DSH_OPENTUI_COMPANION_LATEST = 'off'
-        const run = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
-        scenarios.badBridge = run
-        checks.push(check('negative:bad-bridge:fail-fast', run.status !== 0 && hasFailFastTrio(run.stderr), `exit=${run.status}; ${truncate(run.stderr).split('\n').slice(-3).join(' | ')}`))
-        // The shipped provisioner documents --repair-bridge as a no-op for a
-        // corrupted SOURCE artifact; restoring the artifact is what recovers.
-        // With a fake provisioner this branch is exercised end-to-end in tests.
-        cpSync(join(bridgeSrc, 'bundle-fingerprint.json'), fpPath)
-        const repairRun = runProvisioner({ provisioner: located.provisioner, args: ['--repair-bridge'], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
-        scenarios.badBridgeRepair = repairRun
-        if (repairRun.status === 0) {
-          checks.push(ok('negative:bad-bridge:repair-restores', 'exit=0 after restoring a valid bridge source; --repair-bridge accepted'))
-        } else {
-          checks.push(skip('negative:bad-bridge:repair-restores',
-            `source artifact restored but --repair-bridge run exited ${repairRun.status}: the shipped provisioner treats the flag as a no-op for artifact contents (see provision-inproc-profile.mjs:87-90); recovery requires a valid installed artifact, not the flag`))
+      }
+      if (selectedSet.has('bad-bridge')) {
+        const start = checks.length
+        if (hasBridge) {
+          env.DSH_OPENTUI_TEST_BRIDGE_DIR = badDir
+          const run = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
+          scenarios.badBridge = run
+          checks.push(check('negative:bad-bridge:fail-fast', run.status !== 0 && hasFailFastTrio(run.stderr), `exit=${run.status}; ${truncate(run.stderr).split('\n').slice(-3).join(' | ')}`))
         }
+        // A missing bridge directory is independently fatal; never turn a
+        // missing shipped artifact into a silent NOT RUN pass.
+        env.DSH_OPENTUI_TEST_BRIDGE_DIR = missingDir
+        const missingRun = runProvisioner({ provisioner: located.provisioner, args: [], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
+        scenarios.badBridgeMissing = missingRun
+        checks.push(check('negative:bad-bridge:missing-dir-fail-fast',
+          missingRun.status !== 0 && hasFailFastTrio(missingRun.stderr),
+          `exit=${missingRun.status}; ${truncate(missingRun.stderr).split('\n').slice(-3).join(' | ')}`))
+        finishScenario('bad-bridge', start)
+      }
+      if (selectedSet.has('bad-bridge-repair')) {
+        const start = checks.length
+        if (!hasBridge) {
+          checks.push(skip('negative:bad-bridge:repair-restores', 'no valid dist/bridge artifact to restore'))
+        } else {
+          // The shipped provisioner documents --repair-bridge as a no-op for a
+          // corrupted SOURCE artifact; restoring the artifact is what recovers.
+          // With a fake provisioner this branch is exercised end-to-end in tests.
+          cpSync(join(bridgeSrc, 'bundle-fingerprint.json'), join(badDir, 'bundle-fingerprint.json'))
+          env.DSH_OPENTUI_TEST_BRIDGE_DIR = badDir
+          const repairRun = runProvisioner({ provisioner: located.provisioner, args: ['--repair-bridge'], env, dshHome: home, home: scratchHome, timeoutMs: NEG_TIMEOUT_MS })
+          scenarios.badBridgeRepair = repairRun
+          if (repairRun.status === 0) {
+            checks.push(ok('negative:bad-bridge:repair-restores', 'exit=0 after restoring a valid bridge source; --repair-bridge accepted'))
+          } else {
+            checks.push(skip('negative:bad-bridge:repair-restores',
+              `source artifact restored but --repair-bridge run exited ${repairRun.status}: the shipped provisioner treats the flag as a no-op for artifact contents (see provision-inproc-profile.mjs:87-90); recovery requires a valid installed artifact, not the flag`))
+          }
+        }
+        finishScenario('bad-bridge-repair', start)
       }
     }
   } finally {
@@ -484,6 +540,7 @@ export async function runVerification({ prefix, dshBin, keep = false, keepOnFail
 
   const failed = checks.some((c) => c.status === 'FAIL')
   const kept = keep || (keepOnFailure && failed)
+  const result = failed ? 'FAIL' : checks.some((c) => c.status === 'PASS') ? 'PASS' : 'NOT RUN'
   return {
     prefix: located.prefix,
     packageRoot: located.packageRoot,
@@ -493,8 +550,10 @@ export async function runVerification({ prefix, dshBin, keep = false, keepOnFail
     profileName: DEFAULT_PROFILE,
     desiredCompanions,
     desiredCompanionIds,
+    scenario,
+    scenarioStatus,
     pass: !failed,
-    result: failed ? 'FAIL' : 'PASS',
+    result,
     // Positive-pass captured streams; per-scenario streams live in scenarios.*.
     stdout: scenarios.positive?.stdout ?? '',
     stderr: scenarios.positive?.stderr ?? '',
@@ -509,7 +568,7 @@ function printHuman(report) {
   for (const c of report.checks) console.log(`${c.status.padEnd(7)} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`)
   for (const n of report.notes) console.log(`NOTE    ${n}`)
   if (report.kept) console.log(`scratch HOME kept: ${report.scratchHome}`)
-  console.log(`${report.pass ? 'PASS' : 'FAIL'} fresh-home provision gate (${report.checks.filter((c) => c.status === 'PASS').length} PASS / ${report.checks.filter((c) => c.status === 'FAIL').length} FAIL / ${report.checks.filter((c) => c.status === 'NOT RUN').length} NOT RUN)`)
+  console.log(`${report.result} fresh-home provision gate (${report.checks.filter((c) => c.status === 'PASS').length} PASS / ${report.checks.filter((c) => c.status === 'FAIL').length} FAIL / ${report.checks.filter((c) => c.status === 'NOT RUN').length} NOT RUN)`)
   console.log(JSON.stringify(report, null, 2))
 }
 
