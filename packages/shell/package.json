@@ -34,18 +34,19 @@
   },
   "dependencies": {
     "@opentui/core": "0.8.1",
-    "@opentui/solid": "0.8.1",
     "@opentui/keymap": "0.8.1",
+    "@opentui/solid": "0.8.1",
     "solid-js": "1.9.17",
-    "ws": "^8.22.1"
+    "ws": "^8.22.1",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/bun": "latest",
     "@deepseek-ai/cordis": "4.1.0",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
     "@deepseek-ai/schemastery": "~3.19.0",
-    "@dsh-opentui/runtime": "workspace:*"
+    "@dsh-opentui/runtime": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
   },
   "engines": {
     "node": ">=26.4.0",
