@@ -696,3 +696,85 @@ describe('externalCarry — validation and drops', () => {
     expect(out.dropped).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// P1-1 — externalCarry leaf depth + prototype-pollution regression
+// ---------------------------------------------------------------------------
+
+describe('externalCarry — P1-1 whitelist and prototype-pollution defense', () => {
+  test('extra depth under a valid leaf is dropped; template number stays unchanged', () => {
+    const out = absentRun({
+      source: 'opentui' as const,
+      values: { 'subagent.maxActiveSubagents.foo': 1 },
+    })
+    expect(out.content).toContain('maxActiveSubagents: 3')
+    expect(out.content).not.toContain('foo:')
+    expect(out.dropped).toEqual([
+      { path: 'subagent.maxActiveSubagents.foo', reason: 'invalid-value' },
+    ])
+  })
+
+  test('unsafe segments (__proto__ / constructor / prototype) are dropped as invalid-value', () => {
+    const out = absentRun({
+      source: 'opentui' as const,
+      values: {
+        'subagent.__proto__.pollutedByExt': 'yes',
+        'constructor.prototype.x': 'yes',
+        'prototype.x': 'yes',
+        'permission.__proto__.x': 'yes',
+      },
+    })
+    expect(out.dropped).toEqual([
+      { path: 'subagent.__proto__.pollutedByExt', reason: 'invalid-value' },
+      { path: 'constructor.prototype.x', reason: 'invalid-value' },
+      { path: 'prototype.x', reason: 'invalid-value' },
+      { path: 'permission.__proto__.x', reason: 'invalid-value' },
+    ])
+    expect(out.content).toContain('maxActiveSubagents: 3')
+    expect(out.content).not.toContain('pollutedByExt')
+    expect(out.content).not.toContain('x: yes')
+  })
+
+  test('converge never pollutes Object.prototype or Array.prototype', () => {
+    absentRun({
+      source: 'opentui' as const,
+      values: {
+        'subagent.__proto__.pollutedByExt': 'yes',
+        'constructor.prototype.pollutedByExt': 'yes',
+        'prototype.pollutedByExt': 'yes',
+      },
+    })
+    expect(({} as Record<string, unknown>).pollutedByExt).toBeUndefined()
+    expect(([] as unknown as Record<string, unknown>).pollutedByExt).toBeUndefined()
+  })
+
+  test('unknown leaf subagent.unknown is dropped (no default-valid fallback)', () => {
+    const out = absentRun({
+      source: 'opentui' as const,
+      values: { 'subagent.unknown': 1 },
+    })
+    expect(out.dropped).toEqual([{ path: 'subagent.unknown', reason: 'invalid-value' }])
+    expect(out.content).not.toContain('unknown:')
+  })
+
+  test('all six whitelisted leaves are still applied together', () => {
+    const out = absentRun({
+      source: 'opentui' as const,
+      values: {
+        'subagent.maxActiveSubagents': 4,
+        'subagent.maxDepth': 2,
+        'session-log-deepseek.enabled': false,
+        'agent-default-model.provider': 'zai-coding-cn',
+        'agent-default-model.model': 'glm-4.5',
+        'agent-default-model.reasoningEffort': 'medium',
+      },
+    }, TEMPLATE_ADM)
+    expect(out.content).toContain('maxActiveSubagents: 4')
+    expect(out.content).toContain('maxDepth: 2')
+    expect(out.content).toContain('enabled: false')
+    expect(out.content).toContain('provider: zai-coding-cn')
+    expect(out.content).toContain('model: glm-4.5')
+    expect(out.content).toContain('reasoningEffort: medium')
+    expect(out.dropped).toEqual([])
+  })
+})

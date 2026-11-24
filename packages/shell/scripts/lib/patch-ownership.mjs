@@ -38,6 +38,19 @@ const PROVIDER_ID_RE = /^[a-z][a-z0-9-]*$/
 const API_ENUM = new Set(['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'])
 const NO_REQUIRED_PATHS = new Set()
 
+// P1-1: one-shot migration may only write these exact two-segment leaves.
+// Anything else (unknown row, unknown leaf, extra depth) is dropped.
+const EXT_ALLOWED_LEAVES = new Set([
+  'subagent.maxActiveSubagents',
+  'subagent.maxDepth',
+  'session-log-deepseek.enabled',
+  'agent-default-model.provider',
+  'agent-default-model.model',
+  'agent-default-model.reasoningEffort',
+])
+// Segment names that would escape onto Object.prototype / Function.prototype.
+const UNSAFE_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype'])
+
 // ---------------------------------------------------------------------------
 // value helpers (projection, equality, deep get/set)
 // ---------------------------------------------------------------------------
@@ -103,6 +116,9 @@ function getIn(obj, path) {
 }
 
 function setIn(obj, path, value) {
+  // Defense in depth: even a future caller that bypasses prepareExternalCarry
+  // cannot walk onto Object.prototype / Function.prototype via a path segment.
+  for (const key of path) if (UNSAFE_PATH_SEGMENTS.has(key)) return false
   let cur = obj
   for (let i = 0; i < path.length - 1; i++) {
     const key = path[i]
@@ -112,6 +128,7 @@ function setIn(obj, path, value) {
   const last = path[path.length - 1]
   if (value === ABSENT) delete cur[last]
   else cur[last] = value
+  return true
 }
 
 function cloneValue(v) {
@@ -578,18 +595,23 @@ function extForbiddenReason(id, parts) {
   return undefined
 }
 
-/** A carry leaf must be a finite scalar of the field's expected type. */
+/** A carry leaf must be a finite scalar of the field's expected type.
+ *  P1-1: unknown rows/leaves are invalid by default; only the six whitelisted
+ *  leaves can ever pass. */
 function extLeafValid(id, parts, value) {
   if (isJsValue(value) || isTaggedValue(value)) return false
   if (value === undefined || value === null || typeof value === 'object') return false
   if (typeof value === 'number' && !Number.isFinite(value)) return false
   const leaf = parts.join('.')
+  if (!EXT_ALLOWED_LEAVES.has(`${id}.${leaf}`)) return false
   if (id === 'session-log-deepseek' && leaf === 'enabled') return typeof value === 'boolean'
   if (id === 'subagent' && (leaf === 'maxActiveSubagents' || leaf === 'maxDepth')) {
     return typeof value === 'number' && Number.isInteger(value) && value >= 1
   }
-  if (id === 'agent-default-model') return typeof value === 'string'
-  return true
+  if (id === 'agent-default-model' && (leaf === 'provider' || leaf === 'model' || leaf === 'reasoningEffort')) {
+    return typeof value === 'string'
+  }
+  return false
 }
 
 function templateProviders(templateIndex) {
@@ -643,16 +665,23 @@ function prepareExternalCarry(externalCarry, templateIndex, warnings, dropped) {
   for (const [path, value] of Object.entries(externalCarry.values)) {
     const parts = String(path).split('.')
     const id = parts[0]
+    // P1-1: unsafe segment names are rejected with invalid-value, ahead of any
+    // role-specific reason, so a polluting path never gets a different verdict.
+    if (parts.some((seg) => UNSAFE_PATH_SEGMENTS.has(seg))) {
+      reportExtDrop(path, 'invalid-value', warnings, dropped); continue
+    }
     const forbidden = extForbiddenReason(id, parts)
     if (forbidden) { reportExtDrop(path, forbidden, warnings, dropped); continue }
-    if (parts.length < 2 || !templateIndex.rows.has(id) || roleOf(id) !== 'carry') {
+    // P1-1: exact two-segment whitelist only. Unknown rows, unknown leaves and
+    // extra depth are dropped instead of being treated as legal by default.
+    if (parts.length !== 2 || !EXT_ALLOWED_LEAVES.has(path) ||
+        !templateIndex.rows.has(id) || roleOf(id) !== 'carry') {
       reportExtDrop(path, 'invalid-value', warnings, dropped); continue
     }
     if (!extLeafValid(id, parts.slice(1), value)) {
       reportExtDrop(path, 'invalid-value', warnings, dropped); continue
     }
     if (id === 'agent-default-model') {
-      if (parts.length !== 2) { reportExtDrop(path, 'invalid-value', warnings, dropped); continue }
       adm[parts[1]] = value
       admPaths[parts[1]] = path
       continue
