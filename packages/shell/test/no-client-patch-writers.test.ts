@@ -298,6 +298,113 @@ describe("patch-writer-guard detector (P1-B bypass matrix)", () => {
 	})
 })
 
+/**
+ * P1-2: same-family bypasses found after the P1-B AST rewrite. Each entry pins
+ * the canonical write symbol so the test cannot pass by flagging an arbitrary
+ * call. All five were confirmed BYPASS against the pre-fix detector.
+ */
+const P12_BYPASS_MATRIX: ReadonlyArray<{ name: string; source: string; symbol: string }> = [
+	{
+		name: "P1-2 1: function declaration factory return-value taint",
+		source: `export function patchPathFor(home: string) {
+  return join(home, "cordis.patch.yml")
+}
+function save(home: string, y: string) {
+  const p = patchPathFor(home)
+  writeFileSync(p, y)
+}`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "P1-2 2: arrow factory return-value taint",
+		source: `const getPatch = (h: string) => join(h, "cordis.patch.yml")
+writeFileSync(getPatch(home), y)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "P1-2 3: tainted object property used as write target",
+		source: `const paths = { patch: join(h, "cordis.patch.yml") }
+writeFileSync(paths.patch, y)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "P1-2 4: constant array join folded into patch filename",
+		source: `const name = ["cordis", "patch", "yml"].join(".")
+writeFileSync(join(dir, name), y)`,
+		symbol: "writeFileSync",
+	},
+	{
+		name: "P1-2 5: Bun destructuring alias",
+		source: `const { write } = Bun
+write(join(dir, "cordis.patch.yml"), y)`,
+		symbol: "Bun.write",
+	},
+]
+
+/** Sanitized controls plus shapes that must stay silent under the new rules. */
+const P12_NON_VIOLATIONS: ReadonlyArray<{ name: string; source: string }> = [
+	{
+		name: "non-patch factory return is not a helper",
+		source: `function configPath(h: string) { return join(h, "config.json") }
+function save(h: string, y: string) {
+  const p = configPath(h)
+  writeFileSync(p, y)
+}`,
+	},
+	{
+		name: "non-patch object property is not tainted",
+		source: `const paths = { config: join(h, "config.json") }
+writeFileSync(paths.config, y)`,
+	},
+	{
+		name: "non-patch array join is not folded into the patch filename",
+		source: `const name = ["config", "file", "json"].join(".")
+writeFileSync(join(dir, name), y)`,
+	},
+	{
+		name: "Bun destructure writing a non-patch target",
+		source: `const { write } = Bun
+write(join(dir, "config.json"), y)`,
+	},
+]
+
+describe("patch-writer-guard detector (P1-2 same-family bypasses)", () => {
+	test("catches all 5 new bypasses with the correct canonical write symbol", () => {
+		expect(P12_BYPASS_MATRIX).toHaveLength(5)
+		for (const c of P12_BYPASS_MATRIX) {
+			const found = detectPatchWriterViolations(c.source)
+			expect(found, c.name).toHaveLength(1)
+			expect(found[0]!.writeSymbol, c.name).toBe(c.symbol)
+			expect(found[0]!.targetForm, c.name).toBeTruthy()
+		}
+	})
+
+	test("negative controls: sanitized targets stay silent", () => {
+		for (const c of P12_NON_VIOLATIONS) {
+			expect(detectPatchWriterViolations(c.source), c.name).toEqual([])
+		}
+	})
+
+	test("property variants: element access, renamed Bun destructure, direct Bun.write binding", () => {
+		expect(detectPatchWriterViolations(`const paths = { patch: join(h, "cordis.patch.yml") }
+writeFileSync(paths["patch"], y)`)).toHaveLength(1)
+		expect(detectPatchWriterViolations(`const { write: w } = Bun
+w(join(dir, "cordis.patch.yml"), y)`)[0]?.writeSymbol).toBe("Bun.write")
+		expect(detectPatchWriterViolations(`const w = Bun.write
+w(join(dir, "cordis.patch.yml"), y)`)[0]?.writeSymbol).toBe("Bun.write")
+	})
+
+	test("recursive fixpoint: helper calling another tainted-return helper is caught", () => {
+		const src = `function inner(p: string) { return join(p, "cordis.patch.yml") }
+function outer(h: string) { return inner(h) }
+function save(h: string, y: string) {
+  const p = outer(h)
+  writeFileSync(p, y)
+}`
+		expect(detectPatchWriterViolations(src)).toHaveLength(1)
+	})
+})
+
 describe("no-client-patch-writers (T7)", () => {
 	test("no client source writes cordis.patch.yml", () => {
 		const violations: string[] = []

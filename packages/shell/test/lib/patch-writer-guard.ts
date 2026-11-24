@@ -164,7 +164,7 @@ function flattenAccess(expr: ts.Expression): string[] | undefined {
 	return undefined
 }
 
-/** Constant-fold a chain of string `+` so `"cordis" + ".patch.yml"` is seen. */
+/** Constant-fold a chain of string `+` and literal-array `.join()` calls. */
 function foldedString(expr: ts.Expression): string | undefined {
 	const e = unwrap(expr)
 	if (ts.isStringLiteralLike(e)) return e.text
@@ -172,6 +172,20 @@ function foldedString(expr: ts.Expression): string | undefined {
 		const left = foldedString(e.left)
 		const right = foldedString(e.right)
 		if (left !== undefined && right !== undefined) return left + right
+	}
+	if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "join") {
+		const arr = unwrap(e.expression.expression)
+		if (!ts.isArrayLiteralExpression(arr)) return undefined
+		const sepArg = e.arguments[0]
+		const sep = sepArg ? foldedString(sepArg) : ","
+		if (sep === undefined) return undefined
+		const parts: string[] = []
+		for (const element of arr.elements) {
+			const part = foldedString(element)
+			if (part === undefined) return undefined
+			parts.push(part)
+		}
+		return parts.join(sep)
 	}
 	return undefined
 }
@@ -235,6 +249,8 @@ interface TaintContext {
 	patchConsts: ReadonlySet<string>
 	/** Patch-path helper names. */
 	helpers: ReadonlySet<string>
+	/** Property names whose object-literal initializer carried patch taint. */
+	taintedProps?: ReadonlySet<string>
 }
 
 /**
@@ -246,7 +262,8 @@ interface TaintContext {
  */
 function taintReason(expr: ts.Expression, ctx: TaintContext): string | undefined {
 	const e = unwrap(expr)
-	if (ts.isStringLiteralLike(e) && e.text.includes(PATCH_FILENAME)) return `literal:${PATCH_FILENAME}`
+	const folded = foldedString(e)
+	if (folded?.includes(PATCH_FILENAME)) return `literal:${PATCH_FILENAME}`
 	if (ts.isTemplateExpression(e)) {
 		if (e.getText().includes(PATCH_FILENAME)) return `literal:${PATCH_FILENAME}`
 		for (const span of e.templateSpans) {
@@ -264,17 +281,20 @@ function taintReason(expr: ts.Expression, ctx: TaintContext): string | undefined
 		const reason = taintReason(e.expression, ctx)
 		if (reason) return reason
 		if (ctx.tainted.has(e.name.text)) return `var:${e.name.text}`
+		if (ctx.taintedProps?.has(e.name.text)) return `prop:${e.name.text}`
 		return undefined
 	}
 	if (ts.isElementAccessExpression(e)) {
 		const base = taintReason(e.expression, ctx)
 		if (base) return base
-		if (e.argumentExpression) return taintReason(e.argumentExpression, ctx)
+		if (e.argumentExpression) {
+			const arg = unwrap(e.argumentExpression)
+			if (ts.isStringLiteralLike(arg) && ctx.taintedProps?.has(arg.text)) return `prop:${arg.text}`
+			return taintReason(arg, ctx)
+		}
 		return undefined
 	}
 	if (ts.isBinaryExpression(e)) {
-		const folded = foldedString(e)
-		if (folded?.includes(PATCH_FILENAME)) return `literal:${PATCH_FILENAME}`
 		return taintReason(e.left, ctx) ?? taintReason(e.right, ctx)
 	}
 	if (ts.isCallExpression(e)) {
@@ -308,6 +328,45 @@ function scriptKind(file: string | undefined): ts.ScriptKind {
 interface FuncInfo {
 	name: string
 	params: string[]
+	node: ts.SignatureDeclaration
+}
+
+interface VarDeclInfo {
+	name: string
+	init: ts.Expression | undefined
+	owner: string
+}
+
+interface PropAssignInfo {
+	name: string
+	value: ts.Expression
+	owner: string
+}
+
+/** Property assignments in an object literal, used to taint `obj.prop` / `obj["prop"]`. */
+function objectLiteralProps(expr: ts.Expression): Array<{ name: string; value: ts.Expression }> {
+	const e = unwrap(expr)
+	if (!ts.isObjectLiteralExpression(e)) return []
+	const out: Array<{ name: string; value: ts.Expression }> = []
+	for (const prop of e.properties) {
+		if (ts.isPropertyAssignment(prop)) {
+			const name = prop.name
+			if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) out.push({ name: name.text, value: prop.initializer })
+		} else if (ts.isShorthandPropertyAssignment(prop)) {
+			out.push({ name: prop.name.text, value: prop.name })
+		}
+	}
+	return out
+}
+
+/** Return expressions of a function, including concise arrow bodies. */
+function returnExpressions(node: ts.SignatureDeclaration): ts.Expression[] {
+	if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) return [node.body]
+	const out: ts.Expression[] = []
+	walk(node, (n) => {
+		if (ts.isReturnStatement(n) && n.expression) out.push(n.expression)
+	})
+	return out
 }
 
 /**
@@ -317,6 +376,9 @@ export function detectPatchWriterViolations(source: string, options: DetectOptio
 	const sf = ts.createSourceFile(options.file ?? "inline.ts", source, ts.ScriptTarget.Latest, true, scriptKind(options.file))
 	const helpers = new Set<string>([...PATCH_PATH_HELPERS, ...(options.patchPathHelpers ?? [])])
 	const writeSet = new Set<string>([...WRITE_SYMBOLS, ...(options.writeSymbols ?? [])])
+	// Canonical namespace member chains (Bun.write, Deno.writeFile, ...) are valid
+	// aliases too, so a plain identifier bound to one must still resolve as a write.
+	const resolvedWriteSet = new Set<string>([...writeSet, ...MEMBER_WRITE_CHAINS.values()])
 	const aliases = new Map<string, string>()
 	const patchConsts = new Set<string>()
 
@@ -346,78 +408,28 @@ export function detectPatchWriterViolations(source: string, options: DetectOptio
 		}
 	}
 
-	// Pass 2 — variable initializers / assignments (A), destructure aliases (B).
-	const varDecls: Array<{ name: string; init: ts.Expression | undefined }> = []
-	const propAssigns: Array<{ name: string; value: ts.Expression }> = []
-	walk(sf, (node) => {
-		if (ts.isVariableDeclaration(node) && node.initializer) {
-			if (ts.isIdentifier(node.name)) {
-				varDecls.push({ name: node.name.text, init: node.initializer })
-				// `const w = writeFileSync` / `const w = fs.writeFile` is a write alias.
-				const canonical = resolveWriteSymbol(node.initializer, aliases, writeSet)
-				if (canonical) aliases.set(node.name.text, canonical)
-			} else if (ts.isObjectBindingPattern(node.name)) {
-				for (const el of node.name.elements) {
-					if (!ts.isIdentifier(el.name)) continue
-					if (el.propertyName && ts.isIdentifier(el.propertyName)) {
-						const original = el.propertyName.text
-						if (writeSet.has(original) || original === "promises") aliases.set(el.name.text, original)
-						if (helpers.has(original)) helpers.add(el.name.text)
-						if (/patch/i.test(original) || /patch/i.test(el.name.text)) patchConsts.add(el.name.text)
-					}
-				}
-			}
-		}
-		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-			if (ts.isPropertyAccessExpression(node.left)) propAssigns.push({ name: node.left.name.text, value: node.right })
-			else if (ts.isIdentifier(node.left)) varDecls.push({ name: node.left.text, init: node.right })
-		}
-	})
-
-	// Fixpoint: a tainted initializer can feed another variable / property.
-	const tainted = new Set<string>(patchConsts)
-	let varChanged = true
-	let varIter = 0
-	while (varChanged && varIter++ <= varDecls.length + propAssigns.length + 2) {
-		varChanged = false
-		const ctx: TaintContext = { tainted, patchConsts, helpers }
-		for (const decl of varDecls) {
-			if (!tainted.has(decl.name) && decl.init && taintReason(decl.init, ctx)) {
-				tainted.add(decl.name)
-				varChanged = true
-			}
-		}
-		for (const assign of propAssigns) {
-			if (!tainted.has(assign.name) && taintReason(assign.value, ctx)) {
-				tainted.add(assign.name)
-				varChanged = true
-			}
-		}
-	}
-
-	// Pass 3 — local functions (for same-file call-graph param taint) + calls.
+	// Pass 2a — local functions (return-value taint + call-graph params) + calls.
 	const funcs = new Map<string, FuncInfo[]>()
 	const nodeFuncName = new Map<ts.Node, string>()
-	const addFunc = (name: string, node: ts.Node, params: string[]): void => {
-		if (!name) return
-		const list = funcs.get(name) ?? []
-		list.push({ name, params })
-		funcs.set(name, list)
-		nodeFuncName.set(node, name)
-	}
 	const paramNamesOf = (fn: ts.SignatureDeclaration): string[] =>
 		fn.parameters.map((p) => {
 			const text = p.name.getText(sf)
 			return text.startsWith("...") ? text.slice(3) : text
 		})
-
+	const addFunc = (name: string, node: ts.SignatureDeclaration): void => {
+		if (!name) return
+		const list = funcs.get(name) ?? []
+		list.push({ name, params: paramNamesOf(node), node })
+		funcs.set(name, list)
+		nodeFuncName.set(node, name)
+	}
 	const calls: ts.CallExpression[] = []
 	walk(sf, (node) => {
-		if (ts.isFunctionDeclaration(node) && node.name) addFunc(node.name.text, node, paramNamesOf(node))
-		else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) addFunc(node.name.text, node, paramNamesOf(node))
+		if (ts.isFunctionDeclaration(node) && node.name) addFunc(node.name.text, node)
+		else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) addFunc(node.name.text, node)
 		else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
 			(ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
-			addFunc(node.name.text, node.initializer, paramNamesOf(node.initializer))
+			addFunc(node.name.text, node.initializer)
 		}
 		if (ts.isCallExpression(node)) calls.push(node)
 	})
@@ -431,25 +443,108 @@ export function detectPatchWriterViolations(source: string, options: DetectOptio
 		}
 		return ""
 	}
-	const scopeTaint = (owner: string): Set<string> => {
+
+	// Pass 2b — variable initializers / assignments (A), destructure aliases (B).
+	const varDecls: VarDeclInfo[] = []
+	const propAssigns: PropAssignInfo[] = []
+	walk(sf, (node) => {
+		if (ts.isVariableDeclaration(node) && node.initializer) {
+			if (ts.isIdentifier(node.name)) {
+				varDecls.push({ name: node.name.text, init: node.initializer, owner: enclosingName(node) })
+				// `const w = writeFileSync` / `const w = Bun.write` / `const w = fs.writeFile`.
+				const canonical = resolveWriteSymbol(node.initializer, aliases, resolvedWriteSet)
+				if (canonical) aliases.set(node.name.text, canonical)
+			} else if (ts.isObjectBindingPattern(node.name)) {
+				const target = unwrap(node.initializer)
+				const base = ts.isIdentifier(target) ? target.text : ""
+				for (const el of node.name.elements) {
+					if (!ts.isIdentifier(el.name)) continue
+					const original = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text
+					if (resolvedWriteSet.has(original) || original === "promises") aliases.set(el.name.text, original)
+					if (helpers.has(original)) helpers.add(el.name.text)
+					if (/patch/i.test(original) || /patch/i.test(el.name.text)) patchConsts.add(el.name.text)
+					// `const { write } = Bun` / `const { write: w } = Bun` -> Bun.write.
+					if (base) {
+						const mapped = MEMBER_WRITE_CHAINS.get(`${base}.${original}`)
+						if (mapped) aliases.set(el.name.text, mapped)
+					}
+				}
+			}
+		}
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+			const owner = enclosingName(node)
+			if (ts.isPropertyAccessExpression(node.left)) propAssigns.push({ name: node.left.name.text, value: node.right, owner })
+			else if (ts.isIdentifier(node.left)) varDecls.push({ name: node.left.text, init: node.right, owner })
+		}
+	})
+
+	// Combined fixpoint. Four taint channels feed each other and must settle together:
+	//   - a function whose return expression is tainted becomes a patch-path helper (A);
+	//   - a tainted initializer taints its variable name (A);
+	//   - a tainted object-literal property taints that property name (A);
+	//   - a tainted argument taints the matching parameter of a same-file callee (A).
+	const tainted = new Set<string>(patchConsts)
+	const taintedProps = new Set<string>()
+	const taintedParams = new Map<string, Set<string>>()
+	const makeCtx = (owner: string): TaintContext => {
 		const names = new Set<string>(tainted)
 		if (owner) for (const n of taintedParams.get(owner) ?? []) names.add(n)
-		return names
+		return { tainted: names, patchConsts, helpers, taintedProps }
 	}
+	let changed = true
+	let iter = 0
+	const maxIter = funcs.size + varDecls.length + propAssigns.length + calls.length + 10
+	while (changed && iter++ <= maxIter) {
+		changed = false
 
-	// Fixpoint: caller passes a tainted path -> callee's matching param is tainted.
-	const taintedParams = new Map<string, Set<string>>()
-	let cgChanged = true
-	let cgIter = 0
-	while (cgChanged && cgIter++ <= funcs.size + 2) {
-		cgChanged = false
+		for (const [name, infos] of funcs) {
+			if (helpers.has(name)) continue
+			for (const info of infos) {
+				const ctx = makeCtx(name)
+				if (returnExpressions(info.node).some((r) => taintReason(r, ctx))) {
+					helpers.add(name)
+					changed = true
+					break
+				}
+			}
+		}
+
+		for (const decl of varDecls) {
+			const ctx = makeCtx(decl.owner)
+			if (decl.init) {
+				if (!tainted.has(decl.name) && taintReason(decl.init, ctx)) {
+					tainted.add(decl.name)
+					changed = true
+				}
+				for (const prop of objectLiteralProps(decl.init)) {
+					if (!taintedProps.has(prop.name) && taintReason(prop.value, ctx)) {
+						taintedProps.add(prop.name)
+						changed = true
+					}
+				}
+			}
+		}
+		for (const assign of propAssigns) {
+			const ctx = makeCtx(assign.owner)
+			if (!tainted.has(assign.name) && taintReason(assign.value, ctx)) {
+				tainted.add(assign.name)
+				changed = true
+			}
+			for (const prop of objectLiteralProps(assign.value)) {
+				if (!taintedProps.has(prop.name) && taintReason(prop.value, ctx)) {
+					taintedProps.add(prop.name)
+					changed = true
+				}
+			}
+		}
+
 		for (const call of calls) {
 			const segs = flattenAccess(call.expression)
 			const callee = segs?.[segs.length - 1]
 			if (!callee) continue
 			const targets = funcs.get(callee)
 			if (!targets?.length) continue
-			const ctx: TaintContext = { tainted: scopeTaint(enclosingName(call)), patchConsts, helpers }
+			const ctx = makeCtx(enclosingName(call))
 			call.arguments.forEach((arg, index) => {
 				if (!taintReason(arg, ctx)) return
 				for (const target of targets) {
@@ -462,7 +557,7 @@ export function detectPatchWriterViolations(source: string, options: DetectOptio
 					}
 					if (!set.has(param)) {
 						set.add(param)
-						cgChanged = true
+						changed = true
 					}
 				}
 			})
@@ -474,9 +569,9 @@ export function detectPatchWriterViolations(source: string, options: DetectOptio
 	const seen = new Set<ts.Node>()
 	for (const call of calls) {
 		if (seen.has(call)) continue
-		const writeSymbol = resolveWriteSymbol(call.expression, aliases, writeSet)
+		const writeSymbol = resolveWriteSymbol(call.expression, aliases, resolvedWriteSet)
 		if (!writeSymbol) continue
-		const ctx: TaintContext = { tainted: scopeTaint(enclosingName(call)), patchConsts, helpers }
+		const ctx = makeCtx(enclosingName(call))
 		const indices = pathArgIndices(writeSymbol)
 		let reason: string | undefined
 		if (indices === "all") {
