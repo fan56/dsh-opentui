@@ -987,13 +987,13 @@ try {
     autoSaved.ok && autoConfig.motion === motionFirst.current && autoClose.ok,
     [`motion: ${JSON.stringify(autoConfig.motion)}`, `steps from ${motionBack.current}: ${restoreSteps}`])
 
-  // Browse root Esc opens the exit confirm; Tab + Enter on 退出 closes.
+  // Browse root Esc opens the exit confirm; Tab + Enter on 是 closes.
   await openSettings()
   const settingsClosed = await closeSettings(8_000)
   snap('24-settings-closed')
-  record('/settings Esc opens the exit confirm and 退出 closes the modal',
+  record('/settings Esc opens the exit confirm and 是 closes the modal',
     settingsClosed.ok && settingsClosed.confirmOk,
-    [settingsClosed.confirmOk ? `confirm: ${SETTINGS_EXIT_TITLE} (取消/退出)` : 'exit confirm missing',
+    [settingsClosed.confirmOk ? `confirm: ${SETTINGS_EXIT_TITLE} (否/是)` : 'exit confirm missing',
       settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
 
   // ---------------- 1c. pane focus + transcript scroll (focus batch) ----------------

@@ -975,6 +975,31 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
+	test("en: the exit confirmation buttons read Yes / No", async () => {
+		setLanguage("en")
+		try {
+			const { setup, frame } = await mount({})
+			try {
+				setup.mockInput.pressEscape() // browse → exit confirm
+				await settle(setup)
+				// Raw frame: the `frame()` helper flattens newlines, but the two
+				// buttons share one row — find that row, then compare within it.
+				const raw = setup.captureCharFrame()
+				expect(raw).toContain("Exit settings?")
+				const row = raw.split("\n").find((line) => line.includes("Yes"))
+				if (row === undefined) throw new Error(`no button row with Yes in frame:\n${raw}`)
+				expect(row).toContain("No")
+				expect(row.indexOf("No")).toBeLessThan(row.indexOf("Yes"))
+				expect(frame()).toContain("Yes")
+				expect(frame()).toContain("No")
+			} finally {
+				await setup.dispose()
+			}
+		} finally {
+			setLanguage("en")
+		}
+	})
+
 	test("enum editor is fully keyboard driven: ↓ moves the marker, Enter saves (P0-2)", async () => {
 		const calls: string[] = []
 		const { setup, frame } = await mount({ preselect: "general.appearance", calls })

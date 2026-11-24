@@ -12,8 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **All three confirmation dialogs now answer Yes / No (是 / 否).** The quit,
   stop-turn and settings-exit confirmations use the same question-and-answer
   buttons instead of Quit/Cancel, Stop/keep running and Exit/Back, so the
-  button text always answers the question in the title. Keys are unchanged:
-  Escape cancels, Enter confirms.
+  button text always answers the question in the title. Escape always cancels.
+  In the quit and stop-turn dialogs Enter confirms; the settings-exit dialog is
+  destructive, so focus starts on No and Enter cancels — move to Yes with Tab
+  (or ←/→) first, then press Enter to exit. Trade-off: the initially focused
+  button now carries an answer word instead of an action name, so the
+  consequence of Enter / the highlighted button has to be read from the title.
 
 ## [0.27.0] - 2026-11-23
 
