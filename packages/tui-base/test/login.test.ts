@@ -16,7 +16,6 @@ import {
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import {
-	CUSTOM_ENTRY,
 	CUSTOM_STEPS,
 	PROVIDER_CATALOG,
 	buildCustomEntry,
@@ -26,7 +25,7 @@ import {
 	validateBaseUrl,
 	validateRouteId,
 } from "../src/routes/session/login"
-import type { SeamLoginRoute, SessionSeam } from "../src/seams/session"
+import type { SeamAccountState, SeamLoginRoute, SessionSeam } from "../src/seams/session"
 
 // The command copy resolves through `t()` (T4 facet migration): boot the
 // bundled registry so the en-literal assertions stay hermetic in isolation.
@@ -139,14 +138,51 @@ class RecordingLoginFace implements LoginFace {
 	}
 }
 
+/** Recording account face: the existing seam.account state machine the D8
+ * "account" entrance reuses (no new bridge frame / no invented authorize URL). */
+class RecordingAccountFace {
+	calls: string[] = []
+	state: SeamAccountState = { status: "credential-stored", attemptPhase: null, authorizeUrlReady: false, linksPresent: true }
+	signInError: Error | undefined
+
+	async getState() {
+		this.calls.push("getState")
+		return this.state
+	}
+	async startSignIn(origin: string, source: string) {
+		this.calls.push(`startSignIn:${origin}:${source}`)
+		if (this.signInError) throw this.signInError
+		return this.state
+	}
+	async cancelSignIn(attemptId: string) {
+		this.calls.push(`cancelSignIn:${attemptId}`)
+		return this.state
+	}
+	async signOut() {
+		this.calls.push("signOut")
+		return this.state
+	}
+	async hasRunningAccountTasks() {
+		this.calls.push("hasRunningAccountTasks")
+		return false
+	}
+}
+
 function makeLoginCtx(opts: {
 	face: RecordingLoginFace
-	pick?: string
+	/** One value for a single-picker flow; an array for the D8 two-stage flows
+	 * (entrance pick, then the sub-panel pick). Exhausted / undefined = esc. */
+	pick?: string | (string | undefined)[]
 	/** Scripted promptText answers, consumed in order; undefined entries are esc. */
 	type: (string | undefined)[]
 }) {
 	const lines: string[] = []
 	const prompts: { title: string; mask?: boolean }[] = []
+	const pickQueue: (string | undefined)[] = Array.isArray(opts.pick)
+		? [...opts.pick]
+		: opts.pick === undefined
+			? []
+			: [opts.pick]
 	const ctx: Record<string, unknown> = {
 		seam: seamWith(opts.face),
 		say: (text: string) => lines.push(text),
@@ -155,7 +191,7 @@ function makeLoginCtx(opts: {
 			const next = opts.type.shift()
 			return next
 		},
-		pickOne: async () => opts.pick,
+		pickOne: async () => pickQueue.shift(),
 	}
 	return { ctx, lines, prompts }
 }
@@ -191,20 +227,23 @@ function seamWithMismatch(face: LoginFace | undefined): SessionSeam {
 }
 
 describe("/login command (batch H4)", () => {
-	test("bare opens the Add provider picker over the catalog + Custom provider", async () => {
+	test("bare opens the three-entrance picker, then the third-party catalog picker", async () => {
 		const face = new RecordingLoginFace()
 		const { ctx, prompts } = makeLoginCtx({ face, pick: undefined, type: [] })
 		const picks: { title: string; options: { title: string; value: string }[] }[] = []
 		;(ctx as any).pickOne = async (title: string, options: { title: string; value: string }[]) => {
 			picks.push({ title, options })
-			return undefined
+			return picks.length === 1 ? "third-party" : undefined
 		}
 		await runLogin(ctx as any, "")
-		expect(picks[0]!.title).toBe("Add provider")
-		const values = picks[0]!.options.map((o) => o.value)
-		expect(values[0]).toBe("custom")
+		expect(picks[0]!.title).toBe("Sign in — choose a method")
+		expect(picks[0]!.options.map((o) => o.value)).toEqual(["account", "third-party", "custom"])
+		// The old flat picker is now the third-party sub-panel (no Custom row).
+		expect(picks[1]!.title).toBe("Add provider")
+		const values = picks[1]!.options.map((o) => o.value)
+		expect(values).toContain("deepseek")
 		expect(values[values.length - 1]).toBe("xai")
-		expect(picks[0]!.options.length).toBe(PROVIDER_CATALOG.length + 1)
+		expect(picks[1]!.options.length).toBe(PROVIDER_CATALOG.length)
 		expect(prompts).toEqual([])
 	})
 
@@ -218,7 +257,7 @@ describe("/login command (batch H4)", () => {
 
 	test("catalog row: masked key prompt → route registered THEN key stored (the double-write order)", async () => {
 		const face = new RecordingLoginFace()
-		const { ctx, prompts, lines } = makeLoginCtx({ face, pick: "deepseek", type: ["sk-test-1"] })
+		const { ctx, prompts, lines } = makeLoginCtx({ face, pick: ["third-party", "deepseek"], type: ["sk-test-1"] })
 		await runLogin(ctx as any, "")
 		expect(prompts[0]!.mask).toBe(true)
 		expect(prompts[0]!.title).toContain("DEEPSEEK_API_KEY")
@@ -231,7 +270,7 @@ describe("/login command (batch H4)", () => {
 
 	test("esc on the key step aborts with no writes", async () => {
 		const face = new RecordingLoginFace()
-		const { ctx } = makeLoginCtx({ face, pick: "deepseek", type: [undefined] })
+		const { ctx } = makeLoginCtx({ face, pick: ["third-party", "deepseek"], type: [undefined] })
 		await runLogin(ctx as any, "")
 		expect(face.calls).toEqual([])
 	})
@@ -305,7 +344,7 @@ describe("/login command (batch H4)", () => {
 	test("route failure keeps the key unstored (registerRoute false → no credentials write)", async () => {
 		const face = new RecordingLoginFace()
 		face.registerOk = false
-		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: ["sk-test-1"] })
+		const { ctx, lines } = makeLoginCtx({ face, pick: ["third-party", "deepseek"], type: ["sk-test-1"] })
 		await runLogin(ctx as any, "")
 		expect(face.calls).toEqual(["route:deepseek:" + JSON.stringify({ apiKeyEnv: "DEEPSEEK_API_KEY" })])
 		expect(lines[0]).toContain("route registration failed — key not stored")
@@ -314,7 +353,7 @@ describe("/login command (batch H4)", () => {
 	test("credentials failure is reported, route stays registered", async () => {
 		const face = new RecordingLoginFace()
 		face.loginError = new Error("invalid payload")
-		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: ["sk-test-1"] })
+		const { ctx, lines } = makeLoginCtx({ face, pick: ["third-party", "deepseek"], type: ["sk-test-1"] })
 		await runLogin(ctx as any, "")
 		expect(face.calls).toEqual(["route:deepseek:" + JSON.stringify({ apiKeyEnv: "DEEPSEEK_API_KEY" }), "login:DEEPSEEK_API_KEY"])
 		expect(lines[0]).toContain("key store failed — invalid payload")
@@ -336,6 +375,167 @@ describe("/login command (batch H4)", () => {
 		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui")
 		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui-inproc")
 		expect(lines[0]).toContain("restart dsh-opentui")
+	})
+})
+
+// -------------------------------------------------------- D8 three entrances ----
+// The bare /login flow now opens a three-item picker first. Each entrance
+// drives an EXISTING seam face — no new bridge frame, no invented URL/port.
+describe("/login three entrances (D8)", () => {
+	/** seam carrying both the login face (the /login guard) and an account face. */
+	function seamWithAccount(face: LoginFace, account: RecordingAccountFace | undefined): SessionSeam {
+		return { ...seamWith(face), account } as unknown as SessionSeam
+	}
+
+	test("the entrance picker offers exactly the three contracted modes", async () => {
+		const face = new RecordingLoginFace()
+		const picks: { title: string; options: { title: string; value: string; description?: string }[] }[] = []
+		const { ctx } = makeLoginCtx({ face, pick: undefined, type: [] })
+		;(ctx as any).pickOne = async (title: string, options: { title: string; value: string; description?: string }[]) => {
+			picks.push({ title, options })
+			return undefined
+		}
+		await runLogin(ctx as any, "")
+		expect(picks).toHaveLength(1)
+		expect(picks[0]!.title).toBe("Sign in — choose a method")
+		expect(picks[0]!.options.map((o) => o.value)).toEqual(["account", "third-party", "custom"])
+		expect(picks[0]!.options.map((o) => o.title)).toEqual(["DeepSeek account", "Third-party provider", "Custom provider"])
+	})
+
+	test("account entrance → signin is unavailable: no startSignIn call, no key writes", async () => {
+		const face = new RecordingLoginFace()
+		const account = new RecordingAccountFace()
+		const { ctx, lines } = makeLoginCtx({ face, pick: ["account", "signin"], type: [] })
+		;(ctx as any).seam = seamWithAccount(face, account)
+		await runLogin(ctx as any, "")
+		expect(account.calls).toEqual([])
+		expect(account.calls.filter((c) => c.startsWith("startSignIn:"))).toEqual([])
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("Browser sign-in is not available in this build.")
+		expect(face.calls).toEqual([]) // the account entrance never touches the provider key faces
+	})
+
+	test("account entrance → state and signout actions reach the same state machine", async () => {
+		const face = new RecordingLoginFace()
+		const accountState = new RecordingAccountFace()
+		const { ctx: ctxState } = makeLoginCtx({ face, pick: ["account", "state"], type: [] })
+		;(ctxState as any).seam = seamWithAccount(face, accountState)
+		await runLogin(ctxState as any, "")
+		expect(accountState.calls).toEqual(["getState"])
+
+		const accountOut = new RecordingAccountFace()
+		const { ctx: ctxOut } = makeLoginCtx({ face, pick: ["account", "signout"], type: [] })
+		;(ctxOut as any).seam = seamWithAccount(face, accountOut)
+		await runLogin(ctxOut as any, "")
+		expect(accountOut.calls).toEqual(["signOut"])
+	})
+
+	test("account entrance: the action picker offers only state and signout", async () => {
+		const face = new RecordingLoginFace()
+		const account = new RecordingAccountFace()
+		const { ctx } = makeLoginCtx({ face, pick: [], type: [] })
+		;(ctx as any).seam = seamWithAccount(face, account)
+		const picks: { title: string; options: { title: string; value: string }[] }[] = []
+		const queue: (string | undefined)[] = ["account", undefined]
+		;(ctx as any).pickOne = async (title: string, options: { title: string; value: string }[]) => {
+			picks.push({ title, options })
+			return queue.shift()
+		}
+		await runLogin(ctx as any, "")
+		expect(picks).toHaveLength(2)
+		expect(picks[1]!.title).toBe("DeepSeek account")
+		expect(picks[1]!.options.map((o) => o.value)).toEqual(["state", "signout"])
+	})
+
+	test("account entrance: esc at the entrance or at the action picker is a no-op", async () => {
+		const face = new RecordingLoginFace()
+		const account = new RecordingAccountFace()
+		const { ctx: ctx1, lines: lines1 } = makeLoginCtx({ face, pick: [undefined], type: [] })
+		;(ctx1 as any).seam = seamWithAccount(face, account)
+		await runLogin(ctx1 as any, "")
+		expect(account.calls).toEqual([])
+		expect(face.calls).toEqual([]) // zero writes on esc
+		expect(lines1).toEqual([])
+
+		const { ctx: ctx2, lines: lines2 } = makeLoginCtx({ face, pick: ["account", undefined], type: [] })
+		;(ctx2 as any).seam = seamWithAccount(face, account)
+		await runLogin(ctx2 as any, "")
+		expect(account.calls).toEqual([])
+		expect(face.calls).toEqual([]) // zero writes on esc
+		expect(lines2).toEqual([])
+	})
+
+	test("account entrance: a missing account face reports unavailable before opening the action picker", async () => {
+		const face = new RecordingLoginFace()
+		const { ctx, lines } = makeLoginCtx({ face, pick: ["account", "signin"], type: [] })
+		;(ctx as any).seam = seamWithAccount(face, undefined)
+		const picks: string[] = []
+		;(ctx as any).pickOne = async (title: string) => {
+			picks.push(title)
+			return "account"
+		}
+		await runLogin(ctx as any, "")
+		expect(lines).toEqual(["/account unavailable in this session"])
+		expect(picks).toEqual(["Sign in — choose a method"]) // no action picker when the face is absent
+	})
+
+	test("account entrance: signin never reaches the seam even if its face would reject it", async () => {
+		const face = new RecordingLoginFace()
+		const account = new RecordingAccountFace()
+		account.signInError = new Error("webServer unavailable: protocol")
+		const { ctx, lines } = makeLoginCtx({ face, pick: ["account", "signin"], type: [] })
+		;(ctx as any).seam = seamWithAccount(face, account)
+		await runLogin(ctx as any, "")
+		expect(account.calls.filter((c) => c.startsWith("startSignIn:"))).toEqual([])
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("Browser sign-in is not available in this build.")
+	})
+
+	test("an illegal entrance mode is a no-op (no face calls, no output)", async () => {
+		const face = new RecordingLoginFace()
+		const { ctx, lines } = makeLoginCtx({ face, pick: ["not-a-mode"], type: [] })
+		await runLogin(ctx as any, "")
+		expect(face.calls).toEqual([])
+		expect(lines).toEqual([])
+	})
+
+	test("third-party entrance: catalog pick → masked key → route + key double write", async () => {
+		const face = new RecordingLoginFace()
+		const { ctx, prompts, lines } = makeLoginCtx({ face, pick: ["third-party", "deepseek"], type: ["sk-d8"] })
+		await runLogin(ctx as any, "")
+		expect(prompts[0]!.mask).toBe(true)
+		expect(face.calls).toEqual([
+			`route:deepseek:${JSON.stringify({ apiKeyEnv: "DEEPSEEK_API_KEY" })}`,
+			"login:DEEPSEEK_API_KEY",
+		])
+		expect(lines[0]).toContain("DeepSeek subscribed")
+	})
+
+	test("custom entrance: the six-step chain still commits the hand-declared route", async () => {
+		const face = new RecordingLoginFace()
+		const { ctx, prompts, lines } = makeLoginCtx({
+			face,
+			pick: ["custom"],
+			type: ["d8-gw", "D8 GW", "", "https://gw.example/v1", "m1", "sk-d8"],
+		})
+		await runLogin(ctx as any, "")
+		expect(prompts).toHaveLength(6)
+		expect(prompts[5]!.mask).toBe(true)
+		expect(face.calls).toEqual([
+			`route:d8-gw:${JSON.stringify({ apiKeyEnv: "D8_GW_API_KEY", api: "openai-completions", baseURL: "https://gw.example/v1", models: [{ id: "m1" }], displayName: "D8 GW" })}`,
+			"login:D8_GW_API_KEY",
+		])
+		expect(lines[0]).toContain("D8 GW subscribed")
+	})
+
+	test("/account signin reports unavailable without any startSignIn call", async () => {
+		const account = new RecordingAccountFace()
+		const lines: string[] = []
+		const ctx = { seam: { account }, say: (text: string) => lines.push(text) } as unknown as SlashCommandContext
+		const command = coreCommands().find((c) => c.name === "/account")!
+		await command.run(ctx, "signin")
+		expect(account.calls.filter((c) => c.startsWith("startSignIn:"))).toEqual([])
+		expect(lines[0]).toContain("Browser sign-in is not available in this build.")
 	})
 })
 
@@ -604,13 +804,13 @@ describe("/login real provider directory (W2-4)", () => {
 			promptText: async () => undefined,
 			pickOne: async (title: string, options: { title: string; value: string }[]) => {
 				picks.push({ options })
-				return undefined // esc the picker
+				return picks.length === 1 ? "third-party" : undefined // enter the sub-panel, then esc it
 			},
 		} as unknown as SlashCommandContext
 		const command = coreCommands().find((c) => c.name === "/login")!
 		await command.run(ctx, "")
-		const values = picks[0]!.options.map((o) => o.value)
-		expect(values[0]).toBe("custom")
+		const values = picks[1]!.options.map((o) => o.value)
+		expect(values).not.toContain("custom") // the Custom row moved to the entrance picker
 		expect(values).toContain("real-one")
 		expect(values).toContain("real-two")
 		expect(lines).toEqual([]) // no degrade notice when the real read succeeded
@@ -628,7 +828,7 @@ describe("/login real provider directory (W2-4)", () => {
 			seam: seam2,
 			say: (t: string) => lines2.push(t),
 			promptText: async () => undefined,
-			pickOne: async () => undefined,
+			pickOne: async () => "third-party", // enter the sub-panel; its catalog read degrades
 		} as unknown as SlashCommandContext
 		await command.run(ctx2, "")
 		expect(lines2.some((l) => /directory unavailable|built-in provider/i.test(l))).toBe(true)

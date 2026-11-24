@@ -412,7 +412,7 @@ describe("core commands", () => {
 			"/help — show available commands",
 			"/new — start a fresh session",
 			"/model — switch model (bare opens the picker, then the effort picker)",
-			"/login — log in a provider (bare opens the picker; Custom provider opens the form)",
+			"/login — log in (DeepSeek account / third-party / custom provider)",
 			"/logout — log out a provider (drops the stored key)",
 			"/quit — exit the app",
 			"/resume — resume a persisted session",
@@ -2176,17 +2176,18 @@ describe("025-w1b E — /account command (separate from /login)", () => {
 		expect(lines.join("\n")).not.toMatch(/https?:\/\//)
 	})
 
-	test("/account signin/signout route to the account face, not login", async () => {
+	test("/account signout routes to the face; signin is unavailable in this build", async () => {
 		const { ctx, lines, face } = accountCtx()
 		let signin = 0, signout = 0
 		face.startSignIn = async () => { signin++; return ACCOUNT_STATE }
 		face.signOut = async () => { signout++; return ACCOUNT_STATE }
 		const cmd = coreCommands().find((c) => c.name === "/account")!
-			await cmd.run(ctx, "signin")
-			await cmd.run(ctx, "signout")
-			expect(signin).toBe(1)
-			expect(signout).toBe(1)
-		})
+		await cmd.run(ctx, "signin")
+		await cmd.run(ctx, "signout")
+		expect(signin).toBe(0)
+		expect(lines[0]).toContain("Browser sign-in is not available in this build.")
+		expect(signout).toBe(1)
+	})
 
 	test("/account degrades honestly when the face is absent", async () => {
 		const lines: string[] = []

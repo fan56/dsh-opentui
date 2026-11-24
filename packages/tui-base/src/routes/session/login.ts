@@ -60,9 +60,6 @@ export const PROVIDER_CATALOG: CatalogEntry[] = [
 	{ id: "xai", name: "xAI", hint: "api key", catalogRoute: true },
 ]
 
-/** The hand-declared picker row (the six-step chained form's entry). */
-export const CUSTOM_ENTRY: CatalogEntry = { id: "custom", name: "Custom provider", hint: "baseUrl + model + key", catalogRoute: false }
-
 /**
  * 025-w2-4 — build /login picker entries from the REAL host provider directory
  * (llm/listProviders + llm/listConfigurableProviders, hand-projected). Entries
@@ -105,6 +102,15 @@ export function catalogEntriesFromDirectory(
 	}
 	return out
 }
+
+/** D8 — the three `/login` entrances. Bare `/login` picks one of these FIRST,
+ * then enters that entrance's own panel: `account` = DeepSeek account state
+ * machine (the existing `seam.account` face), `third-party` = the provider
+ * directory picker + masked key, `custom` = the six-step hand-declared route
+ * form. Kept as closed ids (no host "credential mode" structure crosses the
+ * seam today) so the picker rows can be labelled through i18n at call time. */
+export type LoginMode = "account" | "third-party" | "custom"
+export const LOGIN_MODES: readonly LoginMode[] = ["account", "third-party", "custom"]
 
 /** Picker title (the reference marker the scenario waits on). */
 export const LOGIN_PICKER_TITLE = "Add provider"

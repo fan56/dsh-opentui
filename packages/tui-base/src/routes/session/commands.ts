@@ -55,8 +55,8 @@ import {
 	toggleStringList,
 } from "./model-picker"
 import {
-	CUSTOM_ENTRY,
 	CUSTOM_STEPS,
+	LOGIN_MODES,
 	LOGIN_PICKER_TITLE,
 	PROVIDER_CATALOG,
 	buildCustomEntry,
@@ -66,6 +66,7 @@ import {
 	validateBaseUrl,
 	validateRouteId,
 	type CatalogEntry,
+	type LoginMode,
 } from "./login"
 import {
 	hintsShown,
@@ -688,6 +689,98 @@ export async function runCustomLoginChain(
 	}
 }
 
+/**
+ * D8 — the bare `/login` entrance rows. Labels ride i18n (the leak guard
+ * forbids hardcoded user copy in this file); the values are the closed
+ * LoginMode set so a pick can only be one of the three contracted entrances.
+ */
+export function loginModeOptions(): { title: string; value: LoginMode; description: string }[] {
+	return [
+		{ title: t("command.login.mode.account.title"), value: "account", description: t("command.login.mode.account.hint") },
+		{ title: t("command.login.mode.thirdParty.title"), value: "third-party", description: t("command.login.mode.thirdParty.hint") },
+		{ title: t("command.login.mode.custom.title"), value: "custom", description: t("command.login.mode.custom.hint") },
+	]
+}
+
+/**
+ * The third-party entrance: the real provider directory (static fallback),
+ * the masked key step, then the shared double-write. P0-3 lives in
+ * commitLoginRoute, so this entrance cannot write into a mismatched profile.
+ */
+export async function runThirdPartyLogin(
+	ctx: Pick<SlashCommandContext, "promptText" | "say" | "seam" | "pickOne">,
+	face: LoginFace,
+): Promise<void> {
+	const { entries, degraded } = await resolveLoginCatalog(ctx.seam, ctx.say)
+	if (degraded) ctx.say(t("command.login.directoryDegraded"))
+	const picked = await ctx.pickOne(
+		LOGIN_PICKER_TITLE,
+		entries.map((e) => ({ title: e.name, value: e.id, description: e.hint })),
+	)
+	if (!picked) return
+	const entry = entries.find((e) => e.id === picked)
+	if (!entry) return
+	await commitCatalogLogin(ctx, face, entry)
+}
+
+/**
+ * The DeepSeek-account state machine, shared by /account and the /login
+ * "account" entrance. Uses ONLY the existing seam.account face; the TUI never
+ * invents an authorize URL or a callback port (the seam deliberately projects
+ * no URL value). The host requires an explicit port on the sign-in origin, and
+ * the TUI must not fabricate one, so browser sign-in stays unavailable in this
+ * build until the carrier supplies a real loopback origin.
+ */
+export async function runAccountFlow(
+	ctx: Pick<SlashCommandContext, "say" | "seam">,
+	argText: string,
+): Promise<void> {
+	const face = ctx.seam.account
+	if (!face) {
+		ctx.say(t("command.account.unavailable"))
+		return
+	}
+	const show = (state: SeamAccountState): void => {
+		ctx.say(t("command.account.state", {
+			status: state.status ?? "—",
+			phase: state.attemptPhase ?? "—",
+			urlReady: state.authorizeUrlReady ? "✓" : "—",
+			links: state.linksPresent ? "✓" : "—",
+		}))
+	}
+	const arg = argText.trim().toLowerCase()
+	try {
+		if (!arg || arg === "state") show(await face.getState())
+		else if (arg === "signin") {
+			// The TUI never supplies an origin: the host requires an explicit
+			// port and this build has no carrier loopback origin to pass.
+			ctx.say(t("command.account.signinUnavailable"))
+			return
+		}
+		else if (arg === "signout") show(await face.signOut())
+		else ctx.say(t("command.account.unknownAction", { action: argText.trim() }))
+	} catch (error) {
+		ctx.say(t("command.account.failed", { reason: seamFailureReason(error) }))
+	}
+}
+
+/** The account entrance's own panel: probe the face first (P1-1), then pick
+ * among the two actions this build supports. Esc leaves every account state
+ * untouched; browser sign-in is not offered because the TUI has no real
+ * loopback origin to hand the host. */
+async function runAccountEntrance(ctx: Pick<SlashCommandContext, "say" | "seam" | "pickOne">): Promise<void> {
+	if (!ctx.seam.account) {
+		ctx.say(t("command.account.unavailable"))
+		return
+	}
+	const action = await ctx.pickOne(t("command.login.account.title"), [
+		{ title: t("command.login.account.state"), value: "state" },
+		{ title: t("command.login.account.signout"), value: "signout" },
+	])
+	if (!action) return
+	await runAccountFlow(ctx, action)
+}
+
 // ----------------------------------------------------------- /logout helpers --
 // Gap fix (C8): the login/logout seam has existed since batch H4, but /logout
 // had no caller. Behavior mirrors the reference (dsh-tui-pi openLogoutFlow):
@@ -1013,16 +1106,17 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.login.description"),
 			async run(ctx, argText) {
 				const face = ctx.seam.login
-				if (!face || !ctx.promptText) {
+				if (!face || !ctx.promptText || !ctx.pickOne) {
 					ctx.say(t("command.login.unavailable"))
 					return
 				}
-				// 025-w2-4 — real provider directory first, static catalog as an
-				// honest fallback (with a notice when the real read degraded).
-				const { entries, degraded } = await resolveLoginCatalog(ctx.seam, ctx.say)
-				if (degraded) ctx.say(t("command.login.directoryDegraded"))
 				const arg = argText.trim().toLowerCase()
+				// Argument form stays the direct catalog target (script / muscle-memory
+				// path) — byte-identical to the pre-three-entrance flow.
 				if (arg) {
+					// 025-w2-4 — real provider directory first, static catalog fallback.
+					const { entries, degraded } = await resolveLoginCatalog(ctx.seam, ctx.say)
+					if (degraded) ctx.say(t("command.login.directoryDegraded"))
 					const entry = entries.find((e) => e.id === arg)
 					if (!entry) {
 						ctx.say(t("command.login.unknownProvider", { provider: arg }))
@@ -1031,21 +1125,24 @@ export function coreCommands(): SlashCommand[] {
 					await commitCatalogLogin(ctx, face, entry)
 					return
 				}
-				// Custom provider is the FIRST row (the reference's cursor-starts-
-				// there behavior — Enter on the fresh picker opens the form).
-				const picked = await ctx.pickOne(
-					LOGIN_PICKER_TITLE,
-					[CUSTOM_ENTRY, ...entries].map((e) => ({ title: e.name, value: e.id, description: e.hint })),
-				)
-				if (!picked) return
-				if (picked === CUSTOM_ENTRY.id) {
+				// D8 — bare /login opens the THREE-entrance picker first. The old flat
+				// "Add provider" picker now lives behind the "third-party" entrance;
+				// the six-step form lives behind "custom"; the account state machine
+				// (previously only /account) lives behind "account".
+				const mode = await ctx.pickOne(t("command.login.mode.title"), loginModeOptions())
+				if (!mode || !LOGIN_MODES.some((m) => m === mode)) return
+				if (mode === "account") {
+					await runAccountEntrance(ctx)
+					return
+				}
+				if (mode === "custom") {
 					const routes = (await face.routes().catch(() => [])).map((route) => route.id)
 					await runCustomLoginChain(ctx, face, routes)
 					return
 				}
-				const entry = entries.find((e) => e.id === picked)
-				if (!entry) return
-				await commitCatalogLogin(ctx, face, entry)
+				if (mode === "third-party") {
+					await runThirdPartyLogin(ctx, face)
+				}
 			},
 		},
 		{
@@ -1912,33 +2009,7 @@ export function coreCommands(): SlashCommand[] {
 			name: "/account",
 			description: t("command.account.description"),
 			async run(ctx, argText) {
-				const face = ctx.seam.account
-				if (!face) {
-					ctx.say(t("command.account.unavailable"))
-					return
-				}
-				const show = (state: SeamAccountState): void => {
-					ctx.say(t("command.account.state", {
-						status: state.status ?? "—",
-						phase: state.attemptPhase ?? "—",
-						urlReady: state.authorizeUrlReady ? "✓" : "—",
-						links: state.linksPresent ? "✓" : "—",
-					}))
-				}
-				const arg = argText.trim().toLowerCase()
-				try {
-					if (!arg || arg === "state") {
-						show(await face.getState())
-					} else if (arg === "signin") {
-						show(await face.startSignIn("http://localhost", "desktop"))
-					} else if (arg === "signout") {
-						show(await face.signOut())
-					} else {
-						ctx.say(t("command.account.unknownAction", { action: argText.trim() }))
-					}
-				} catch (error) {
-					ctx.say(t("command.account.failed", { reason: seamFailureReason(error) }))
-				}
+				await runAccountFlow(ctx, argText)
 			},
 		},
 		{
