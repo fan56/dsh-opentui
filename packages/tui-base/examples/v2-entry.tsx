@@ -118,18 +118,19 @@ import {
 // transitive errors on top of the 58 budget) even behind this file's
 // ts-nocheck. Runtime-only, opaque to tsc.
 const SHELL = "../../" + "shell/src/client/"
-/** T9: only the seam bootstrap, the local config helpers, git probe and the
- *  shared boot helpers remain. The HTTP host stack (lifecycle/client-lifecycle/
- *  transport/remote-host-session) is gone — the stdio bridge is the sole host. */
+/** T9: only the seam bootstrap, the local config helpers, git probe, the
+ *  shared boot helpers and the profile-name constants remain. The legacy HTTP
+ *  host stack is gone — the stdio bridge is the sole host. */
 async function loadShell() {
-	const [shared, rfs, git, seamBootstrap, appendSystem] = await Promise.all([
+	const [shared, rfs, git, seamBootstrap, appendSystem, profileConstants] = await Promise.all([
 		import(SHELL + "boot-shared.ts"),
 		import(SHELL + "remote-local-fs.ts"),
 		import(SHELL + "remote-git.ts"),
 		import(SHELL + "seam-bootstrap.ts"),
 		import(SHELL + "append-system.ts"),
+		import(SHELL + "profile-constants.ts"),
 	])
-	return { shared, rfs, git, seamBootstrap, appendSystem }
+	return { shared, rfs, git, seamBootstrap, appendSystem, profileConstants }
 }
 
 const overlays = new TurnOverlayController()
@@ -1594,7 +1595,7 @@ export async function bootClientV2(options: {
 	/** Injected seam logger (inproc mode). */
 	bridgeCtx?: { logger: { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void } }
 } = {}): Promise<ClientBootV2> {
-	const { shared, rfs, git, seamBootstrap, appendSystem } = await loadShell()
+	const { shared, rfs, git, seamBootstrap, appendSystem, profileConstants } = await loadShell()
 	const workspace = process.cwd()
 	const dshHome = rfs.resolveDshHome()
 	// APPEND_SYSTEM.md file seeding survives the T7/T9 patch-writer retirement:
@@ -1850,8 +1851,9 @@ export async function bootClientV2(options: {
 																					quit: () => process.exit(0),
 																					recoverBridge,
 																					workspace,
-																					// Splash hero plugin-tree root (the boot profile).
-																					profileName: profile,
+																					// Splash hero plugin-tree root (the boot profile):
+																					// shell's single-source DEFAULT_PROFILE re-export.
+																					profileName: profileConstants.DEFAULT_PROFILE,
 																					// Branch-or-SHA probe (composer context row):
 																					// client-local, silent on non-repos.
 																					probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
