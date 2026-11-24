@@ -7,7 +7,7 @@
  * the marker (minus at/version/digest, which the caller fills), and a set of
  * user-visible notices.
  *
- * Design refs: 06 §4.5, §7.1–7.5; D6; D8-Q2; handoff §二.
+ * Design refs: 06 §4.5, §4.6.1, §7.1–7.5; D6; D8-Q2; handoff §二.
  *
  * Hard rules encoded here:
  *  - source priority is per-leaf (opentui-inproc first), never "fall back
@@ -16,6 +16,10 @@
  *    ext entries (06 R21 / §4.5.1);
  *  - forbidden families (permission / providers / inserts / old rows) and the
  *    four removed model ids are reported as `dropped`, never carried;
+ *  - a legacy patch that fails to parse is never silently treated as empty:
+ *    it is backed up, reported as `invalid-value`, and `canWriteMarker` is
+ *    false so T8b retries on the next start;
+ *  - template parse failure is a build-time bug and throws (06 §4.6.1);
  *  - `provider-keys.json` is backed up only, never treated as live credentials
  *    (D8-Q2: keys live in ~/.dsh/.credentials.yaml, re-login required).
  */
@@ -56,6 +60,13 @@ const TEMPLATE_OWNED_ROW_IDS = new Set([
   'tool-bash', 'tool-todo', 'tool-fs', 'tool-fs-search',
   'agent-instructions', 'tool-result-pruner', 'tool-web',
 ])
+/** Only these leaves of a carry row are migration candidates; anything else
+ *  is a user value we cannot carry and must be reported (06 §7.5). */
+const CARRY_LEAF_KEYS = {
+  subagent: new Set(['maxActiveSubagents', 'maxDepth']),
+  'session-log-deepseek': new Set(['enabled']),
+  'agent-default-model': new Set(['provider', 'model', 'reasoningEffort']),
+}
 
 // ---------------------------------------------------------------------------
 // value helpers (mirror patch-ownership projection, no fs/clock)
@@ -134,24 +145,33 @@ function deepEqual(a, b) {
 }
 
 // ---------------------------------------------------------------------------
-// patch parsing
+// patch parsing (P1-1 / P1-3)
 // ---------------------------------------------------------------------------
 
+function emptyIndex() {
+  return { rows: new Map(), inserts: [] }
+}
+
 /**
- * Parse a patch into `{ rows: Map<id, projectedConfig>, inserts: [{target, ids}] }`.
- * Malformed / absent text yields an empty index (never throws): a legacy patch
- * we cannot read simply has nothing to migrate.
+ * Parse a patch into `{ index, parseError }`.
+ *
+ * `yaml.parseDocument` does NOT throw on most syntax errors — `doc.errors`
+ * holds them. A non-empty legacy patch that fails to parse, or whose top level
+ * is not a sequence, yields an empty index WITH `parseError: true`, so the
+ * caller can refuse to write a marker (06 §7.4 "迁移写失败 → 不写 marker").
  */
 function indexPatch(text) {
-  const index = { rows: new Map(), inserts: [] }
-  if (typeof text !== 'string' || text.length === 0) return index
+  const index = emptyIndex()
+  if (typeof text !== 'string' || text.length === 0) return { index, parseError: false }
   let doc
   try {
     doc = parseDocument(text, { customTags: jsCustomTags })
   } catch {
-    return index
+    return { index, parseError: true }
   }
-  if (!doc || !isSeq(doc.contents)) return index
+  if (!doc || doc.errors.length > 0 || !isSeq(doc.contents)) {
+    return { index, parseError: true }
+  }
   for (const item of doc.contents.items) {
     if (!isMap(item)) continue
     const insertNode = item.get('insert', true)
@@ -171,6 +191,17 @@ function indexPatch(text) {
     if (id === undefined || id === null) continue
     const cfgNode = item.get('config', true)
     index.rows.set(String(id), projectNode(cfgNode))
+  }
+  return { index, parseError: false }
+}
+
+/** Template errors are build-time bugs: fail fast (06 §4.6.1). */
+function parseTemplate(text) {
+  const { index, parseError } = indexPatch(text)
+  if (parseError) {
+    throw new Error(
+      '迁移模板解析失败：cordis.patch.yml 模板存在语法错误或顶层不是序列（06 §4.6.1：构建期 bug）。',
+    )
   }
   return index
 }
@@ -231,7 +262,7 @@ function simpleDefault(path, sourceName, templateIndex) {
 }
 
 // ---------------------------------------------------------------------------
-// agent-default-model group (R22 — atomic)
+// agent-default-model group (R22 — atomic, but per-leaf sources: 06 §7.3)
 // ---------------------------------------------------------------------------
 
 /** Mirror of converge's admGroupValid (T8a1) against the current template. */
@@ -279,37 +310,50 @@ function admDefaults(sourceName, templateIndex) {
 }
 
 /**
- * Resolve the whole ADM group from the first source carrying the row. Returns
- * `{ values, drop }`; a bad group is dropped atomically, never half-carried.
+ * Resolve the ADM group leaf-by-leaf (inproc first), then validate the whole
+ * group with R22. A bad group is dropped atomically, never half-carried.
+ * Returns `{ values, drop, provenance }`.
  */
 function planAdm(inproc, opentui, templateIndex) {
-  let sourceName, cfg
-  if (inproc && inproc.rows.has('agent-default-model')) {
-    sourceName = 'opentui-inproc'
-    cfg = inproc.rows.get('agent-default-model')
-  } else if (opentui && opentui.rows.has('agent-default-model')) {
-    sourceName = 'opentui'
-    cfg = opentui.rows.get('agent-default-model')
-  } else {
-    return { values: undefined, drop: undefined }
-  }
-  if (!isPlainObject(cfg)) {
-    return { values: undefined, drop: { path: 'agent-default-model', reason: 'invalid-value', source: sourceName } }
-  }
+  const sources = [['opentui-inproc', inproc], ['opentui', opentui]]
   const group = {}
+  /** @type {Record<string,string>} leaf -> contributing source */
+  const provenance = {}
   for (const key of ['provider', 'model', 'reasoningEffort']) {
-    if (hasOwn(cfg, key)) group[key] = cfg[key]
+    for (const [name, index] of sources) {
+      const cfg = index?.rows.get('agent-default-model')
+      if (hasOwn(cfg, key)) {
+        group[key] = cfg[key]
+        provenance[key] = name
+        break
+      }
+    }
   }
+  if (Object.keys(group).length === 0) {
+    // A present-but-unusable row is still a rejected migration, not a silent skip.
+    for (const [name, index] of sources) {
+      if (index && index.rows.has('agent-default-model') && !isPlainObject(index.rows.get('agent-default-model'))) {
+        return { values: undefined, drop: { path: 'agent-default-model', reason: 'invalid-value', source: name } }
+      }
+    }
+    return { values: undefined, drop: undefined, provenance }
+  }
+
   const verdict = validateAdmGroup(group, templateProviders(templateIndex))
   if (!verdict.ok) {
-    return { values: undefined, drop: { path: 'agent-default-model', reason: verdict.reason, source: sourceName } }
+    const source = provenance.provider || provenance.model || provenance.reasoningEffort || 'opentui-inproc'
+    return { values: undefined, drop: { path: 'agent-default-model', reason: verdict.reason, source }, provenance }
   }
-  const defaults = admDefaults(sourceName, templateIndex)
-  const deviates = Object.keys(group).some((k) => !deepEqual(group[k], defaults[k]))
-  if (!deviates) return { values: undefined, drop: undefined }
+
+  // R22 is atomic: if ANY leaf deviates from its source-side default, the
+  // whole group is carried (including leaves equal to the template).
+  const deviates = Object.keys(group).some((key) =>
+    !deepEqual(group[key], admDefaults(provenance[key], templateIndex)[key]))
+  if (!deviates) return { values: undefined, drop: undefined, provenance }
+
   const values = {}
   for (const key of Object.keys(group)) values[`agent-default-model.${key}`] = cloneValue(group[key])
-  return { values, drop: undefined }
+  return { values, drop: undefined, provenance }
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +378,8 @@ function collectForbidden(sourceName, index, templateIndex, out) {
       for (const id of Object.keys(sourceProvs)) {
         if (!hasOwn(templateProvs, id)) add(`providers.${id}`, 'credentials-channel-pending')
       }
+      // P1-2: only ids that ACTUALLY occur in the source table are reported.
+      // Never fabricate the four removed ids into the audit array.
       for (const oldId of OLD_MODEL_IDS) {
         for (const provider of Object.values(sourceProvs)) {
           const models = isPlainObject(provider) && Array.isArray(provider.models) ? provider.models : []
@@ -347,14 +393,43 @@ function collectForbidden(sourceName, index, templateIndex, out) {
   }
 
   for (const insert of index.inserts) {
+    const isAppendBlock = insert.ids.includes(APPEND_PRESET_ID)
     for (const id of insert.ids) {
-      if (id === APPEND_PRESET_ID) add(`insert.${id}`, 'append-preset-unused')
+      if (isAppendBlock) add(`insert.${id}`, 'append-preset-unused')
       else if (DUPLICATE_INSERT_IDS.has(id)) add(`insert.${id}`, 'duplicate-insert')
     }
   }
   for (const id of index.rows.keys()) {
     if (DEAD_ROW_IDS.has(id)) add(id, 'dead-row-no-bundle')
-    else if (TEMPLATE_OWNED_ROW_IDS.has(id) && sourceName === 'opentui') add(id, 'dead-row-no-bundle')
+    // Template-owned rows DO exist in the template — they are regenerated,
+    // not dead. 06 §7.5 calls this `row-replaced-by-leaf` for both sources.
+    else if (TEMPLATE_OWNED_ROW_IDS.has(id)) add(id, 'row-replaced-by-leaf')
+  }
+}
+
+/** P2-7: recognizable user values under carry rows that are not whitelisted. */
+function collectUnknownLeaves(sourceName, index, out, unknownPaths) {
+  for (const [rowId, cfg] of index.rows) {
+    const allowed = hasOwn(CARRY_LEAF_KEYS, rowId) ? CARRY_LEAF_KEYS[rowId] : undefined
+    if (!allowed || !isPlainObject(cfg)) continue
+    for (const key of Object.keys(cfg)) {
+      if (allowed.has(key)) continue
+      const path = `${rowId}.${key}`
+      out.push({ id: sourceName, path, reason: 'invalid-value' })
+      unknownPaths.push(path)
+    }
+  }
+}
+
+/** P2-6: pass through source A text, but flag invalid JSON instead of
+ *  silently presenting it as a legal payload. T8b decides reject vs backup. */
+function jsonPayload(text) {
+  if (typeof text !== 'string') return undefined
+  try {
+    JSON.parse(text)
+    return { source: 'opentui', text }
+  } catch {
+    return { source: 'opentui', text, invalid: true }
   }
 }
 
@@ -366,11 +441,12 @@ function collectForbidden(sourceName, index, templateIndex, out) {
  * @param {object} input
  * @returns {{
  *   externalCarry: {source:string, values:Record<string,unknown>, dropped:{path:string,reason:string}[]}|undefined,
- *   config: {source:'opentui', text:string}|undefined,
- *   keybindings: {source:'opentui', text:string}|undefined,
+ *   config: {source:'opentui', text:string, invalid?:boolean}|undefined,
+ *   keybindings: {source:'opentui', text:string, invalid?:boolean}|undefined,
  *   backups: {source:string, kind:string, text:string}[],
  *   marker: {from:string[], migrated:string[], dropped:{id:string,path:string,reason:string}[]}|undefined,
- *   notices: string[]
+ *   notices: string[],
+ *   canWriteMarker: boolean
  * }}
  */
 export function planMigration({
@@ -383,7 +459,7 @@ export function planMigration({
   opentuiProviderKeysText,
 } = {}) {
   // Marker present: skip everything, do NOT even parse the (possibly corrupt)
-  // legacy text. Prove with bad-YAML fixtures that no read happens.
+  // legacy text. Nothing must be written in this branch.
   if (markerExists === true) {
     return {
       externalCarry: undefined,
@@ -392,6 +468,7 @@ export function planMigration({
       backups: [],
       marker: undefined,
       notices: ['检测到迁移 marker（.migration.json），此前已迁移，跳过迁移并直接收敛。'],
+      canWriteMarker: false,
     }
   }
 
@@ -399,25 +476,36 @@ export function planMigration({
   const hasOpentuiPatch = typeof opentuiPatchText === 'string' && opentuiPatchText.length > 0
   const hasAnyOldPatch = hasInprocPatch || hasOpentuiPatch
 
-  const templateIndex = indexPatch(templatePatchText)
-  const inproc = hasInprocPatch ? indexPatch(inprocPatchText) : undefined
-  const opentui = hasOpentuiPatch ? indexPatch(opentuiPatchText) : undefined
+  const templateIndex = parseTemplate(templatePatchText)
+  const inprocParsed = hasInprocPatch ? indexPatch(inprocPatchText) : undefined
+  const opentuiParsed = hasOpentuiPatch ? indexPatch(opentuiPatchText) : undefined
+  const inproc = inprocParsed?.index
+  const opentui = opentuiParsed?.index
 
   // ---- dropped bookkeeping (id + path + reason) --------------------------
   /** @type {{id:string,path:string,reason:string}[]} */
   const dropped = []
+  /** @type {string[]} paths of unrecognized user leaves, for the notice */
+  const unknownPaths = []
+  /** @type {string[]} sources whose legacy patch could not be parsed */
+  const parseFailures = []
+  if (inprocParsed?.parseError) {
+    parseFailures.push('opentui-inproc')
+    dropped.push({ id: 'opentui-inproc', path: 'opentui-inproc-cordis.patch.yml', reason: 'invalid-value' })
+  }
+  if (opentuiParsed?.parseError) {
+    parseFailures.push('opentui')
+    dropped.push({ id: 'opentui', path: 'opentui-cordis.patch.yml', reason: 'invalid-value' })
+  }
   if (inproc) collectForbidden('opentui-inproc', inproc, templateIndex, dropped)
   if (opentui) collectForbidden('opentui', opentui, templateIndex, dropped)
-  // 06 §7.5: the four removed model ids are always named, even if a synthetic
-  // fixture happens not to contain them (they are gone from the new template).
-  const reportedModels = new Set(
-    dropped.filter((d) => d.path.startsWith('model.')).map((d) => d.path.slice('model.'.length)),
-  )
-  if (hasAnyOldPatch) {
-    for (const id of OLD_MODEL_IDS) {
-      if (!reportedModels.has(id)) dropped.push({ id: 'opentui', path: `model.${id}`, reason: 'model-id-not-in-template' })
-    }
-  }
+  if (inproc) collectUnknownLeaves('opentui-inproc', inproc, dropped, unknownPaths)
+  if (opentui) collectUnknownLeaves('opentui', opentui, dropped, unknownPaths)
+  // P1-2: the four removed model ids appear in `dropped` ONLY when the source
+  // provider table actually contains them (see collectForbidden). A release
+  // note about the smaller selector is emitted separately, never as an audit
+  // entry.
+
   // de-duplicate identical (path,reason) pairs coming from both sources
   const seenDrop = new Set()
   const uniqueDropped = dropped.filter((d) => {
@@ -456,11 +544,12 @@ export function planMigration({
   if (adm.drop) uniqueDropped.push({ id: adm.drop.source, path: adm.drop.path, reason: adm.drop.reason })
   if (adm.values) {
     for (const [path, value] of Object.entries(adm.values)) {
+      const leaf = path.slice('agent-default-model.'.length)
       values[path] = value
-      valueSource[path] = inproc && inproc.rows.has('agent-default-model') ? 'opentui-inproc' : 'opentui'
+      valueSource[path] = adm.provenance[leaf] || 'opentui-inproc'
       migrated.push(path)
+      if (valueSource[path] === 'opentui-inproc') carriedFromInproc = true
     }
-    if (inproc && inproc.rows.has('agent-default-model')) carriedFromInproc = true
   }
 
   // ext is only meaningful when at least one legacy patch existed. Even a
@@ -477,12 +566,8 @@ export function planMigration({
   }
 
   // ---- config / keybindings (source A only) ------------------------------
-  const config = typeof opentuiConfigText === 'string'
-    ? { source: 'opentui', text: opentuiConfigText }
-    : undefined
-  const keybindings = typeof opentuiKeybindingsText === 'string'
-    ? { source: 'opentui', text: opentuiKeybindingsText }
-    : undefined
+  const config = jsonPayload(opentuiConfigText)
+  const keybindings = jsonPayload(opentuiKeybindingsText)
 
   // ---- backups: two legacy patches + provider-keys (if present) ----------
   /** @type {{source:string,kind:string,text:string}[]} */
@@ -507,29 +592,58 @@ export function planMigration({
     }
   }
 
+  // P1-1: a bad legacy patch is backed up but MUST NOT leave a marker — T8b
+  // uses this flag to skip the write, so the next start retries the migration.
+  const canWriteMarker = parseFailures.length === 0
+
   // ---- notices (user-visible, 06 §7.5) ----------------------------------
   const notices = []
-  notices.push(`迁移完成：迁入 ${migrated.length} 项，丢弃 ${uniqueDropped.length} 项，备份 ${backups.length} 份。`)
-  notices.push('审批默认档位保持 workspace-write；如需放开请在 /permission 里改。')
+  for (const source of parseFailures) {
+    notices.push(`dropped ${source}-cordis.patch.yml reason=invalid-value`)
+    notices.push(`${source} 的旧 patch 解析失败，已备份但未迁移/未写入新 profile，请修复后等待下次启动重试。`)
+  }
+  // A clean home has nothing to migrate — no summary, no approval, no model note.
+  if (hasAnyLegacyArtifact && parseFailures.length === 0) {
+    notices.push(`迁移完成：迁入 ${migrated.length} 项，丢弃 ${uniqueDropped.length} 项，备份 ${backups.length} 份。`)
+  }
+  // 06 §7.5.4: only claim the approval default if it was actually discarded.
+  if (uniqueDropped.some((d) => d.path === 'permission.defaultPreset')) {
+    notices.push('审批默认档位保持 workspace-write；如需放开请在 /permission 里改。')
+  }
   if (hasAnyOldPatch) {
-    notices.push(`以下旧模型 id 在新模板中不存在，已丢弃：${OLD_MODEL_IDS.join('、')}。`)
+    // Release note only (P1-2): the selector has four fewer entries. Never a
+    // claim that these were read from, or dropped out of, the source table.
+    notices.push(`以下 4 个旧模型 id 已从新模板移除（选择器少 4 项）：${OLD_MODEL_IDS.join('、')}。`)
+  }
+  if (unknownPaths.length > 0) {
+    notices.push(`以下未知字段未迁移（已丢弃）：${[...new Set(unknownPaths)].join('、')}。`)
   }
   if (config) {
-    let unknown = []
-    try {
-      const parsed = JSON.parse(opentuiConfigText)
-      if (isPlainObject(parsed)) unknown = Object.keys(parsed).filter((k) => !KNOWN_CONFIG_KEYS.has(k))
-    } catch {
-      notices.push('config.json 解析失败：将原文原样保留，请人工检查。')
+    if (config.invalid) {
+      notices.push('config.json 解析失败：已备份、未写入新 profile，需人工修复；原文原样保留。')
+    } else {
+      let unknown = []
+      try {
+        const parsed = JSON.parse(opentuiConfigText)
+        if (isPlainObject(parsed)) unknown = Object.keys(parsed).filter((k) => !KNOWN_CONFIG_KEYS.has(k))
+      } catch {
+        notices.push('config.json 解析失败：将原文原样保留，请人工检查。')
+      }
+      if (unknown.length > 0) notices.push(`config.json 已整份保留，未知键未丢弃：${unknown.join('、')}。`)
     }
-    if (unknown.length > 0) notices.push(`config.json 已整份保留，未知键未丢弃：${unknown.join('、')}。`)
   }
-  if (keybindings) notices.push('keybindings.json 已整份带回。')
+  if (keybindings) {
+    if (keybindings.invalid) {
+      notices.push('keybindings.json 解析失败：已备份、未写入新 profile，需人工修复；原文原样保留。')
+    } else {
+      notices.push('keybindings.json 已整份带回。')
+    }
+  }
   if (hasProviderKeys) {
     notices.push('旧 provider-keys.json 已备份；新版请重新 /login，宿主凭据在 ~/.dsh/.credentials.yaml。')
   }
 
-  return { externalCarry, config, keybindings, backups, marker, notices }
+  return { externalCarry, config, keybindings, backups, marker, notices, canWriteMarker }
 }
 
 export default planMigration

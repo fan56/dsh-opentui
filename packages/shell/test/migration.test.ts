@@ -2,8 +2,10 @@
  * T8 (2nd cut) — pure migration planner (06 §4.5, §7.1–7.5; D6; D8-Q2).
  * No fs / clock / env: every case drives planMigration with inline text.
  */
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
 import { planMigration } from '../scripts/lib/migration.mjs'
+import { converge, templateProjection } from '../scripts/lib/patch-ownership.mjs'
 
 const OLD_MODEL_IDS = ['glm-5.4', 'mimo-v2.6-pro-ultraspeed', 'hy4-flash-free', 'qwen4-max']
 
@@ -181,10 +183,16 @@ test('permission / providers / insert / append / dead-row 禁止项全部进 dro
           - id: qwen4-max`,
     `- insert:
     - id: tool-ask-user
-      name: '@aiwayds/dsh-tool-ask-user'
+      name: '@aiwayds/dsh-tool-ask-user'`,
+    `- insert:
     - id: mcp-context7
-      name: '@deepseek-ai/dsh-mcp-context7'
+      name: '@deepseek-ai/dsh-mcp-context7'`,
+    `- insert:
     - id: preset-opentui-append-system
+      name: '@deepseek-ai/dsh-agent-presets'
+    - id: persona
+      name: '@deepseek-ai/dsh-agent-presets'
+    - id: plugin-manager
       name: '@deepseek-ai/dsh-agent-presets'`,
     `- id: web
   config: {}
@@ -314,7 +322,11 @@ test('无 patch 但 config 存在：config 仍按源 A 拷贝，ext 仍为 undef
 // ---------------------------------------------------------------------------
 test('notice 汇总迁入数、丢弃数、备份数、审批档位、4 个模型 id', () => {
   const result = plan({
-    inprocPatchText: patch(subagent('    maxActiveSubagents: 5'), session('false')),
+    inprocPatchText: patch(
+      subagent('    maxActiveSubagents: 5'),
+      session('false'),
+      '- id: permission\n  config:\n    defaultPreset: danger-full-access',
+    ),
     opentuiPatchText: patch(subagent('    maxActiveSubagents: 3')),
     opentuiProviderKeysText: '{"k":1}',
   })
@@ -342,4 +354,269 @@ test('marker 只含 from/migrated/dropped，不含 at/version/digest', () => {
   expect(Object.keys(result.marker!).sort()).toEqual(['dropped', 'from', 'migrated'])
   expect(result.marker!.from).toEqual(['opentui-inproc', 'opentui'])
   expect(result.marker!.migrated).toContain('subagent.maxActiveSubagents')
+})
+
+// ---------------------------------------------------------------------------
+// 12. P1-1: 坏旧 patch 不能吞成空索引，也不能写 marker
+// ---------------------------------------------------------------------------
+const BAD_YAML = '\t- id: ]]]: : : {{{  not valid  [[['
+
+test('P1-1: 坏 inproc patch → dropped + notice + canWriteMarker=false，无迁移成功文案', () => {
+  const result = plan({ inprocPatchText: BAD_YAML, opentuiConfigText: '{"theme":"x"}' })
+  expect(result.canWriteMarker).toBe(false)
+  expect(result.externalCarry!.dropped).toContainEqual({
+    path: 'opentui-inproc-cordis.patch.yml', reason: 'invalid-value',
+  })
+  expect(result.marker!.dropped).toContainEqual({
+    id: 'opentui-inproc', path: 'opentui-inproc-cordis.patch.yml', reason: 'invalid-value',
+  })
+  expect(result.backups).toContainEqual({
+    source: 'opentui-inproc', kind: 'cordis.patch.yml', text: BAD_YAML,
+  })
+  const notices = result.notices.join('\n')
+  expect(notices).toContain('dropped opentui-inproc-cordis.patch.yml reason=invalid-value')
+  expect(notices).toContain('解析失败')
+  expect(notices).not.toContain('迁移完成')
+})
+
+test('P1-1: 坏 opentui patch → dropped + notice + canWriteMarker=false', () => {
+  const result = plan({
+    opentuiPatchText: '- id: [unclosed\n  config: {',
+    inprocPatchText: patch(subagent('    maxActiveSubagents: 5')),
+  })
+  expect(result.canWriteMarker).toBe(false)
+  expect(result.externalCarry!.dropped).toContainEqual({
+    path: 'opentui-cordis.patch.yml', reason: 'invalid-value',
+  })
+  const notices = result.notices.join('\n')
+  expect(notices).toContain('dropped opentui-cordis.patch.yml reason=invalid-value')
+  expect(notices).not.toContain('迁移完成')
+})
+
+test('P1-1: 正常/干净输入 canWriteMarker=true', () => {
+  expect(plan({}).canWriteMarker).toBe(true)
+  expect(plan({ inprocPatchText: patch(subagent('    maxActiveSubagents: 5')) }).canWriteMarker).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// 13. P1-2: 4 个旧 model id 不得伪造进审计数组
+// ---------------------------------------------------------------------------
+test('P1-2: 旧 patch 只有 subagent → 4 个 model id 不出现在 dropped', () => {
+  const result = plan({ inprocPatchText: patch(subagent('    maxActiveSubagents: 5')) })
+  const modelDrops = result.externalCarry!.dropped.filter((d) => d.path.startsWith('model.'))
+  expect(modelDrops).toEqual([])
+  // 发布说明（选择器少 4 项）仍可出现，但不是审计项
+  expect(result.notices.join('\n')).toContain('选择器少 4 项')
+})
+
+test('P1-2: 源表实际含旧 id 时才记 dropped，未出现的 id 不补', () => {
+  const oldTable = `- id: llm-pi-ai
+  config:
+    providers:
+      hand-added:
+        models:
+          - id: glm-5.4
+`
+  const result = plan({ opentuiPatchText: patch(oldTable, subagent('    maxActiveSubagents: 5')) })
+  expect(result.externalCarry!.dropped).toContainEqual({
+    path: 'model.glm-5.4', reason: 'model-id-not-in-template',
+  })
+  for (const id of OLD_MODEL_IDS.filter((x) => x !== 'glm-5.4')) {
+    expect(result.externalCarry!.dropped.some((d) => d.path === `model.${id}`)).toBe(false)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 14. P1-3: 坏模板 fail-fast（06 §4.6.1 构建期 bug）
+// ---------------------------------------------------------------------------
+test('P1-3: 模板语法错误或非 seq 直接抛错，不产出假 ext', () => {
+  expect(() => plan({ templatePatchText: BAD_YAML, inprocPatchText: patch(subagent('    maxActiveSubagents: 5')) })).toThrow()
+  expect(() => plan({ templatePatchText: 'foo: bar', inprocPatchText: patch(subagent('    maxActiveSubagents: 5')) })).toThrow()
+})
+
+// ---------------------------------------------------------------------------
+// 15. P2-5: 干净 home 不打迁移汇总/审批档位
+// ---------------------------------------------------------------------------
+test('P2-5: 干净 home 不输出迁移完成/审批/模型清单 notice', () => {
+  const notices = plan({}).notices.join('\n')
+  expect(notices).not.toContain('迁移完成')
+  expect(notices).not.toContain('workspace-write')
+  expect(notices).not.toContain('选择器少 4 项')
+  expect(notices).not.toContain('丢弃')
+})
+
+// ---------------------------------------------------------------------------
+// 16. P2-6: 坏 JSON 原文透传但标记 invalid
+// ---------------------------------------------------------------------------
+test('P2-6: 坏 config.json → invalid=true，不写成合法载荷', () => {
+  const bad = '{not json'
+  const result = plan({ opentuiConfigText: bad })
+  expect(result.config).toEqual({ source: 'opentui', text: bad, invalid: true })
+  expect(result.notices.join('\n')).toContain('未写入新 profile')
+  expect(result.notices.join('\n')).toContain('需人工修复')
+})
+
+test('P2-6: 坏 keybindings.json → invalid=true + notice', () => {
+  const bad = '{oops'
+  const result = plan({ opentuiKeybindingsText: bad })
+  expect(result.keybindings).toEqual({ source: 'opentui', text: bad, invalid: true })
+  expect(result.notices.join('\n')).toContain('keybindings.json 解析失败')
+})
+
+// ---------------------------------------------------------------------------
+// 17. P2-7: 未知叶子不能静默忽略
+// ---------------------------------------------------------------------------
+test('P2-7: subagent.mysteryKnob 进 dropped invalid-value 并进 notice', () => {
+  const result = plan({ inprocPatchText: patch(subagent('    maxActiveSubagents: 5\n    mysteryKnob: 7')) })
+  expect(result.externalCarry!.dropped).toContainEqual({
+    path: 'subagent.mysteryKnob', reason: 'invalid-value',
+  })
+  expect(result.notices.join('\n')).toContain('subagent.mysteryKnob')
+})
+
+// ---------------------------------------------------------------------------
+// 18. P2-4: 源 B template-owned 行 + append 块内其余 insert
+// ---------------------------------------------------------------------------
+test('P2-4: 源 B tool 行用 row-replaced-by-leaf，append 块内全部 id 进 dropped', () => {
+  const oldB = patch(
+    subagent('    maxActiveSubagents: 5'),
+    '- id: tool-bash\n  config:\n    enabled: false',
+    `- insert:
+    - id: preset-opentui-append-system
+      name: '@deepseek-ai/dsh-agent-presets'
+    - id: persona
+      name: '@deepseek-ai/dsh-agent-presets'
+    - id: plugin-manager
+      name: '@deepseek-ai/dsh-agent-presets'`,
+  )
+  const dropped = plan({ inprocPatchText: oldB }).externalCarry!.dropped
+  expect(dropped).toContainEqual({ path: 'tool-bash', reason: 'row-replaced-by-leaf' })
+  expect(dropped).not.toContainEqual({ path: 'tool-bash', reason: 'dead-row-no-bundle' })
+  expect(dropped).toContainEqual({ path: 'insert.preset-opentui-append-system', reason: 'append-preset-unused' })
+  expect(dropped).toContainEqual({ path: 'insert.persona', reason: 'append-preset-unused' })
+  expect(dropped).toContainEqual({ path: 'insert.plugin-manager', reason: 'append-preset-unused' })
+})
+
+// ---------------------------------------------------------------------------
+// 19. P2-8: ADM 逐叶回退，整组 R22 校验
+// ---------------------------------------------------------------------------
+test('P2-8: inproc 缺 reasoningEffort → 回退 opentui，整组校验后整组迁', () => {
+  const result = plan({
+    inprocPatchText: patch(`- id: agent-default-model
+  config:
+    provider: opencode-go
+    model: deepseek-v4-pro`),
+    opentuiPatchText: patch(`- id: agent-default-model
+  config:
+    reasoningEffort: max`),
+  })
+  const values = result.externalCarry!.values
+  expect(values['agent-default-model.provider']).toBe('opencode-go')
+  expect(values['agent-default-model.model']).toBe('deepseek-v4-pro')
+  expect(values['agent-default-model.reasoningEffort']).toBe('max')
+})
+
+test('P2-8: 回退来的 reasoningEffort 非法 → 整组丢弃，不产生半个 ext', () => {
+  const result = plan({
+    inprocPatchText: patch(`- id: agent-default-model
+  config:
+    provider: opencode-go
+    model: deepseek-v4-pro`),
+    opentuiPatchText: patch(`- id: agent-default-model
+  config:
+    reasoningEffort: !!js 1 + 1`),
+  })
+  expect(Object.keys(result.externalCarry!.values).some((k) => k.startsWith('agent-default-model'))).toBe(false)
+  expect(result.externalCarry!.dropped).toContainEqual({
+    path: 'agent-default-model', reason: 'invalid-value',
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 20. 真实模板联调：planMigration → converge（不修改 provisioner）
+// ---------------------------------------------------------------------------
+/** Extract the real `PATCH_TEMPLATE` literal from the provisioner source.
+ *  No import/exec of the provisioner: it has fs side effects. */
+function extractRealTemplate(): string {
+  const src = readFileSync(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url), 'utf8')
+  const marker = 'const PATCH_TEMPLATE = `'
+  const start = src.indexOf(marker)
+  if (start < 0) throw new Error('PATCH_TEMPLATE not found in provision-inproc-profile.mjs')
+  let i = start + marker.length
+  let literal = ''
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === '\\') { literal += src[i] + src[i + 1]; i += 2; continue }
+    if (ch === '`') break
+    literal += ch
+    i += 1
+  }
+  // No `${...}` in the template body; escaped backticks survive verbatim.
+  return new Function(`return \`${literal}\``)() as string
+}
+
+test('真实模板联调：两源旧 patch → planMigration → converge 全叶接受、无意外 dropped', () => {
+  const template = extractRealTemplate()
+  expect(template).toContain('- id: llm-pi-ai')
+  expect(template).toContain('maxDepth: 1')
+
+  const inprocPatchText = [
+    '- id: subagent',
+    '  config:',
+    '    maxActiveSubagents: 5',
+    '    maxDepth: 2',
+    '- id: session-log-deepseek',
+    '  config:',
+    '    enabled: false',
+    '- id: agent-default-model',
+    '  config:',
+    '    provider: opencode-go',
+    '    model: deepseek-v4.1-flash',
+    '    reasoningEffort: max',
+  ].join('\n') + '\n'
+  const opentuiPatchText = [
+    '- id: subagent',
+    '  config:',
+    '    maxActiveSubagents: 9',
+    '- id: permission',
+    '  config:',
+    '    defaultPreset: danger-full-access',
+    '- insert:',
+    '    - id: tool-ask-user',
+  ].join('\n') + '\n'
+
+  const planned = planMigration({
+    templatePatchText: template,
+    markerExists: false,
+    inprocPatchText,
+    opentuiPatchText,
+  })
+  expect(planned.canWriteMarker).toBe(true)
+  const ext = planned.externalCarry!
+  // inproc 逐叶优先：9 被 5 覆盖，不回退老源
+  expect(ext.values['subagent.maxActiveSubagents']).toBe(5)
+  expect(ext.values['subagent.maxDepth']).toBe(2)
+  expect(ext.values['session-log-deepseek.enabled']).toBe(false)
+  expect(ext.values['agent-default-model.provider']).toBe('opencode-go')
+  // R22 原子组：reasoningEffort 偏离模板 → 整组携带（含与模板相同的 model）
+  expect(ext.values['agent-default-model.model']).toBe('deepseek-v4.1-flash')
+  expect(ext.values['agent-default-model.reasoningEffort']).toBe('max')
+
+  const REV = 'aaaaaaaaaaaaaaaa'
+  const conv = converge({
+    template,
+    current: undefined,
+    sidecar: templateProjection(template, REV),
+    templateRevision: REV,
+    externalCarry: ext,
+  })
+  // converge 报出的 dropped 必须全部来自 planner 已声明的 dropped
+  const unexpected = conv.dropped.filter((d: any) =>
+    !ext.dropped.some((e) => e.path === d.path && e.reason === d.reason))
+  expect(unexpected).toEqual([])
+  // 合法叶全部落到真实模板
+  for (const [path, value] of Object.entries(ext.values)) {
+    expect(conv.content).toContain(`${path.split('.')[1]}: ${value}`)
+  }
+  expect(conv.content).not.toContain('maxActiveSubagents: 9')
 })
