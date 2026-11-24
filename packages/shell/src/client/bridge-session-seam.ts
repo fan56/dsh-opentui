@@ -4071,10 +4071,9 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	// ----- config faces (S5 — REAL local reads/writes, no degrade, no mock) --
 	//
-	// The client owns the `opentui` profile files (DEFAULT_PROFILE, $DSH_HOME),
-	// exactly the files verify70 reads/writes and the legacy seam used. The in-process host mounts no settingsController/config service and
-	// would write to a DIFFERENT profile (opentui-inproc), so local file I/O is
-	// the honest real implementation — never the old `{}` degrade. Field-level
+	// The client owns the `opentui-monday` profile files (DEFAULT_PROFILE, $DSH_HOME),
+	// exactly the files verify70 reads/writes and the legacy seam used. The in-process host mounts no settingsController/config service, so local file I/O
+	// is the honest real implementation — never the old `{}` degrade. Field-level
 	// whitelist projection lives in LocalConfigStore (oldfox S4 §六.2/§六.3).
 	configLoad(): Record<string, unknown> {
 		return this.#configStore.configLoad()
@@ -4140,7 +4139,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	async listSessions(limit?: number): Promise<SeamSessionSummary[]> {
 		// session.list is read-only: the bridge calls the host's
 		// sessionController.list and passes items through (7e66b3f, ADR-0010:89).
-		// The opentui-inproc profile mounts a standalone sessionController shim
+		// The opentui-monday profile mounts a standalone sessionController shim
 		// (2b5e2f1), so dsh-web-app is NOT required. If that service is absent the
 		// bridge replies UNSUPPORTED and the transport rejects with
 		// BridgeProtocolError(code=UNSUPPORTED); we MUST let it propagate —

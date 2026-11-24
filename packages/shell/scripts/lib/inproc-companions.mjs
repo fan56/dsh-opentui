@@ -1,4 +1,4 @@
-// Pure decision table for the `opentui-inproc` profile's companion step.
+// Pure decision table for the `opentui-monday` profile's companion step.
 //
 // No filesystem I/O, no process spawn and no ambient process.env reads in the
 // policy functions: every input is passed in, so the catalog, the selection and

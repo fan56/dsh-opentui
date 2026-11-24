@@ -5,11 +5,11 @@ Status: Accepted（方案 D 已落地；2026-11-24 inproc-only 终态见 Update�
 
 ## Update — 2026-11-24：inproc-only 终态
 
-- **唯一会话宿主是 stdio bridge 子进程**：bun TUI 通过 `StdioBridgeTransport` spawn `dsh --profile opentui-inproc`，宿主内加载 bridge cordis bundle；`bootClientV2()` 经 `createBridgeSessionSeam()` 完成握手/指纹校验后只创建 `BridgeSessionSeam`。bridge 与 TUI 仍是两个 OS 进程，不是单进程方案。
+- **唯一会话宿主是 stdio bridge 子进程**：bun TUI 通过 `StdioBridgeTransport` spawn `dsh --profile opentui-monday`，宿主内加载 bridge cordis bundle；`bootClientV2()` 经 `createBridgeSessionSeam()` 完成握手/指纹校验后只创建 `BridgeSessionSeam`。bridge 与 TUI 仍是两个 OS 进程，不是单进程方案。
 - **HTTP 宿主链已退役**：`ensureV2Host`、`RemoteHostSession`、HTTP carrier/session facade、registry/heartbeat、watchdog 与 idle-reaper 均不再参与 boot 或退出链路。`--remote` 与 remote seam 逃生门也已删除；握手失败抛 `BridgeBootstrapError`，绝不静默降级。
 - **配置面不再依赖 HTTP 宿主**：`configLoad` / `configRaw` / `workspaceConfig` / `configSave` 由 seam 的本地配置面提供；preset/login 等同 profile 目录职责见 [01 系统拓扑](../architecture/01-system-topology.md)。
 - **bridge 产物使用 profile 内实目录副本**：provisioner 每次把 `dist/bridge` 收敛到 `node_modules/@aiwayds/dsh-opentui-bridge`，不再用绝对路径 symlink；`bundle-fingerprint.json` 校验身份。Decision 第 2 条的 symlink 安排仅作 0.22.0 历史记录。
-- **双 profile 过渡已收敛为单 profile 决策**：活动 profile 与客户端配置目录共用同一个 `DEFAULT_PROFILE`。当前代码名称仍为 `opentui-inproc`；最终改名 `opentui-monday` 由 T11 单独提交，不在本 ADR 提前完成。迁移语义见 [ADR-0014：单 profile 收敛](0014-single-profile-convergence.md)。
+- **双 profile 过渡已收敛为单 profile 决策**：活动 profile 与客户端配置目录共用同一个 `DEFAULT_PROFILE`。活动 profile 名为 `opentui-monday`；旧的 `opentui` / `opentui-inproc` 目录只作为迁移源与回退材料保留。迁移语义见 [ADR-0014：单 profile 收敛](0014-single-profile-convergence.md)。
 - 以下 Context / Decision / Consequences 保留 0.22.0 决策时的历史记录；标注为过渡期的段落不再描述当前拓扑。本文历史引用的 `ADR-0010` 均指 [Session seam lifecycle contract](0010-session-seam-lifecycle-contract.md)，与新单 profile ADR 按文件名区分。
 
 ## Context

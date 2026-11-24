@@ -39,7 +39,7 @@ npm i -g @aiwayds/dsh-opentui
 dsh-opentui
 ```
 
-The first launch automatically provisions the `opentui-inproc` profile: the
+The first launch automatically provisions the `opentui-monday` profile: the
 shipped bridge bundle is materialized as a real directory copy of this
 installation (no symlink, no copy of any `@deepseek-ai/*` package into the
 profile) and checked against a build-time fingerprint. The copy converges
@@ -64,9 +64,9 @@ install command above to update the launcher.
 
 ## Session topology
 
-> Since 0.24.0 the in-process session bridge (`opentui-inproc` profile, see
+> Since 0.24.0 the in-process session bridge (`opentui-monday` profile, see
 > ADR-0009) is the **only** session seam: the Bun TUI talks stdio JSON-lines to
-> a bridge loaded inside a `dsh --profile opentui-inproc` host process. The
+> a bridge loaded inside a `dsh --profile opentui-monday` host process. The
 > legacy remote thin-client seam, its `DSH_OPENTUI_INPROC=0` escape hatch and
 > the `--remote` flag are all gone (the flag has been a usage error, exit 2,
 > since 0.23.0).
@@ -78,7 +78,7 @@ with the bridge and degrades honestly on a mismatch.
 
 Every launch provisions one profile:
 
-- **`opentui-inproc`** — the only session host, provisioned synchronously (a
+- **`opentui-monday`** — the only session host, provisioned synchronously (a
   failure here is fatal): a real directory copy of this installation's bundled
   bridge, the session shim, a host-version compatibility exemption, the
   approval gate, the inproc-only cordis patch and the companion set declared by
@@ -98,7 +98,7 @@ The retired `opentui` profile is no longer provisioned or seeded. Existing
 `opentui` / `opentui-inproc` directories remain untouched as migration sources
 and rollback material. The old `--provider`, `--model`, `--reasoning-effort`,
 `--plugins` and `--dry-run` launcher options are retired; manage companions with
-`dsh plugin --profile opentui-inproc` when manual intervention is needed.
+`dsh plugin --profile opentui-monday` when manual intervention is needed.
 
 **Config reuse**: the Shell reads your existing dsh config — model defaults
 from the host, provider baseUrls and API keys from `$DSH_HOME`. A
@@ -140,7 +140,7 @@ that variable for normal use. See `docs/adr/0011-ask-permission-bridge-channel.m
 session. To reopen the newest non-empty session from the launch workspace that
 was active within the last 7 days — with a `resumed <title> · <time ago>`
 notice — set `"autoResume": "last"` in
-`$DSH_HOME/profiles/opentui-inproc/config.json` (change the window with
+`$DSH_HOME/profiles/opentui-monday/config.json` (change the window with
 `"autoResumeDays": N`), or pass `--resume-last` for one launch (it overrides
 the config). `--new` always starts fresh and wins over both; `--session <id>`
 pins a specific session.

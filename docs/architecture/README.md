@@ -55,7 +55,7 @@
                                 │  :183-190)           │
                 ┌───────────────▼──────────────────┐  ┌─▼──────────────────────┐
                 │ 段 3  宿主 node 进程              │  │ detached HTTP 宿主      │
-                │   dsh --profile opentui-inproc    │  │  lifecycle.ensureV2Host │
+                │   dsh --profile opentui-monday    │  │  lifecycle.ensureV2Host │
                 │   硬桩①：宿主不能跑 bun            │  │  (v2-entry.tsx:1561)   │
                 │   (ADR-0009:27)                   │  │  label/lifecycle +      │
                 │ ┌───────────────────────────────┐ │  │  boot theme/skin 残留   │

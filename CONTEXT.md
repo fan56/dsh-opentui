@@ -50,7 +50,7 @@ or plugin installs (they are profile/home scoped, not workspace scoped).
 ## Profile
 
 The host's plugin composition under `~/.dsh/profiles/<name>`. This product's
-profile is fixed as `opentui`: the entry command boots/attaches it, and users
+profile is fixed as `opentui-monday`: the entry command boots/attaches it, and users
 install plugins into it. _Avoid_: exposing profile names in entry commands.
 
 ## Session
@@ -62,7 +62,7 @@ is not scoped by workspace).
 
 ## Host service
 
-The resident dsh process (profile `opentui`) owning the agent loop and the
+The resident dsh process (profile `opentui-monday`) owning the agent loop and the
 plugin stack; TUIs attach to it as clients. It is a singleton sharded by
 `(DSH_HOME, profile)` and shuts down gracefully after the last client exits.
 _Avoid_: server, daemon.

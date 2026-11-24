@@ -1,7 +1,7 @@
 /**
  * Stdio NDJSON transport for the in-process host bridge (ADR-0009 方案 D /
  * ADR-0010 IPC contract). The bun TUI spawns the node host with
- * `DSH_OPENTUI_BRIDGE_STDIO=1` against the `opentui-inproc` profile, then
+ * `DSH_OPENTUI_BRIDGE_STDIO=1` against the `opentui-monday` profile, then
  * speaks the line-delimited `{id,method,params}` / `{id,ok,result|error}` /
  * `{type,payload}` frames over stdin/stdout.
  *

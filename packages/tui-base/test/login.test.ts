@@ -220,7 +220,7 @@ function seamWithMismatch(face: LoginFace | undefined): SessionSeam {
 			profileConsistency: () => ({
 				ok: false,
 				clientDir: "/home/u/.dsh/profiles/opentui",
-				hostDir: "/home/u/.dsh/profiles/opentui-inproc",
+				hostDir: "/home/u/.dsh/profiles/opentui-monday",
 			}),
 		},
 	} as unknown as SessionSeam
@@ -373,7 +373,7 @@ describe("/login command (batch H4)", () => {
 		expect(face.calls).toEqual([])
 		expect(lines).toHaveLength(1)
 		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui")
-		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui-inproc")
+		expect(lines[0]).toContain("/home/u/.dsh/profiles/opentui-monday")
 		expect(lines[0]).toContain("restart dsh-opentui")
 	})
 })

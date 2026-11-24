@@ -1722,7 +1722,7 @@ function resolveSessionController(ctx: BridgeContext): SessionControllerPushLike
   // cordis throws "cannot get property ... without inject" for a service that
   // is not declared in `inject` (both the `ctx.get` and the direct-property
   // access can throw). Contain it so the frame answers UNSUPPORTED instead of
-  // crashing the serial dispatch chain — a stock `opentui-inproc` profile does
+  // crashing the serial dispatch chain — a stock `opentui-monday` profile does
   // not mount `sessionController` at all.
   let svc: unknown
   try {

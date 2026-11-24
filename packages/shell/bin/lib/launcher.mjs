@@ -18,9 +18,9 @@
  * SCOPE (requirement: never touch another profile's instances):
  * a candidate is "ours" only when BOTH hold:
  *   - the command line is the host/client shape of the active in-process
- *     profile (`node <...>/dsh --profile opentui-inproc ...` for the host; a
+ *     profile (`node <...>/dsh --profile opentui-monday ...` for the host; a
  *     bun process running the client entry for the client). A `dsh plugin
- *     --profile opentui-inproc add ...` provision child is NOT a host and
+ *     --profile opentui-monday add ...` provision child is NOT a host and
  *     never matches.
  *   - the process resolves to the SAME dsh home as this launcher (DSH_HOME
  *     from the process environment, defaulting to ~/.dsh). The profile
@@ -404,14 +404,14 @@ export function classifyProcess(command) {
 
 	const exe = basename(tokens[0])
 	// Only a real runtime may be the process itself — a shell that merely
-	// mentions these paths (`sh -c "dsh --profile opentui-inproc"`, a tmux command
+	// mentions these paths (`sh -c "dsh --profile opentui-monday"`, a tmux command
 	// line) is NOT the host.
 	if (exe !== 'node' && exe !== 'bun' && exe !== 'dsh') return null
 
 	// The host: the dsh binary IS the process or sits right after the
 	// runtime (node/bun + script), and is followed by the active profile flag.
 	// Only the first two tokens may be the dsh binary — a wrapper script
-	// (`node wrapper.js dsh --profile opentui-inproc`) merely MENTIONS it.
+	// (`node wrapper.js dsh --profile opentui-monday`) merely MENTIONS it.
 	for (let i = 0; i < Math.min(tokens.length, 2); i++) {
 		if (basename(tokens[i]) !== 'dsh') continue
 		const next = tokens[i + 1]

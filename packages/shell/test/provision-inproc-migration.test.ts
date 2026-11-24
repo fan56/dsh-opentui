@@ -3,8 +3,9 @@
  *
  * Every run spawns the shipped script against a throwaway DSH_HOME under
  * /private/tmp with stub dsh/npm/which on PATH. The test-only profile-name seam
- * points the provisioner at a fresh profile ('opentui-monday'), so the two
- * legacy source dirs stay separate and can be asserted read-only. Companions
+ * points the provisioner at the real default name only to simulate the legacy
+ * source-B == target collision; normal runs leave the two legacy source dirs
+ * separate and provably read-only. Companions
  * are disabled (DSH_OPENTUI_COMPANION_LATEST=off): no registry, no network,
  * no ~/.dsh is ever touched.
  */
@@ -16,6 +17,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   utimesSync,
@@ -27,7 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
-const NEW_PROFILE = 'opentui-monday'
+const NEW_PROFILE = DEFAULT_PROFILE
 const LEGACY_SOURCE_PROFILE = 'opentui-inproc'
 // Version authority: the same shell package.json the provisioner reads.
 const SHELL_VERSION = JSON.parse(
@@ -127,6 +129,28 @@ function run(fx: Fixture, extra: Record<string, string> = {}) {
   })
 }
 
+/** Production-shaped run: no profile-name test seam, real DEFAULT_PROFILE. */
+function runReal(fx: Fixture, extra: Record<string, string> = {}) {
+  const env: Record<string, string> = { ...process.env } as Record<string, string>
+  delete env.DSH_OPENTUI_TEST_PROFILE_NAME
+  return Bun.spawnSync({
+    cmd: [process.execPath, SCRIPT],
+    env: {
+      ...env,
+      DSH_HOME: fx.home,
+      NODE_ENV: 'production',
+      DSH_OPENTUI_TEST_BRIDGE_DIR: join(fx.root, 'bridge'),
+      DSH_OPENTUI_HOST_VERSION: '0.2.2-rc.5',
+      DSH_OPENTUI_COMPANION_LATEST: 'off', // no registry / network
+      DSH_STUB_WHICH_PATH: join(fx.bin, 'dsh'),
+      PATH: `${fx.bin}:${process.env.PATH ?? ''}`,
+      ...extra,
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+}
+
 const text = (buf: Uint8Array | undefined) => new TextDecoder().decode(buf ?? new Uint8Array())
 const allOutput = (r: ReturnType<typeof run>) => text(r.stdout) + text(r.stderr)
 
@@ -155,9 +179,9 @@ const configPath = (fx: Fixture) => join(fx.profile, 'config.json')
 const newPatchPath = (fx: Fixture) => join(fx.profile, 'cordis.patch.yml')
 const readMarker = (fx: Fixture) => JSON.parse(readFileSync(markerPath(fx), 'utf8'))
 const OLD_TIME = new Date('2020-01-01T00:00:00.000Z')
-/** Source B is the legacy in-process profile; route the test seam to the real default. */
+/** Test seam only: simulate the legacy source-B == target collision. Production targets DEFAULT_PROFILE. */
 const runAsB = (fx: Fixture, extra: Record<string, string> = {}) =>
-  run(fx, { DSH_OPENTUI_TEST_PROFILE_NAME: DEFAULT_PROFILE, ...extra })
+  run(fx, { DSH_OPENTUI_TEST_PROFILE_NAME: LEGACY_SOURCE_PROFILE, ...extra })
 
 afterEach(() => {
   while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true })
@@ -428,11 +452,11 @@ describe('T8b migration wired into the provisioner', () => {
 
   test('生产模式（NODE_ENV 非 test）泄漏测试变量：仍使用 DEFAULT_PROFILE', () => {
     const fx = fixture()
-    const result = run(fx, { NODE_ENV: 'production', DSH_OPENTUI_TEST_PROFILE_NAME: NEW_PROFILE })
+    const result = run(fx, { NODE_ENV: 'production', DSH_OPENTUI_TEST_PROFILE_NAME: LEGACY_SOURCE_PROFILE })
     expect(result.exitCode).toBe(0)
     const defaultProfile = join(fx.home, 'profiles', DEFAULT_PROFILE)
     expect(existsSync(join(defaultProfile, 'package.json'))).toBe(true)
-    expect(existsSync(join(fx.profile, 'package.json'))).toBe(false)
+    expect(existsSync(join(fx.legacyB, 'package.json'))).toBe(false)
   })
 
   test('notice 与事实一致：坏 config 不谎称已备份，真实 patch 备份仍存在', () => {
@@ -469,4 +493,44 @@ describe('T8b migration wired into the provisioner', () => {
     expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
     expect(existsSync(`${backupPath}.bak`)).toBe(false)
   })
+
+  test('真实默认名（无 profile 测试缝）：干净 home 只创建 profiles/opentui-monday，两个旧目录均不存在', () => {
+    const fx = fixture()
+    const result = runReal(fx)
+    expect(result.exitCode).toBe(0)
+    const profilesDir = join(fx.home, 'profiles')
+    expect(existsSync(join(profilesDir, DEFAULT_PROFILE))).toBe(true)
+    expect(existsSync(join(fx.profile, 'package.json'))).toBe(true)
+    const dirs = readdirSync(profilesDir).filter((name) => statSync(join(profilesDir, name)).isDirectory())
+    expect(dirs).toEqual([DEFAULT_PROFILE])
+    expect(existsSync(join(profilesDir, 'opentui'))).toBe(false)
+    expect(existsSync(join(profilesDir, LEGACY_SOURCE_PROFILE))).toBe(false)
+  })
+
+  test('真实默认名（无 profile 测试缝）：旧 opentui-inproc patch 迁入新目标，旧目录字节/mtime 不变，marker 与备份落在新目标', () => {
+    const fx = fixture()
+    const oldPatch = patch(
+      subagent('    maxActiveSubagents: 5\n    maxDepth: 3'),
+      session('false'),
+    )
+    seed(fx, 'B', 'cordis.patch.yml', oldPatch)
+    const before = snapshot(join(fx.legacyB, 'cordis.patch.yml'))
+
+    const result = runReal(fx)
+    expect(result.exitCode).toBe(0)
+
+    const newPatch = readFileSync(newPatchPath(fx), 'utf8')
+    expect(newPatch).toContain('maxActiveSubagents: 5')
+    expect(newPatch).toContain('maxDepth: 3')
+    expect(newPatch).toContain('enabled: false')
+    // Legacy source B stays byte- and mtime-identical.
+    expect(snapshot(join(fx.legacyB, 'cordis.patch.yml'))).toEqual(before)
+    // Marker and backup live under the NEW default profile, not the legacy dir.
+    expect(existsSync(markerPath(fx))).toBe(true)
+    expect(readMarker(fx).from).toEqual([LEGACY_SOURCE_PROFILE])
+    const backupPath = join(fx.profile, '.migrated-from', `${LEGACY_SOURCE_PROFILE}-cordis.patch.yml`)
+    expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
+    expect(existsSync(join(fx.legacyB, '.migration.json'))).toBe(false)
+  })
+
 })

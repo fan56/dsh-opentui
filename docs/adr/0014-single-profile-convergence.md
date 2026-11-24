@@ -1,7 +1,7 @@
 # ADR-0014: Single-profile convergence（单 profile 收敛）
 
 Date: 2026-11-24
-Status: Accepted（收敛进行中；当前活动 profile 名仍为 `opentui-inproc`）
+Status: Accepted（收敛完成；当前活动 profile 名为 `opentui-monday`）
 
 > 编号说明：本文编号为 ADR-0014；[Session seam lifecycle contract](0010-session-seam-lifecycle-contract.md) 保持 ADR-0010。引用时以编号并配合文件名消歧。
 
@@ -28,13 +28,11 @@ T12 删除 HTTP lifecycle/carrier/session 链后，`opentui` 作为第二个宿�
 - 产品运行时只保留一个活动 profile；stdio bridge 宿主与该 profile 的客户端配置面必须指向同一目录。
 - profile 名只有一处事实源：`packages/shell/scripts/lib/profile-name.mjs` 的 `DEFAULT_PROFILE`。TypeScript 侧由 `packages/shell/src/client/profile-constants.ts` 重导出；provisioner、transport 与本地配置面都消费该常量。
 - `StdioBridgeTransport` spawn 的 `--profile` 与 seam 本地写入的 profile 必须一致；不一致时本地写入拒绝并给出两个目录路径，不能猜测或静默切换。
-- 旧目录不自动删除、不改名。`opentui` 作为迁移源只读；当前 `opentui-inproc` 既是源 B 又是目标，除必要的原地 converge 外不迁移/删除。T11 改名后，两个旧目录都只作为回退材料保留。
+- 旧目录不自动删除、不改名。`opentui` 与 `opentui-inproc` 都只作为迁移源与回退材料保留，均为只读；生产目标是 `opentui-monday`。
 
-### 2. 当前名与最终改名分开
+### 2. 唯一活动 profile 名
 
-当前代码中的活动 profile 名仍是 **`opentui-inproc`**，本文不提前改名。
-
-最终改名 **`opentui-monday` 由 T11 单独提交**。T11 只切换共享常量，并同步门禁与调用方；桥握手/指纹不绑定 profile 名。把改名与收敛、写手退役、门禁清扫混在一个提交，会让中间状态无法可靠启动或验证。
+活动 profile 名是 **`opentui-monday`**，唯一事实源为 `packages/shell/scripts/lib/profile-name.mjs` 的 `DEFAULT_PROFILE`。改名与收敛、写手退役、门禁清扫在同一提交完成，避免不可验证的中间状态；桥握手/指纹不绑定 profile 名。
 
 ### 3. 一次性迁移走 `converge + externalCarry`
 
@@ -67,7 +65,7 @@ T12 删除 HTTP lifecycle/carrier/session 链后，`opentui` 作为第二个宿�
 
 ### 5. 备份与 marker 顺序
 
-生产目标名当前仍是 `opentui-inproc`，所以源 B 与目标 profile 是同一目录。**converge 前备份是硬前置条件**，否则备份里会是被模板覆盖后的内容，而不是迁移前原文。
+生产目标是 `opentui-monday`，源 B (`opentui-inproc`) 是独立的只读旧目录。**converge 前先写备份仍是硬前置条件**：备份写入目标 profile 的 `.migrated-from/`，且必须是迁移前原文。
 
 严格顺序如下：
 
@@ -121,7 +119,7 @@ Negative / cost:
 - 旧 `provider-keys.json` 不再是活凭据来源，用户可能需要重新 `/login`。
 - marker 一旦存在，之后对旧目录的修改不会再被自动吸收。
 - 11 项默认 companion 增加首次安装与启动时 registry 查询成本。
-- 当前仍使用 `opentui-inproc`，T11 改名单独提交；在 T11 完成前，文档与命令不得把 `opentui-monday` 写成当前目录名。
+- 活动 profile 名为 `opentui-monday`；`opentui` 与 `opentui-inproc` 只作为迁移源与回退材料保留，文档与命令均不得把它们写成当前目录名。
 
 ## Implementation anchors
 

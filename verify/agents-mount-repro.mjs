@@ -677,7 +677,7 @@ try {
   }
   // 2026-11-23 B1 S4-S6: host-namespace writes (session-log-deepseek.enabled)
   // now go through the host config service, which persists into the HOST's
-  // profile patch (dsh --profile opentui-inproc, bridge-transport.ts:71,188),
+  // profile patch (dsh --profile opentui-monday, bridge-transport.ts:71,188),
   // NOT the client's `opentui` profile. The old path read the wrong profile and
   // made patchEntry() always empty — the two red assertions' root cause.
   // Local-preference writes (motion) still use profileConfigPath above.
@@ -843,7 +843,7 @@ try {
       ? [`row shows ${afterToggle}`, `status line: ${saved.out.includes(`saved · session-log-deepseek.enabled`) ? 'saved · session-log-deepseek.enabled' : 'not observed (transient)'}`]
       : ['row value did not flip'])
   // 2026-11-23 B1 S4-S6 + persistence fix (design 05 §4.3a): host-namespace
-  // writes go through the host config service into opentui-inproc/cordis.patch.yml
+  // writes go through the host config service into opentui-monday/cordis.patch.yml
   // (hot), NOT the client's `opentui` patch file. Strongest form: value flipped
   // (saved.ok, [24]) + fresh describe readback (rereadRow, [27]) + host patch
   // holds the value AND still holds it after a provisioner convergence pass.

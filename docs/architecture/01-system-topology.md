@@ -13,12 +13,12 @@
 2. **bun TUI** — `packages/shell/src/client-entry.tsx`
    - `main()` 构造 `StdioBridgeTransport` 并无条件注入 `bootClientV2()`。
    - 渲染栈保持 bun + `@opentui/solid`；客户端不持有 transcript 真源。
-3. **node bridge 宿主** — `dsh --profile opentui-inproc`
+3. **node bridge 宿主** — `dsh --profile opentui-monday`
    - 由 bun TUI 侧的 `StdioBridgeTransport` spawn，设置 `DSH_HOME` 与 `DSH_OPENTUI_BRIDGE_STDIO=1`，三路 stdio 全部走 pipe。
    - 宿主加载 `@aiwayds/dsh-opentui-bridge` cordis bundle；bridge 的 `inject` 为 `['agents', 'typert']`。
    - 这是唯一会话宿主。每客户端一个 child，不共享 server，不启动常驻 HTTP host，也不监听会话端口。
 
-当前 profile 名仍为 **`opentui-inproc`**。最终改名 `opentui-monday` 由 T11 单独提交；拓扑与启动命令统一消费 `packages/shell/scripts/lib/profile-name.mjs` 的 `DEFAULT_PROFILE`，不在文档或调用方硬编码未来名。
+当前 profile 名为 **`opentui-monday`**，唯一事实源是 `packages/shell/scripts/lib/profile-name.mjs` 的 `DEFAULT_PROFILE`；旧的 `opentui` / `opentui-inproc` 目录只作为迁移源与回退材料保留。
 
 启动链：
 
@@ -93,7 +93,7 @@ ClipboardHost
 
 ## 1.5 Profile 目录职责
 
-活动目录是 `$DSH_HOME/profiles/opentui-inproc`。host 与 client 必须共用它；旧 `opentui` 目录不是第二宿主，可以作为迁移源或回退材料存在，但不会自动被删除或改名。
+活动目录是 `$DSH_HOME/profiles/opentui-monday`。host 与 client 必须共用它；旧 `opentui` 目录不是第二宿主，可以作为迁移源或回退材料存在，但不会自动被删除或改名。
 
 | 路径 / 文件 | 职责 | 主要消费者 / 写者 |
 |---|---|---|
