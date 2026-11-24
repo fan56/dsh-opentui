@@ -41,9 +41,9 @@ export function estimateTextTokens(text: string): number {
  *   slices) — the pending gap the next request will price exactly.
  * - `noteUsage(prompt, cacheRead, cacheWrite, outputDelta)`: one usage
  *   frame landed. Billed input = uncached prompt + cacheRead + cacheWrite
- *   (cache-splitting adapters report prompt UNCACHED — remote-host-session
- *   onUsage wire fact). The frame prices everything pending, so pending
- *   resets to 0 and only the frame's own output delta is kept on top.
+ *   (cache-splitting adapters report prompt UNCACHED). The frame prices
+ *   everything pending, so pending resets to 0 and only the frame's own
+ *   output delta is kept on top.
  * - `noteExactOutput(n)`: an output-only frame (no billed input) — exact
  *   tokens added to the pending pool (they are context, not an estimate).
  * - `reset()`: fresh session — the occupancy restarts from zero.

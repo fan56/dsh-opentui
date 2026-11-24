@@ -1675,8 +1675,7 @@ describe("footer telemetry parity (cacheHitRate / contextTokens / contextWindow)
 	test("cacheHitRate mirrors remote exactly: lastMessage = latest row, session = cumulative", async () => {
 		const h = makeHarness()
 		await bind(h, "sess-cache", "t-cache")
-		// Numbers lifted from remote-host-session.test.ts:445-457 so the two
-		// seams' formulas are asserted against the same billing sample.
+		// Billing sample used to pin the session and latest-row formulas.
 		h.replies.set("journal.replay", {
 			kind: "value",
 			value: {

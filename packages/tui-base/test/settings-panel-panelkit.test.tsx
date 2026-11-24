@@ -157,8 +157,8 @@ function fakeSeam(calls: string[], options: FakeSeamOptions = {}): SessionSeam {
 
 /**
  * Seam backed by a real mutable config bag. `configSave` replaces each
- * top-level key with the patch value exactly like the shell's
- * remote-host-session (a `footerHints` patch carries the WHOLE hint object),
+ * top-level key with the patch value exactly like the shell config seam
+ * (a `footerHints` patch carries the WHOLE hint object),
  * so a patch built from a stale snapshot clobbers the earlier write.
  */
 function persistingSeam(store: Record<string, unknown>, calls: string[]): SessionSeam {

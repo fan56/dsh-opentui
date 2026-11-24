@@ -13,8 +13,7 @@
  * future change that accidentally routes the inproc path through the ride
  * fails here — without changing any product code.
  *
- * The host-client-layer append regression tests live in
- * remote-host-session.test.ts and append-system.test.ts and stay green.
+ * Host-client-layer append behavior is covered by separate regression tests.
  */
 import { describe, expect, test } from "bun:test"
 import {

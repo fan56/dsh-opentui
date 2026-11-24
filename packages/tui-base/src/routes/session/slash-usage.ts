@@ -19,7 +19,7 @@
  * config synchronously — N quick dispatches meant N full-file writes, each a
  * torn-file window. The counter now coalesces writes in a ~1.2 s window
  * (several dispatches = one save of the merged map) and the seam's profile
- * write is tmp+rename atomic (remote-host-session.configSave). `flush()` is
+ * write is tmp+rename atomic. `flush()` is
  * exposed for tests and the process-exit hook so a quit right after a
  * dispatch does not lose the last count.
  *
