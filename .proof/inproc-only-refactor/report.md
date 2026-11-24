@@ -304,7 +304,7 @@ N 按最终表的断言 id 计数，不按跨轮结果事件计数；最终状�
   packages/tui-base/src/config/keybind.ts               ->  NOT_IN_DIFF
   packages/tui-base/examples/v2-entry.tsx               ->  IN_DIFF（`7ed13aa` 仅改 profileName 绑定（含 profileConstants 引入）与 loadShell 的 T9 注释；dispose/shutdown 注释与重写来自 T9 (`c7df08d`)）
   ```
-  packages/tui-base/examples/v2-entry.tsx 虽在 diff 中，但 `7ed13aa` 与 T9 均未改退出手势路径；`quit: () => process.exit(0)` 行未变。`quit: () => process.exit(0)` 在 main 与 HEAD 未变，P3 与 diff 的因果关系未用 main 基线验证。diff 中的 docs/adr/0008-input-ownership-for-keyboard-routing.md 与 scripts/verify-sk-keymap-ans.mjs 是文档和验证脚本，不是运行时退出处理。
+  packages/tui-base/examples/v2-entry.tsx 虽在 diff 中，但 `7ed13aa` 与 T9 均未改退出手势路径；`quit: () => process.exit(0)` 行未变。P3 与 diff 的因果关系未用 main 基线验证。diff 中的 docs/adr/0008-input-ownership-for-keyboard-routing.md 与 scripts/verify-sk-keymap-ans.mjs 是文档和验证脚本，不是运行时退出处理。
 - 结论：P3 不计入 A1–A8，列为待独立排查项。24 号仅记录观察值，未把该失败改判为 PASS。
 
 ## Gate judgment / 门禁判定
@@ -314,7 +314,7 @@ N 按最终表的断言 id 计数，不按跨轮结果事件计数；最终状�
 - [x] Change ref names the change commit (9b06e44); working tree is free text; changed path filled for all 8 rows
 - [x] Every assertion has a checkable criterion, a changed path, and an evidence file; A1/A2/A4/A5/A8 execute changed code paths and name changed files/functions
 - [x] Real driven I/O transcript at the change commit (tarball built from 9b06e44, installed and driven)
-- [x] One reverse case per changed behavior on the decidable boundary, backed by 00-pre-change.log and 09-tui-smoke.log
+- [x] One reverse case per changed behavior on the decidable boundary, backed by 25-pre-change-rerun.log and 09-tui-smoke.log（反向机器证据以 25 为准，00 仅作首发记录）
 - [x] No anti-cheat red line triggered (raw outputs present, no pasted source as results, no lucky-only runs, no mock on the real path)
 - [x] No `Claim`-level item is the sole basis for PASS
 - [x] Assertion total N = 8; each of 8 assertions has a status; PASS = all non-USER-JUDGMENT rows PASS, no FAIL/NOT RUN/UNAVAILABLE/BLOCKED, >=1 machine-judged row (all 8 are machine-judged), acyclic depends on (A2/A3/A4/A5/A8 depend on A1; A6/A7 have none)
