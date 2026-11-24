@@ -131,6 +131,8 @@ class RecordingLoginFace implements LoginFace {
 	async registerRoute(providerId: string, profile: Record<string, unknown> | undefined) {
 		this.calls.push(`route:${providerId}:${profile ? JSON.stringify(profile) : "unset"}`)
 		return this.registerOk
+			? { kind: "host-settings" as const, ns: "llm-pi-ai" as const, ops: [{ op: "set" as const, path: ["providers", providerId], value: profile ?? {} }] }
+			: { kind: "invalid" as const, reason: "host settings channel refused the route" }
 	}
 }
 
@@ -160,9 +162,13 @@ async function runLogin(ctx: { say: (t: string) => void }, argText: string) {
 	await command.run(ctx as unknown as SlashCommandContext, argText)
 }
 
-/** SessionSeam carrying only the login face (the command touches nothing else). */
+/** SessionSeam carrying the login face + the host settings channel the route
+ *  plan is applied through (T7). */
 function seamWith(face: LoginFace | undefined): SessionSeam {
-	return { login: face } as unknown as SessionSeam
+	return {
+		login: face,
+		settings: { mutate: async () => ({ ok: true }) },
+	} as unknown as SessionSeam
 }
 
 describe("/login command (batch H4)", () => {

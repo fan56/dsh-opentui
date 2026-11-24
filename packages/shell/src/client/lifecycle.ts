@@ -85,7 +85,6 @@ import { homedir } from 'node:os'
 import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { probeHostHttp, probeHostMux } from './host-probe.ts'
-import { provisionAppendSystem } from './append-system.ts'
 import { defaultPidAlive } from './safe-kill.ts'
 
 export const DEFAULT_PROFILE = 'opentui'
@@ -1093,22 +1092,8 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
   // Phase 2 — boot under the claim. The claim is released by writeLock on
   // success and removed in the failure path.
   const profileDir = join(o.dshHome, 'profiles', o.profile)
-  // Append-system (dsh-tui-pi port): seed $DSH_HOME/APPEND_SYSTEM.md and keep
-  // the managed preset row in the profile patch BEFORE the host spawns — the
-  // host reads the patch (and evaluates the persona suffix's `!!js` read) at
-  // its own boot. Best-effort: a failure boots without the preset, and the
-  // roster gate in remote-host-session keeps `agentPreset` off the wire, so
-  // an enrichment must never fail the boot.
-  try {
-    const provision = provisionAppendSystem(o.dshHome, o.profile)
-    // Same channel as the throw path: a skipped/collision outcome boots
-    // WITHOUT the preset and must be visible in the error log, never silent.
-    if (provision.patch.status === 'collision' || provision.patch.status === 'skipped') {
-      console.error(`[lifecycle] append-system preset not provisioned (${provision.patch.status}): ${provision.patch.detail}`)
-    }
-  } catch (error) {
-    console.error('[lifecycle] append-system sync failed (booting without the preset):', error)
-  }
+  // T7: the append-system patch sync is retired with the HTTP host boot — the
+  // profile patch is host-owned; the inproc bridge reads APPEND_SYSTEM.md.
   const port = await getFreePort()
   const child = o.spawnDsh(['--profile', o.profile, '--no-open', '--port', String(port)], {
     cwd: profileDir,

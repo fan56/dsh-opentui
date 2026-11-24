@@ -20,7 +20,10 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
-import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
+import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionSeam } from "../../seams/session"
+
+/** The sanctioned patch-write channel: the host settings mutate face. */
+type SettingsMutate = (ns: string, ops: SeamSettingsOp[], revision?: number) => Promise<SeamSettingsMutateResult>
 import type { ComposerFlushResult } from "./composer-state"
 import { stopEverything } from "./stop-all"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
@@ -433,7 +436,35 @@ export interface LoginFace {
 	logout(ref: string): Promise<void>
 	/** The configured routes with their profile bodies (see SeamLoginRoute). */
 	routes(): Promise<SeamLoginRoute[]>
-	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean>
+	/** Plan a route write; the caller applies it via the settings face. */
+	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<SeamRegisterRoutePlan>
+}
+
+/** Apply a planned provider-route write through the host settings channel. */
+async function applyRoutePlan(
+	plan: SeamRegisterRoutePlan,
+	settings: SettingsMutate | undefined,
+	onFailure: (reason: string) => void,
+): Promise<boolean> {
+	if (plan.kind === "invalid") {
+		onFailure(plan.reason)
+		return false
+	}
+	if (plan.kind === "noop") return true
+	if (settings === undefined) {
+		onFailure("host settings channel unavailable")
+		return false
+	}
+	const result = await settings(plan.ns, plan.ops).catch((error: unknown) => ({
+		ok: false as const,
+		conflict: false,
+		error: error instanceof Error ? error.message : String(error),
+	}))
+	if (!result.ok) {
+		onFailure(result.error)
+		return false
+	}
+	return true
 }
 
 /** A step title with an inline validation error appended (re-prompt view). */
@@ -452,6 +483,7 @@ export async function commitLoginRoute(
 	face: LoginFace,
 	entry: CatalogEntry,
 	key: string,
+	settings?: SettingsMutate,
 ): Promise<void> {
 	// The old stack's empty-commit guard: an empty key fired a credentials.set
 	// the host rejects AND registered a garbage route. An empty key is a
@@ -460,9 +492,11 @@ export async function commitLoginRoute(
 		say(t("command.login.cancelledEmptyKey"))
 		return
 	}
-	const registered = await face.registerRoute(entry.id, providerProfileFor(entry))
-	if (!registered) {
+	const plan = await face.registerRoute(entry.id, providerProfileFor(entry))
+	const registered = await applyRoutePlan(plan, settings, () => {
 		say(t("command.login.routeRegistrationFailed", { id: entry.id }))
+	})
+	if (!registered) {
 		return
 	}
 	try {
@@ -574,13 +608,13 @@ export async function resolveLoginCatalog(
 }
 
 export async function commitCatalogLogin(
-	ctx: Pick<SlashCommandContext, "promptText" | "say">,
+	ctx: Pick<SlashCommandContext, "promptText" | "say" | "seam">,
 	face: LoginFace,
 	entry: CatalogEntry,
 ): Promise<void> {
 	const key = await ctx.promptText?.(`API key for ${entry.name} (${deriveKeyRef(entry.id)})`, { mask: true })
 	if (key === undefined) return
-	await commitLoginRoute(ctx.say, face, entry, key)
+	await commitLoginRoute(ctx.say, face, entry, key, ctx.seam.settings?.mutate?.bind(ctx.seam.settings))
 }
 
 /**
@@ -590,7 +624,7 @@ export async function commitCatalogLogin(
  * commit on an empty Enter with their defaults.
  */
 export async function runCustomLoginChain(
-	ctx: Pick<SlashCommandContext, "promptText" | "say">,
+	ctx: Pick<SlashCommandContext, "promptText" | "say" | "seam">,
 	face: LoginFace,
 	existingRoutes: string[],
 ): Promise<void> {
@@ -628,7 +662,7 @@ export async function runCustomLoginChain(
 		else {
 			// step 6 — the masked key; the commit consumes it directly.
 			const entry = buildCustomEntry(answers as { routeId: string; baseURL: string; models: string })
-			await commitLoginRoute(ctx.say, face, entry, trimmed)
+			await commitLoginRoute(ctx.say, face, entry, trimmed, ctx.seam.settings?.mutate?.bind(ctx.seam.settings))
 			return
 		}
 	}
@@ -1065,7 +1099,8 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.logout.done", { name: target.name }))
 					return
 				}
-				const cleared = await face.registerRoute(target.id, undefined).catch(() => false)
+				const plan = await face.registerRoute(target.id, undefined).catch(() => undefined as SeamRegisterRoutePlan | undefined)
+				const cleared = plan !== undefined && await applyRoutePlan(plan, ctx.seam.settings?.mutate?.bind(ctx.seam.settings), () => {})
 				ctx.say(
 					cleared
 						? t("command.logout.routeRemoved", { name: target.name })

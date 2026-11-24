@@ -1,15 +1,12 @@
 // append-system contract tests against tmp DSH_HOME fixtures (the user's
 // real ~/.dsh is NEVER touched — every path is under a fresh mkdtemp).
 //
-// Coverage: seeding (missing => template, existing => byte-identical zero
-// write, atomic tmp cleanup), persona read, preset-row sync (append once,
-// idempotent second pass, managed-block detection, collision refusal for
-// both the preset id and the row id, missing-patch skip, other rows
-// byte-preserved) and the managed block's shape (persona suffix !!js read,
-// standard-composition copy — the additive face the agents-mount gate
-// protects).
+// T7: the patch-row sync is retired (host owns the patch). Coverage left here:
+// APPEND_SYSTEM.md seeding (missing => template, existing => byte-identical
+// zero write, atomic tmp cleanup), persona read, and the legacy preset-id
+// constants used for legacy-resume detection.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -23,10 +20,7 @@ import {
 	appendSystemPresetBlock,
 	defaultDshHome,
 	ensureAppendSystemFile,
-	profilePatchPath,
-	provisionAppendSystem,
 	readAppendSystem,
-	syncAppendSystemPreset,
 } from "../src/client/append-system.ts"
 
 let home: string
@@ -38,23 +32,6 @@ beforeEach(() => {
 afterEach(() => {
 	rmSync(home, { recursive: true, force: true })
 })
-
-/** A minimal user patch (two foreign rows in the shape the real files use). */
-function seedPatch(body: string): string {
-	mkdirSync(join(home, "profiles", "opentui"), { recursive: true })
-	const path = profilePatchPath(home, "opentui")
-	writeFileSync(path, body)
-	return path
-}
-
-const USER_PATCH = `# my patch
-- id: tool-bash
-  name: '@deepseek-ai/dsh-tool-bash'
-  disabled: false
-- id: agent-instructions
-  name: '@deepseek-ai/dsh-agent-instructions'
-  disabled: false
-`
 
 describe("ensureAppendSystemFile", () => {
 	test("missing file => seeded with the template, byte-exact", () => {
@@ -103,137 +80,7 @@ describe("readAppendSystem", () => {
 	})
 })
 
-describe("syncAppendSystemPreset", () => {
-	test("no patch file => skipped, nothing created", () => {
-		mkdirSync(join(home, "profiles"), { recursive: true })
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("skipped")
-		expect(existsSync(profilePatchPath(home, "opentui"))).toBe(false)
-	})
-
-	test("foreign patch => block appended at EOF, other rows byte-preserved", () => {
-		const path = seedPatch(USER_PATCH)
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("added")
-		const after = readFileSync(path, "utf8")
-		expect(after.startsWith(USER_PATCH)).toBe(true)
-		expect(after).toContain(APPEND_SYSTEM_MARKER)
-		expect(after).toContain(`id: ${APPEND_SYSTEM_ROW_ID}`)
-		expect(after).toContain(`id: ${APPEND_SYSTEM_PRESET_ID}`)
-	})
-
-	test("idempotent: second pass is present and changes nothing", () => {
-		const path = seedPatch(USER_PATCH)
-		syncAppendSystemPreset(home, "opentui")
-		const once = readFileSync(path, "utf8")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("present")
-		expect(readFileSync(path, "utf8")).toBe(once)
-	})
-
-	test("managed block survives sibling rows appended after it", () => {
-		const path = seedPatch(USER_PATCH)
-		syncAppendSystemPreset(home, "opentui")
-		// Another tool appends its own top-level row after our block.
-		const withSibling = `${readFileSync(path, "utf8")}- id: tool-web\n  name: '@deepseek-ai/dsh-tool-web'\n`
-		writeFileSync(path, withSibling)
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("present")
-	})
-
-	test("preset id declared elsewhere => collision, zero writes", () => {
-		const hostile = `${USER_PATCH}- insert:\n    - id: preset-something\n      name: '@deepseek-ai/dsh-agent-preset'\n      config:\n        id: ${APPEND_SYSTEM_PRESET_ID}\n`
-		const path = seedPatch(hostile)
-		const before = readFileSync(path, "utf8")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("collision")
-		expect(readFileSync(path, "utf8")).toBe(before)
-	})
-
-	test("row id declared elsewhere => collision, zero writes", () => {
-		const hostile = `${USER_PATCH}- id: ${APPEND_SYSTEM_ROW_ID}\n  name: '@deepseek-ai/dsh-something'\n`
-		const path = seedPatch(hostile)
-		const before = readFileSync(path, "utf8")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("collision")
-		expect(readFileSync(path, "utf8")).toBe(before)
-	})
-
-	test("ids inside our own managed block do not self-collide", () => {
-		const path = seedPatch(USER_PATCH)
-		syncAppendSystemPreset(home, "opentui")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("present")
-	})
-
-	test("block present but ids ALSO declared outside it => collision, zero writes", () => {
-		const path = seedPatch(USER_PATCH)
-		syncAppendSystemPreset(home, "opentui")
-		const once = readFileSync(path, "utf8")
-		const polluted = `${once}\n- id: preset-foreign\n  name: '@deepseek-ai/dsh-agent-preset'\n  config:\n    id: ${APPEND_SYSTEM_PRESET_ID}\n`
-		writeFileSync(path, polluted)
-		const before = readFileSync(path, "utf8")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("collision")
-		expect(readFileSync(path, "utf8")).toBe(before)
-	})
-
-	test("patch without a trailing newline => block still appended cleanly, rows preserved", () => {
-		const path = seedPatch(USER_PATCH.replace(/\n$/, ""))
-		const before = readFileSync(path, "utf8")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("added")
-		const after = readFileSync(path, "utf8")
-		expect(after.startsWith(before + "\n")).toBe(true)
-		expect(after).toContain(`id: ${APPEND_SYSTEM_ROW_ID}`)
-		expect(syncAppendSystemPreset(home, "opentui").status).toBe("present")
-	})
-
-	test("duplicate managed blocks (user copy-paste) => collision, zero writes", () => {
-		const path = seedPatch(USER_PATCH)
-		syncAppendSystemPreset(home, "opentui")
-		const once = readFileSync(path, "utf8")
-		writeFileSync(path, once + once) // two managed blocks
-		const before = readFileSync(path, "utf8")
-		const result = syncAppendSystemPreset(home, "opentui")
-		expect(result.status).toBe("collision")
-		expect(readFileSync(path, "utf8")).toBe(before)
-	})
-
-	test("delete = off: after provisioning, a deleted APPEND_SYSTEM.md is not resurrected", () => {
-		const dir = join(home, "profiles", "opentui")
-		mkdirSync(dir, { recursive: true })
-		writeFileSync(profilePatchPath(home, "opentui"), USER_PATCH)
-		const append = appendSystemPath(home)
-		// First provision: block added + file seeded.
-		const first = provisionAppendSystem(home, "opentui")
-		expect(first.patch.status).toBe("added")
-		expect(first.file).toBe("seeded")
-		expect(existsSync(append)).toBe(true)
-		// User deletes the file to switch the append off.
-		rmSync(append)
-		const second = provisionAppendSystem(home, "opentui")
-		expect(second.patch.status).toBe("present")
-		expect(second.file).toBe("kept")
-		expect(existsSync(append)).toBe(false)
-	})
-
-	test("no patch file at all => patch skipped, but the missing append file still seeds (fresh install)", () => {
-		mkdirSync(join(home, "profiles"), { recursive: true })
-		const result = provisionAppendSystem(home, "opentui")
-		expect(result.patch.status).toBe("skipped")
-		expect(result.file).toBe("seeded")
-		expect(existsSync(appendSystemPath(home))).toBe(true)
-	})
-
-	test("write is atomic: no tmp leftovers in the profile dir", () => {
-		const dir = join(home, "profiles", "opentui")
-		mkdirSync(dir, { recursive: true })
-		writeFileSync(profilePatchPath(home, "opentui"), USER_PATCH)
-		syncAppendSystemPreset(home, "opentui")
-		expect(readdirSync(dir).filter((name) => name.includes(".tmp"))).toEqual([])
-	})
-})
+// T7: patch-writer tests retired (host owns the profile patch).
 
 describe("appendSystemPresetBlock shape", () => {
 	const block = appendSystemPresetBlock()

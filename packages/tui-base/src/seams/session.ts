@@ -681,6 +681,18 @@ export type SeamSettingsOp =
 	| { op: "set"; path: string[]; value: unknown }
 	| { op: "unset"; path: string[] }
 
+/**
+ * A PLANNED provider-route write (T7 patch-ownership). The client never writes
+ * the profile patch directly: it validates the route and hands the caller the
+ * host-settings ops to apply via `settings.mutate`. Kept as a structured result
+ * (instead of a boolean) so the caller owns the write channel and the refusal
+ * reason is not swallowed.
+ */
+export type SeamRegisterRoutePlan =
+	| { kind: "invalid"; reason: string }
+	| { kind: "noop" }
+	| { kind: "host-settings"; ns: "llm-pi-ai"; ops: SeamSettingsOp[] }
+
 /** One write outcome. `conflict` mirrors the host's `settings/conflict`
  * (stale `expectedRevision`) — the caller re-reads and retries once. */
 export type SeamSettingsMutateResult =
@@ -1112,10 +1124,11 @@ export interface SessionSeam {
 		/** The configured provider routes (settings llm-pi-ai providers dict). */
 		routes(): Promise<SeamLoginRoute[]>
 		/**
-		 * Register (profile) or clear (undefined) one provider route in the
-		 * llm-pi-ai settings namespace; false when the backend rejected it.
+		 * Plan (never perform) one provider-route registration or clear in the
+		 * llm-pi-ai settings namespace. The caller applies the returned ops via
+		 * `settings.mutate` — the only sanctioned patch write channel.
 		 */
-		registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean>
+		registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<SeamRegisterRoutePlan>
 	}
 	/**
 	 * 025-w1b E — ACCOUNT login-state face (PKCE / DeepSeek account). STRICTLY

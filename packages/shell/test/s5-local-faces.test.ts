@@ -54,12 +54,10 @@ describe("S5 settings.describe — field-level whitelist projection", () => {
 		rmSync(s.home, { recursive: true, force: true })
 	})
 
-	test("mutate refuses non-whitelisted namespace and path (no whole-doc replace)", () => {
+	test("the local store is READ-ONLY (T7: mutate retired; writes go via host settings)", () => {
 		const s = scratch()
-		const store = new LocalSettingsStore(s.home, s.profile)
-		expect(store.mutate("credentials", [{ op: "set", path: ["apiKey"], value: "x" }]).ok).toBe(false)
-		expect(store.mutate("subagent", [{ op: "set", path: ["apiKey"], value: "x" }]).ok).toBe(false)
-		expect(store.mutate("subagent", [{ op: "set", path: ["maxDepth", "nested"], value: 1 }]).ok).toBe(false)
+		const store = new LocalSettingsStore(s.home, s.profile) as unknown as { mutate?: unknown }
+		expect(store.mutate).toBeUndefined()
 		rmSync(s.home, { recursive: true, force: true })
 	})
 })
@@ -241,15 +239,23 @@ describe("025-w1a LocalLoginFace — provider routes + boolean credentials, valu
 		rmSync(s.home, { recursive: true, force: true })
 	})
 
-	test("registerRoute writes/clears a provider in the patch providers dict", () => {
+	test("registerRoute PLANS a per-subkey host-settings write; never touches the patch (T7)", () => {
 		const s = scratch()
 		writeFileSync(s.patch, PATCH)
+		const before = readFileSync(s.patch, "utf8")
 		const face = new LocalLoginFace(s.home, s.profile)
-		expect(face.registerRoute("new-provider", { apiKeyEnv: "NEW_PROVIDER_API_KEY" })).toBe(true)
-		expect(face.routes().some((r) => r.id === "new-provider" && r.apiKeyEnv === "NEW_PROVIDER_API_KEY")).toBe(true)
-		expect(face.registerRoute("new-provider", undefined)).toBe(true)
-		expect(face.routes().some((r) => r.id === "new-provider")).toBe(false)
-		// Original routes untouched.
+		expect(face.registerRoute("new-provider", { apiKeyEnv: "NEW_PROVIDER_API_KEY" })).toEqual({
+			kind: "host-settings",
+			ns: "llm-pi-ai",
+			ops: [{ op: "set", path: ["providers", "new-provider"], value: { apiKeyEnv: "NEW_PROVIDER_API_KEY" } }],
+		})
+		expect(face.registerRoute("new-provider", undefined)).toEqual({
+			kind: "host-settings",
+			ns: "llm-pi-ai",
+			ops: [{ op: "unset", path: ["providers", "new-provider"] }],
+		})
+		expect(readFileSync(s.patch, "utf8")).toBe(before)
+		// routes() stays a read of the existing patch (no planned write applied here).
 		expect(face.routes().some((r) => r.id === "zai-coding-cn")).toBe(true)
 		rmSync(s.home, { recursive: true, force: true })
 	})
@@ -275,9 +281,10 @@ describe("025-w1b C1/C2/C3 — registerRoute persists the full custom route, val
 		"",
 	].join("\n")
 
-	test("C1 round-trip: providerProfileFor -> registerRoute -> patch/routes keeps api/baseURL/models/displayName", () => {
+	test("C1: providerProfileFor -> registerRoute plan carries every custom field, patch untouched", () => {
 		const s = scratch()
 		writeFileSync(s.patch, PATCH_EMPTY)
+		const before = readFileSync(s.patch, "utf8")
 		// The six-step form's committed entry, exactly as /login builds it.
 		const entry = buildCustomEntry({
 			routeId: "my-llm",
@@ -288,25 +295,14 @@ describe("025-w1b C1/C2/C3 — registerRoute persists the full custom route, val
 		})
 		const profile = providerProfileFor(entry) // {apiKeyEnv,api,baseURL,models,displayName}
 		const face = new LocalLoginFace(s.home, s.profile)
-		expect(face.registerRoute(entry.id, profile)).toBe(true)
-
-		const text = readFileSync(s.patch, "utf8")
-		for (const field of [
-			"my-llm:",
-			"apiKeyEnv: MY_LLM_API_KEY",
-			"api: openai-completions",
-			'baseURL: "https://llm.example.test/v1"',
-			'displayName: "My LLM"',
-			'- id: "glm-5"',
-			'- id: "deepseek-chat"',
-		]) expect(text).toContain(field)
-
-		const rows = face.routes()
-		const row = rows.find((r) => r.id === "my-llm")!
-		expect(row.apiKeyEnv).toBe("MY_LLM_API_KEY")
-		expect(row.displayName).toBe("My LLM")
-		expect(row.declared).toBe(true) // api/baseURL/models mark the live declaration
-		expect(rows.some((r) => r.id === "zai-coding-cn")).toBe(true) // original route untouched
+		const plan = face.registerRoute(entry.id, profile)
+		expect(plan.kind).toBe("host-settings")
+		const op = (plan as Extract<typeof plan, { kind: "host-settings" }>).ops[0]!
+		expect(op.path).toEqual(["providers", "my-llm"])
+		for (const [field, value] of Object.entries(profile)) {
+			expect((op as Extract<typeof op, { op: "set" }>).value[field]).toEqual(value)
+		}
+		expect(readFileSync(s.patch, "utf8")).toBe(before)
 		rmSync(s.home, { recursive: true, force: true })
 	})
 
@@ -321,7 +317,9 @@ describe("025-w1b C1/C2/C3 — registerRoute persists the full custom route, val
 			evilKey: "SENTINEL_MUST_NOT_CROSS", // unknown key
 			models: [{ id: "ok-model\n  injected: pwned" }],
 		}
-		expect(face.registerRoute("evil-route", evil)).toBe(false)
+		const plan = face.registerRoute("evil-route", evil)
+		expect(plan.kind).toBe("invalid")
+		expect(JSON.stringify(plan)).not.toContain("SENTINEL")
 		const text = readFileSync(s.patch, "utf8")
 		for (const marker of ["SENTINEL", "injected: pwned", "evilKey", "evil-route:"]) {
 			expect(text).not.toContain(marker)
@@ -338,7 +336,7 @@ describe("025-w1b C1/C2/C3 — registerRoute persists the full custom route, val
 		// Leading/embedded '-' is valid (validateRouteId allows it); YAML-special
 		// chars (space, colon, newline, hash, quotes) are not.
 		for (const badId of ["bad id", "bad:id", "bad\nid", "bad#id", 'bad"id']) {
-			expect(face.registerRoute(badId, { apiKeyEnv: "OK_KEY" })).toBe(false)
+			expect(face.registerRoute(badId, { apiKeyEnv: "OK_KEY" }).kind).toBe("invalid")
 		}
 		expect(readFileSync(s.patch, "utf8")).toBe(before) // file byte-identical after all rejects
 		rmSync(s.home, { recursive: true, force: true })

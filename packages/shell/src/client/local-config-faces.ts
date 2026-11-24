@@ -20,8 +20,9 @@
  * WHITELIST projection, never key-name stripping. `describe()` CONSTRUCTS each
  * namespace value/schema from an enumerated allow-list; no host document (with
  * apiKey/token/password/links/auth URLs) is ever copied to a frame or the seam
- * return value. `mutate()` accepts only whitelisted ns + first path segment.
- * `configSave()` accepts only whitelisted preference keys.
+ * return value. T7: `mutate()` is retired — the local store is READ-ONLY for
+ * the patch; all writes go through the host settings channel. `configSave()`
+ * accepts only whitelisted preference keys (config.json, never the patch).
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
@@ -40,37 +41,43 @@ import type {
 	SeamEffortOption,
 	SeamLoginRoute,
 	SeamPresetRow,
+	SeamRegisterRoutePlan,
 	SeamSettingsDocument,
-	SeamSettingsMutateResult,
 	SeamSettingsOp,
 	SeamSettingsRow,
 } from "../../../tui-base/src/seams/session"
 
 // --- field-level allow-lists (explicit enumeration, not stripping) ---------
 
-/** Namespaces the /settings v1 whitelist reads; nothing else crosses the seam. */
-const SETTINGS_NAMESPACES = ["subagent", "permission", "session-log-deepseek"] as const
+/** Namespaces the /settings v1 whitelist reads; nothing else crosses the seam.
+ *  T7 (D1 §对「3 字段缺陷」的修正): the write surface grew to the approval
+ *  policy (300s window) and llm-pi-ai.providers (host settings mutation). */
+const SETTINGS_NAMESPACES = [
+	"subagent", "permission", "session-log-deepseek", "dsh-approval-policy", "llm-pi-ai",
+] as const
 type SettingsNs = (typeof SETTINGS_NAMESPACES)[number]
 
-/** The ONLY value fields projected per namespace (oldfox §六.2). */
-const NS_VALUE_FIELDS: Readonly<Record<SettingsNs, readonly string[]>> = {
+/** The ONLY value fields projected per namespace (oldfox §六.2).
+ *  MIRROR of bridge-settings-route.ts SETTINGS_NS_VALUE_FIELDS — the two
+ *  tables must stay in sync (no-client-patch-writers gate asserts it). */
+export const NS_VALUE_FIELDS: Readonly<Record<SettingsNs, readonly string[]>> = {
 	subagent: ["maxActiveSubagents", "maxDepth"],
 	permission: ["defaultPreset", "presets"],
 	"session-log-deepseek": ["enabled"],
-}
-/** Patch row `name:` for a namespace we must create on first write. */
-const NS_PACKAGE: Readonly<Record<SettingsNs, string>> = {
-	subagent: "@deepseek-ai/dsh-subagent",
-	permission: "@deepseek-ai/dsh-permission-presets",
-	"session-log-deepseek": "@deepseek-ai/dsh-session-log-deepseek",
+	"dsh-approval-policy": ["windowSeconds", "origins", "defaultOutcome", "sessions"],
+	"llm-pi-ai": ["providers"],
 }
 /** Host-source defaults (one-hand verified rc.5): subagent/src/index.ts:196
  *  maxDepth default 1; dsh-session-log-deepseek/src/index.ts:60 enabled default
- *  true; permission defaultPreset comes from the patch (workspace-write). */
+ *  true; permission defaultPreset comes from the patch (workspace-write).
+ *  `providers` is an empty dict default — real routes come from the host
+ *  settings document (field-level projected), never from a default object. */
 const NS_DEFAULTS: Readonly<Record<SettingsNs, Readonly<Record<string, unknown>>>> = {
 	subagent: { maxActiveSubagents: 1, maxDepth: 1 },
 	permission: { defaultPreset: "workspace-write" },
 	"session-log-deepseek": { enabled: true },
+	"dsh-approval-policy": {},
+	"llm-pi-ai": { providers: {} },
 }
 
 /** config.json keys the local preference editor may read/write (oldfox §六.3:
@@ -119,6 +126,29 @@ function nsEntrySpan(lines: readonly string[], ns: string): [number, number] | u
 	return [start, end]
 }
 
+/** Read the nested `llm-pi-ai.providers` dict (provider id → projected fields)
+ *  from the patch row. Value-only; no patch write (T7). */
+function readProvidersDict(lines: readonly string[], from: number, to: number): Record<string, unknown> {
+	const out: Record<string, unknown> = {}
+	for (let i = from; i < to; i++) {
+		const m = /^\s{6}([A-Za-z0-9_.\-]+):\s*$/.exec(lines[i])
+		if (!m) {
+			if (/^\s{0,4}\S/.test(lines[i])) break
+			continue
+		}
+		const provider: Record<string, unknown> = {}
+		for (let j = i + 1; j < to; j++) {
+			if (/^\s{6}\S/.test(lines[j]) || /^\s{0,4}\S/.test(lines[j])) break
+			const f = /^\s{8}([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(lines[j])
+			if (f && ["apiKeyEnv", "api", "baseURL", "displayName"].includes(f[1])) {
+				provider[f[1]] = parseScalar(f[2])
+			}
+		}
+		out[m[1]] = provider
+	}
+	return out
+}
+
 /** Read whitelisted value fields for one namespace from its patch row. */
 function readNsValue(lines: readonly string[], ns: SettingsNs): Record<string, unknown> {
 	const span = nsEntrySpan(lines, ns)
@@ -132,40 +162,14 @@ function readNsValue(lines: readonly string[], ns: SettingsNs): Record<string, u
 		if (inConfig && /^\s{2}\S/.test(line)) break // left the config block
 		if (!inConfig) continue
 		const m = /^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(line)
-		if (m && fields.includes(m[1])) out[m[1]] = parseScalar(m[2])
+		if (!m || !fields.includes(m[1])) continue
+		if (m[1] === "providers" && m[2].trim() === "") {
+			out.providers = readProvidersDict(lines, i + 1, span[1])
+		} else if (m[2].trim() !== "") {
+			out[m[1]] = parseScalar(m[2])
+		}
 	}
 	return out
-}
-
-/** Replace/insert one whitelisted `config:` field inside a namespace row. */
-function writeNsField(lines: string[], ns: SettingsNs, key: string, raw: string): boolean {
-	const fields = NS_VALUE_FIELDS[ns]
-	if (!fields.includes(key)) return false
-	const yaml = /^(true|false|null|~|-?\d+(?:\.\d+)?)$/.test(raw.trim()) || /^["']/.test(raw.trim())
-		? raw.trim() : JSON.stringify(raw)
-	const span = nsEntrySpan(lines, ns)
-	if (span === undefined) {
-		// Append a fresh, minimal row for this namespace (name comes from the
-		// pinned package allow-list — no arbitrary ns/package crosses the seam).
-		lines.push("", `- id: ${ns}`, `  name: '${NS_PACKAGE[ns]}'`, "  config:", `    ${key}: ${yaml}`)
-		return true
-	}
-	let configLine = -1
-	for (let i = span[0] + 1; i < span[1]; i++) {
-		if (/^\s{2}config:\s*$/.test(lines[i])) { configLine = i; break }
-	}
-	if (configLine < 0) {
-		lines.splice(span[0] + 1, 0, "  config:", `    ${key}: ${yaml}`)
-		return true
-	}
-	for (let i = configLine + 1; i < span[1]; i++) {
-		const m = /^(\s{4})([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(lines[i])
-		if (!m) continue
-		if (/^\s{2}\S/.test(lines[i])) break
-		if (m[2] === key) { lines[i] = `    ${key}: ${yaml}`; return true }
-	}
-	lines.splice(configLine + 1, 0, `    ${key}: ${yaml}`)
-	return true
 }
 
 function atomicWrite(path: string, text: string): void {
@@ -282,42 +286,9 @@ export class LocalSettingsStore {
 		namespaces.push(...others)
 		return { writable: true, hasDocument: existsSync(this.#patchPath), namespaces, source: "local-file" }
 	}
-
-	/** Whitelisted path-op mutation; never accepts a whole-document replace. */
-	mutate(ns: string, ops: SeamSettingsOp[], _revision?: number): SeamSettingsMutateResult {
-		if (!(SETTINGS_NAMESPACES as readonly string[]).includes(ns)) {
-			return { ok: false, conflict: false, error: `settings.mutate: namespace '${ns}' is not whitelisted` }
-		}
-		const allow = NS_VALUE_FIELDS[ns as SettingsNs]
-		for (const op of ops) {
-			if (!Array.isArray(op.path) || op.path.length !== 1 || !allow.includes(op.path[0])) {
-				return { ok: false, conflict: false, error: `settings.mutate: path not whitelisted for '${ns}'` }
-			}
-		}
-		let text = ""
-		try { text = readFileSync(this.#patchPath, "utf8") } catch { /* fresh patch */ }
-		const lines = text.length > 0 ? text.split("\n") : []
-		for (const op of ops) {
-			const key = (op.path as string[])[0]
-			if (op.op === "unset") {
-				// Clearing a key = write its host default back (never drop the row).
-				const fallback = NS_DEFAULTS[ns as SettingsNs][key]
-				if (fallback !== undefined) writeNsField(lines, ns as SettingsNs, key, String(fallback))
-				continue
-			}
-			const value = op.value
-			if (typeof value === "object" && value !== null) {
-				return { ok: false, conflict: false, error: "settings.mutate: nested value not whitelisted" }
-			}
-			writeNsField(lines, ns as SettingsNs, key, String(value))
-		}
-		try {
-			atomicWrite(this.#patchPath, lines.join("\n").replace(/\n*$/, "\n"))
-		} catch (err) {
-			return { ok: false, conflict: false, error: err instanceof Error ? err.message : String(err) }
-		}
-		return { ok: true }
-	}
+	// T7: `mutate` retired. The patch is a host-owned runtime file; the seam's
+	// local-file branch stays read-only. All settings writes go through the
+	// host settings channel (`seam.settings.mutate`), never this store.
 }
 
 // ---------------------------------------------------------------------------
@@ -663,50 +634,30 @@ export class LocalLoginFace {
 		this.#writeKeys(keys)
 	}
 
-	/** Register (profile) or clear (undefined) one provider route in the patch.
-	 *  Line-level conservative edit, like the other S5 patch writers. */
-	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): boolean {
-		let text = ""
-		try { text = readFileSync(this.#patchPath, "utf8") } catch { return false }
-		const lines = text.length > 0 ? text.split("\n") : []
-		const span = nsEntrySpan(lines, "llm-pi-ai")
-		if (span === undefined) return false
-		const providersLine = lines.findIndex((l, i) => i >= span[0] && i < span[1] && /^\s{4}providers:\s*$/.test(l))
-		if (providersLine < 0) return false
-		// Find the provider block end (next 6-space key or dedent).
-		let pStart = -1
-		let pEnd = -1
-		for (let i = providersLine + 1; i < lines.length; i++) {
-			const m = /^\s{6}([A-Za-z0-9_.\-]+):\s*$/.exec(lines[i])
-			if (m && m[1] === providerId) {
-				pStart = i
-				pEnd = i + 1
-				for (let j = i + 1; j < lines.length; j++) {
-					if (/^\s{6}\S/.test(lines[j]) || /^\s{0,4}\S/.test(lines[j])) break
-					pEnd = j + 1
-				}
-				break
-			}
-			if (/^\s{0,4}\S/.test(lines[i])) break
+	/**
+	 * T7 (06 §1.1 / R6): PLAN one provider-route write, NEVER write the patch.
+	 * The returned structured result routes the caller to `seam.settings.mutate`
+	 * (the host settings channel); all field-level validation is retained from
+	 * the retired direct writer (C1/C2), now used as an op-builder guard.
+	 * `providers` is written per SUBKEY (`["providers", <id>]`) so legitimate
+	 * additions merge instead of replacing the whole template dict.
+	 */
+	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): SeamRegisterRoutePlan {
+		if (!/^[A-Za-z0-9_.-]+$/.test(providerId)) {
+			return { kind: "invalid", reason: `invalid provider id '${providerId}'` }
 		}
+		const ops: SeamSettingsOp[] = []
 		if (profile === undefined) {
-			if (pStart < 0) return true // clearing an absent route is a no-op
-			lines.splice(pStart, pEnd - pStart)
+			ops.push({ op: "unset", path: ["providers", providerId] })
 		} else {
-			// C1 (025-w1b) — a custom route is only usable if ALL of its profile
-			// fields are persisted. providerProfileFor() hands us
-			// {apiKeyEnv, api, baseURL, models, displayName}; dropping the last
-			// four made the form report `subscribed` while the route stayed dead.
-			// C2 — providerId now passes the same charset gate as routes()/validateRouteId
-			// before it is spliced into a YAML key line (apiKeyEnv already had safeRef).
-			if (!/^[A-Za-z0-9_.-]+$/.test(providerId)) return false
-			const block = buildLoginRouteBlock(providerId, profile)
-			if (block === undefined) return false
-			if (pStart >= 0) lines.splice(pStart, pEnd - pStart, ...block)
-			else lines.splice(providersLine + 1, 0, ...block)
+			// C1/C2 — reject any profile field that cannot be persisted, so the
+			// form never reports `subscribed` for a route the host cannot use.
+			if (buildLoginRouteBlock(providerId, profile) === undefined) {
+				return { kind: "invalid", reason: "invalid provider route profile" }
+			}
+			ops.push({ op: "set", path: ["providers", providerId], value: profile })
 		}
-		try { atomicWrite(this.#patchPath, lines.join("\n").replace(/\n*$/, "\n")) } catch { return false }
-		return true
+		return { kind: "host-settings", ns: "llm-pi-ai", ops }
 	}
 
 	#readKeys(): Record<string, string> {

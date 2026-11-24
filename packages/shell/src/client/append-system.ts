@@ -2,24 +2,15 @@
  * Append-system (ported from dsh-tui-pi's APPEND_SYSTEM.md, P2 gap closure).
  *
  * tui-pi semantics: `$DSH_HOME/APPEND_SYSTEM.md` is appended to the system
- * prompt of every TUI-created main agent (subagents excluded). The opentui
- * host exposes no wire to register a system-prompt section, so the delivery
- * channel here is an agentPreset: the client maintains one `@deepseek-ai/
- * dsh-agent-preset` row in the opentui profile's `cordis.patch.yml` whose
- * composition is the shipped `standard` preset verbatim with the persona row
- * carrying `{ suffix: <APPEND_SYSTEM.md> }`. The preset scope shadows only
- * the persona sections, so the session face is standard's plus the suffix —
- * additive by construction. `session/create` rides that preset when the host
- * roster composes it (remote-host-session.ts).
+ * prompt of every TUI-created main agent (subagents excluded). The INPROC
+ * bridge delivers that text itself (`packages/bridge/src/append-text.ts`),
+ * reading the same file with its own mtime cache.
  *
- * File-driven persona: the suffix is a `!!js` expression the HOST evaluates
- * at boot — a guarded `readFileSync` of `$DSH_HOME/APPEND_SYSTEM.md` (probe
- * 2026-11-15, host 0.2.2-rc.3: `process.getBuiltinModule('node:module')
- * .createRequire(baseUrl)` and `baseUrl` are both reachable from user-patch
- * `!!js` rows; missing file resolves to '' and the empty section is dropped
- * by the prompt renderer). The patch block is therefore content-independent:
- * it is written once and never resynced, and persona edits follow the file
- * on the next host boot.
+ * T7 (06 §1.1 / R6): the legacy client patch writer and its managed-marker
+ * preset block are RETIRED — the profile patch is host-owned, and the client
+ * never writes it. Only the file read/seed logic below remains (unchanged).
+ * The preset id constants stay for legacy-resume detection in the bridge and
+ * for the tests that assert the old id never leaks onto the wire.
  *
  * Boot-time seeding (tui-pi parity): a missing APPEND_SYSTEM.md is seeded
  * from the embedded template; an existing file is user-owned — zero writes.
@@ -274,15 +265,11 @@ function writeAtomically(path: string, content: string, mode: number): void {
 
 /**
  * Seed the append file — FIRST PROVISIONING ONLY: a missing file is seeded
- * solely when the managed preset block is absent too. After provisioning,
- * deleting the file is how the user switches the append OFF (an empty persona
- * suffix renders no section), and this function must not resurrect it (the
- * block's presence answers "provisioned"). An existing file — even an empty
- * one — is user-owned: zero writes. Atomic; throws on write failure (the
- * caller degrades to booting without the feature, never fails the boot).
- * @param path - target file (injectable for tests). Whether the install is
- *   already provisioned (managed block present => deleted file stays deleted)
- *   is the CALLER's judgment — see {@link provisionAppendSystem}.
+ * once. An existing file — even an empty one — is user-owned: zero writes.
+ * Atomic; throws on write failure (the caller degrades to booting without the
+ * feature, never fails the boot).
+ * T7: the patch-marker provisioning gate is retired; the FILE read/seed logic
+ * below is unchanged (the bridge reads `$DSH_HOME/APPEND_SYSTEM.md` itself).
  */
 export function ensureAppendSystemFile(path: string = appendSystemPath()): "seeded" | "kept" {
 	try {
@@ -297,116 +284,4 @@ export function ensureAppendSystemFile(path: string = appendSystemPath()): "seed
 		}
 		return "seeded"
 	}
-}
-
-/** Outcome of one profile-patch sync pass. */
-export type AppendPresetSyncResult =
-	| { status: "added" }
-	| { status: "present" }
-	| { status: "collision"; detail: string }
-	| { status: "skipped"; detail: string }
-
-/**
- * The profile patch file the client maintains (`~/.dsh/profiles/<profile>/cordis.patch.yml`).
- */
-export function profilePatchPath(home: string, profile: string): string {
-	return join(home, "profiles", profile, "cordis.patch.yml")
-}
-
-/**
- * The [start, end) line span of OUR managed block: from the first marker
- * comment through our single top-level `- insert:` entry — the span ends at
- * the NEXT top-level patch row (`^- `) after our insert line, or EOF. Lines
- * outside the span are the user's (or other tools') — this module never
- * rewrites them.
- */
-function managedSpan(lines: readonly string[]): [number, number] | undefined {
-	const start = lines.findIndex((line) => line.startsWith(APPEND_SYSTEM_MARKER))
-	if (start < 0) return undefined
-	let end = lines.length
-	let seenOwnInsert = false
-	for (let i = start + 1; i < lines.length; i++) {
-		if (/^- /.test(lines[i])) {
-			// The first top-level row after the marker is our own `- insert:`.
-			if (!seenOwnInsert) {
-				seenOwnInsert = true
-				continue
-			}
-			end = i
-			break
-		}
-	}
-	return [start, end]
-}
-
-/**
- * One boot-time provisioning pass (the lifecycle entry point): maintain the
- * managed preset row, then seed the append file only when the install is not
- * yet provisioned (no managed block) AND the file is missing — afterwards a
- * deleted file means OFF and stays deleted. Returns both outcomes for the
- * caller's structured logging; write failures propagate.
- */
-export function provisionAppendSystem(home: string, profile: string): { patch: AppendPresetSyncResult; file: "seeded" | "kept" } {
-	// Provisioning is judged on the PRE-sync patch state: the block this pass
-	// just added must not count (a fresh install seeds the file in the same
-	// breath), while a block that already existed means the user may have
-	// deleted the file to switch OFF — never re-seed over that.
-	let preText: string | undefined
-	try {
-		preText = readFileSync(profilePatchPath(home, profile), "utf8")
-	} catch {
-		preText = undefined // no patch file: nothing provisioned, seeding stays eligible
-	}
-	const patch = syncAppendSystemPreset(home, profile)
-	if (preText !== undefined && managedSpan(preText.split("\n")) !== undefined) {
-		return { patch, file: "kept" } // provisioned install: deleted file stays deleted (delete = off)
-	}
-	return { patch, file: ensureAppendSystemFile(appendSystemPath(home)) }
-}
-
-/**
- * Maintain the append-system preset row in the profile patch (conservative
- * line-level editing — the file is user-owned YAML, no parse-and-reserialize):
- *
- * - the ids appear OUTSIDE our block (a preset/row the user declared or a
- *   future host ships with the same id) => `collision`, zero writes;
- * - otherwise: block present => `present`, untouched (the block is content-
- *   independent in file-driven mode; there is nothing to resync); block
- *   absent => append at EOF (`added`);
- * - patch file or profile dir missing => `skipped` (the host owns that
- *   layout; enrichment must not create profile plumbing).
- *
- * The write is atomic (tmp + rename) and preserves the file mode (0600 for a
- * fresh file, matching the host's config-editor convention).
- */
-export function syncAppendSystemPreset(home: string, profile: string): AppendPresetSyncResult {
-	const path = profilePatchPath(home, profile)
-	let before: string
-	try {
-		before = readFileSync(path, "utf8")
-	} catch {
-		return { status: "skipped", detail: `no profile patch at ${path}` }
-	}
-	const lines = before.split("\n")
-	const span = managedSpan(lines)
-	const outside = (needle: string): string | undefined => {
-		for (let i = 0; i < lines.length; i++) {
-			if (span !== undefined && i >= span[0] && i < span[1]) continue
-			if (lines[i].includes(needle)) return `line ${i + 1}: ${lines[i].trim()}`
-		}
-		return undefined
-	}
-	for (const needle of [APPEND_SYSTEM_PRESET_ID, APPEND_SYSTEM_ROW_ID]) {
-		const hit = outside(needle)
-		if (hit !== undefined) {
-			return { status: "collision", detail: `${needle} already declared (${hit})` }
-		}
-	}
-	if (span !== undefined) return { status: "present" }
-	// Append at EOF: the patch is a YAML sequence; a new top-level entry is
-	// safe at the end (the last layer wins per id, and we collide-checked).
-	const separator = before.length === 0 || before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n"
-	const next = `${before}${separator}${appendSystemPresetBlock()}`
-	writeAtomically(path, next, 0o600)
-	return { status: "added" }
 }

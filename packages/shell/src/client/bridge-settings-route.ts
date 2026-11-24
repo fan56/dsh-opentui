@@ -23,10 +23,12 @@ import type {
 
 /** The ONLY value fields allowed per whitelisted namespace (mirrors
  *  local-config-faces.ts NS_VALUE_FIELDS — the two tables must stay in sync). */
-const SETTINGS_NS_VALUE_FIELDS: Readonly<Record<string, readonly string[]>> = {
+export const SETTINGS_NS_VALUE_FIELDS: Readonly<Record<string, readonly string[]>> = {
 	subagent: ["maxActiveSubagents", "maxDepth"],
 	permission: ["defaultPreset", "presets"],
 	"session-log-deepseek": ["enabled"],
+	"dsh-approval-policy": ["windowSeconds", "origins", "defaultOutcome", "sessions"],
+	"llm-pi-ai": ["providers"],
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
