@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **All three confirmation dialogs now answer Yes / No (是 / 否).** The quit,
+  stop-turn and settings-exit confirmations use the same question-and-answer
+  buttons instead of Quit/Cancel, Stop/keep running and Exit/Back, so the
+  button text always answers the question in the title. Keys are unchanged:
+  Escape cancels, Enter confirms.
+
 ## [0.27.0] - 2026-11-23
 
 ### Added

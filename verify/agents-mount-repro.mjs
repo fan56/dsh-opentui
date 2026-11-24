@@ -746,7 +746,7 @@ try {
   const waitSettingsClosed = (timeout = 15_000) => waitPane(SESS, (out) => !settingsUp(out) && idle(out), timeout)
   /**
    * Close the modal under the instant-save contract: Esc at the browse root
-   * opens the `退出设置？` confirm with the focus on 取消, Tab moves it to 退出,
+   * opens the `退出设置？` confirm with the focus on 否, Tab moves it to 是,
    * and Enter confirms. Nothing is pending (every edit landed on choice), so
    * there is no commit key and no other close path.
    */
@@ -755,7 +755,7 @@ try {
     // in a rows sub-pane, so ONE Escape only returns to the browse root — it
     // does NOT open the exit confirm. Parking there is the cascade that poisoned
     // pane-focus and palette. Step Escape until the confirm appears (or the
-    // modal is already gone), then Tab to 退出 + Enter. Check after each press:
+    // modal is already gone), then Tab to 是 + Enter. Check after each press:
     // another Escape at the confirm would cancel it.
     let confirm = { ok: false, out: capture(SESS) }
     for (let step = 0; step < 4 && !confirm.ok; step++) {
