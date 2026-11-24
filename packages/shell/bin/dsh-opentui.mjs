@@ -6,8 +6,8 @@
  * Startup chain:
  *   0. Bin-level flags — `--version` prints `dsh-opentui <version>` and
  *      exits 0 BEFORE anything else (no provision, no TUI); `--force` and
- *      `--yes` remain reserved and parsed in this in-process-only build, but
- *      currently do not kill or reset anything. Their implementation is T12.
+ *      `--yes` are deprecated no-ops, retained for compatibility and removed in
+ *      the next minor release. Use `--repair-bridge` to clear stale instances.
  *      `--repair-bridge` is a terminal
  *      maintenance command: it clears this profile's stale instances (TERM
  *      then KILL), runs the in-process bridge self-heal (T7), and exits before
@@ -20,9 +20,10 @@
  *      config load); no `dsh` on PATH → install guidance, exit 1.
  *   3. In-process profile bootstrap — runs
  *      scripts/provision-inproc-profile.mjs on EVERY start. The script is
- *      idempotent and prints seven progress steps (host, manifest, patch,
- *      bridge-copy, companions, verify, shim). A non-zero exit is fatal because
- *      the client cannot use its in-process bridge without this profile.
+ *      idempotent and prints eight progress steps (host, manifest/patch,
+ *      workspace, bridge-copy, companions, verify, identity, shim). A non-zero
+ *      exit is fatal because the client cannot use its in-process bridge without
+ *      this profile.
  *   4. dsh-client-connection resolution guarantee — the client bundle
  *      imports `@deepseek-ai/dsh-client-connection/client` at runtime, but
  *      that SDK is NOT on the public npm registry (it exists only inside a
@@ -70,9 +71,8 @@ function capture(cmd, args) {
 }
 
 // --- 0. Bin-level flags: --version short-circuits; --force/--yes parsed -----
-// --force / --yes remain reserved and consumed in this in-process-only build.
-// They currently have no kill/reset side effect. Parsing stays so the flags
-// remain user-visible.
+// --force / --yes remain parsed for compatibility as deprecated no-ops.
+// They are removed in the next minor release; use --repair-bridge for stale cleanup.
 const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
@@ -85,11 +85,10 @@ if (versionFlag) {
   process.exit(0)
 }
 
-// Warn once on non-version invocations carrying either reserved flag. The
-// repair command owns a real stale-process sweep, so do not claim that sweep
-// did nothing when --yes is merely tolerated beside that maintenance command.
-if (forceFlag || (yesFlag && !repairBridgeFlag)) {
-  console.error('dsh-opentui: --force/--yes is reserved but not wired in this build; no processes were killed or reset.')
+// Warn once on non-version invocations carrying --force. A standalone --yes
+// is a usage error below; beside --force or --repair-bridge it is ignored.
+if (forceFlag) {
+  console.error('dsh-opentui: --force is deprecated and does nothing in this build; run --repair-bridge to clear stale instances. Removed in the next minor release.')
 }
 
 // P3-3: make flag combinations that used to fall into dead corners explicit.
@@ -216,10 +215,10 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
-// --- 2.5 reserved --force / --yes ------------------------------------------
+// --- 2.5 deprecated --force / --yes -----------------------------------------
 // Parsed and warned about at step 0, then deliberately inert here in this
-// in-process-only build: no process is killed or reset. T12 will implement the
-// reserved behavior before the client is provisioned or spawned.
+// in-process-only build: no process is killed or reset. Both flags are removed
+// in the next minor release; stale-instance cleanup belongs to --repair-bridge.
 
 // --- 3. In-process bridge profile provisioning ------------------------------
 // The bridge is the sole seam, so this runs on EVERY launch. The script

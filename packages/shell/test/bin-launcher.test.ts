@@ -26,11 +26,12 @@ import {
   validateLauncherArgs,
 } from '../bin/lib/launcher.mjs'
 import { CLI_LAUNCH_FLAGS } from '../../tui-base/src/routes/session/auto-resume.ts'
+import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const binPath = join(pkgRoot, 'bin', 'dsh-opentui.mjs')
 const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).version
-const RESERVED_FLAGS_WARNING = 'dsh-opentui: --force/--yes is reserved but not wired in this build; no processes were killed or reset.'
+const RESERVED_FLAGS_WARNING = 'dsh-opentui: --force is deprecated and does nothing in this build; run --repair-bridge to clear stale instances. Removed in the next minor release.'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
@@ -47,7 +48,7 @@ describe('parseLauncherArgs', () => {
     })
   })
 
-  test('consumes --yes (confirm flag) and never forwards it', () => {
+  test('consumes --yes as a deprecated no-op and never forwards it', () => {
     expect(parseLauncherArgs(['--force', '--yes'])).toEqual({ version: false, force: true, repairBridge: false, yes: true, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--yes', '--session', 'x'])).toEqual({
       version: false, force: false, repairBridge: false, yes: true, rest: ['--session', 'x'], passthrough: [],
@@ -104,10 +105,10 @@ describe('readLauncherVersion', () => {
 
 describe('parseProcessRows', () => {
   test('parses pid/ppid/command rows and skips non-row lines', () => {
-    const rows = parseProcessRows('  PID  PPID COMMAND\n 42 1 /sbin/launchd\nbad line\n 99 42 node dsh --profile opentui-inproc\n')
+    const rows = parseProcessRows(`  PID  PPID COMMAND\n 42 1 /sbin/launchd\nbad line\n 99 42 node dsh --profile ${DEFAULT_PROFILE}\n`)
     expect(rows).toEqual([
       { pid: 42, ppid: 1, command: '/sbin/launchd' },
-      { pid: 99, ppid: 42, command: 'node dsh --profile opentui-inproc' },
+      { pid: 99, ppid: 42, command: `node dsh --profile ${DEFAULT_PROFILE}` },
     ])
   })
 
@@ -124,7 +125,7 @@ describe('parseProcessHomes', () => {
     const homes = parseProcessHomes(
       [
         '11 bun run thing DSH_HOME=/tmp/a',
-        '12 node dsh --profile opentui-inproc DSH_HOME=/tmp/b',
+        `12 node dsh --profile ${DEFAULT_PROFILE} DSH_HOME=/tmp/b`,
         '13 node DSH_HOME=/cmd/line DSH_HOME=/the/env',
       ].join('\n'),
     )
@@ -134,29 +135,29 @@ describe('parseProcessHomes', () => {
   })
 
   test('a pid without DSH_HOME in its environment maps to undefined', () => {
-    const homes = parseProcessHomes('21 node dsh --profile opentui-inproc\n\nnot a row')
+    const homes = parseProcessHomes(`21 node dsh --profile ${DEFAULT_PROFILE}\n\nnot a row`)
     expect(homes.get(21)).toBeUndefined()
   })
 })
 
 describe('classifyProcess', () => {
   test('the opentui host in its real-world shapes', () => {
-    expect(classifyProcess('node /opt/homebrew/bin/dsh --profile opentui-inproc --no-open --port 50657')).toBe('host')
-    expect(classifyProcess('dsh --profile opentui-inproc')).toBe('host')
-    expect(classifyProcess('dsh --profile=opentui-inproc')).toBe('host')
-    expect(classifyProcess('bun /usr/local/bin/dsh --profile opentui-inproc --port 1')).toBe('host')
+    expect(classifyProcess(`node /opt/homebrew/bin/dsh --profile ${DEFAULT_PROFILE} --no-open --port 50657`)).toBe('host')
+    expect(classifyProcess(`dsh --profile ${DEFAULT_PROFILE}`)).toBe('host')
+    expect(classifyProcess(`dsh --profile=${DEFAULT_PROFILE}`)).toBe('host')
+    expect(classifyProcess(`bun /usr/local/bin/dsh --profile ${DEFAULT_PROFILE} --port 1`)).toBe('host')
   })
 
   test('provision children, other profiles and mere mentions are NOT the host', () => {
-    expect(classifyProcess('node /opt/homebrew/bin/dsh plugin --profile opentui-inproc add @aiwayds/x')).toBeNull()
+    expect(classifyProcess(`node /opt/homebrew/bin/dsh plugin --profile ${DEFAULT_PROFILE} add @aiwayds/x`)).toBeNull()
     expect(classifyProcess('dsh opentui --dump-config')).toBeNull()
     expect(classifyProcess('dsh --profile default')).toBeNull()
     // a wrapper script that only MENTIONS dsh in its own argv
-    expect(classifyProcess('node wrapper.js dsh --profile opentui-inproc')).toBeNull()
+    expect(classifyProcess(`node wrapper.js dsh --profile ${DEFAULT_PROFILE}`)).toBeNull()
     // shells / tools whose command line references the profile
     expect(classifyProcess('zsh -c env DSH_HOME=/x dsh-opentui --force')).toBeNull()
-    expect(classifyProcess('grep --profile opentui-inproc logs.txt')).toBeNull()
-    expect(classifyProcess('tmux new-session -d -s x dsh --profile opentui-inproc')).toBeNull()
+    expect(classifyProcess(`grep --profile ${DEFAULT_PROFILE} logs.txt`)).toBeNull()
+    expect(classifyProcess(`tmux new-session -d -s x dsh --profile ${DEFAULT_PROFILE}`)).toBeNull()
   })
 
   test('clients: source entry and published bundle', () => {
@@ -167,10 +168,10 @@ describe('classifyProcess', () => {
 
 describe('selectStaleProcesses', () => {
   const rows = [
-    { pid: 10, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile opentui-inproc --no-open --port 1' },
+    { pid: 10, ppid: 1, command: `node /opt/homebrew/bin/dsh --profile ${DEFAULT_PROFILE} --no-open --port 1` },
     { pid: 11, ppid: 1, command: 'bun /x/dist/client/index.js' },
     { pid: 12, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile other --no-open --port 2' },
-    { pid: 13, ppid: 1, command: 'node /opt/homebrew/bin/dsh --profile opentui-inproc --no-open --port 3' },
+    { pid: 13, ppid: 1, command: `node /opt/homebrew/bin/dsh --profile ${DEFAULT_PROFILE} --no-open --port 3` },
     { pid: 14, ppid: 1, command: 'bun --preload p /repo/src/client-entry.tsx' },
   ]
 
@@ -366,11 +367,12 @@ describe('--remote removal (0.23.0)', () => {
     expect(r.stdout).toBe('')
     expect(r.stderr).toContain("dsh-opentui: unknown option '--remote'")
     // S6: --remote is a plain unknown option — its one-time migration hint is
-    // gone with the env escape hatch it pointed to.
+    // gone with the env escape hatch it pointed to. Usage still documents the
+    // unrelated deprecated --force/--yes no-op flags.
     expect(r.stderr).not.toContain('migration advice')
-    expect(r.stderr).not.toContain('deprecated')
+    expect(r.stderr).not.toContain('--remote is deprecated')
     expect(r.stderr).not.toContain('[1/5]')
-    expect(r.stderr).not.toContain('[1/7]')
+    expect(r.stderr).not.toContain('[1/8]')
   })
 })
 
@@ -380,9 +382,9 @@ describe('P3-3 flag-combination conflicts', () => {
     expect(launcherFlagConflict({ force: true, repairBridge: true, yes: true })).toBe('repair-force')
   })
 
-  test('--yes without --force is rejected, but --repair-bridge --yes is the kill confirmation', () => {
+  test('--yes without --force is rejected, but --repair-bridge --yes is tolerated and ignored', () => {
     expect(launcherFlagConflict({ force: false, repairBridge: false, yes: true })).toBe('yes-without-force')
-    // Under --repair-bridge, --yes is intentionally allowed through.
+    // Under --repair-bridge, --yes is intentionally tolerated and ignored.
     expect(launcherFlagConflict({ force: false, repairBridge: true, yes: true })).toBeNull()
   })
 
@@ -403,12 +405,12 @@ describe('P3-3 flag-combination conflicts', () => {
     }
   })
 
-  test('bin integration: --yes alone warns once and keeps the existing usage exit code', () => {
+  test('bin integration: --yes alone is a usage error without a --force deprecation warning', () => {
     const r = spawnSync('node', [binPath, '--yes'], { encoding: 'utf8', timeout: 30_000 })
     expect(r.status).toBe(2)
     expect(r.stdout).toBe('')
     expect(r.stderr).toContain('dsh-opentui: --yes is only meaningful together with --force.')
-    expect(r.stderr.split('\n').filter((line) => line === RESERVED_FLAGS_WARNING)).toHaveLength(1)
+    expect(r.stderr.split('\n').filter((line) => line === RESERVED_FLAGS_WARNING)).toHaveLength(0)
     expect(r.stderr).not.toContain('[1/5]')
   })
 })
@@ -449,11 +451,12 @@ describe('formatUsage', () => {
     // env escape hatch (same assertion class as the --remote one).
     expect(usage).not.toContain('DSH_OPENTUI_INPROC')
     expect(usage).not.toContain('--remote')
-    // P1-A: the in-process-only build reserves these flags without promising
-    // the retired singleton-host reset or a dry-run-only exception.
+    // P1-A: the in-process-only build deprecates these no-op flags without
+    // promising the retired singleton-host reset or a dry-run-only exception.
     expect(usage).not.toContain('reset the singleton host')
-    expect(usage).toContain('reserved in this in-process-only build; currently does not kill or reset anything')
-    expect(usage).toContain('currently does not confirm or perform any kill/reset')
+    expect(usage).toContain('deprecated no-op; use --repair-bridge to clear stale instances; removed in the next minor release')
+    expect(usage).toContain('deprecated no-op; only accepted with --force; use --repair-bridge to clear stale instances; removed in the next minor release')
+    expect(usage).not.toContain('T12')
     // Exit codes are honest: provisioning failures are WARNs, not exit 1, and
     // the client's own code is passed through.
     expect(usage).toContain('  1  launcher startup failure')
@@ -594,7 +597,7 @@ describe('bin integration: usage errors fail before provisioning', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(r.stdout).toContain('Usage: dsh-opentui [options] [-- <client args>]')
-    expect(r.stdout).toContain('reserved in this in-process-only build; currently does not kill or reset anything')
+    expect(r.stdout).toContain('deprecated no-op; use --repair-bridge to clear stale instances; removed in the next minor release')
     expect(r.stdout).not.toContain('reset the singleton host')
     expect(r.stdout).not.toContain('[1/5]')
   })
@@ -714,7 +717,7 @@ describe('bin integration: async client spawn maps child exit code / signal (PR 
   beforeEach(() => { h = makeAsyncLauncherHarness() })
   afterEach(() => { rmSync(h.root, { recursive: true, force: true }) })
 
-  test('reserved --force/--yes warn once without changing the client exit code', () => {
+  test('deprecated --force/--yes warn once without changing the client exit code', () => {
     h.setBunShim('exit 42')
     // --yes is valid only with --force on the normal launch path. Supplying
     // both (in either order) must still produce exactly one warning.
@@ -724,6 +727,7 @@ describe('bin integration: async client spawn maps child exit code / signal (PR 
       expect(r.status).toBe(42)
       const warnings = r.stderr.split('\n').filter((line) => line === RESERVED_FLAGS_WARNING)
       expect(warnings).toHaveLength(args.length === 0 ? 0 : 1)
+      if (warnings.length > 0) expect(warnings[0]).toContain('--repair-bridge')
     }
   })
 

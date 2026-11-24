@@ -2,6 +2,7 @@
 
 Date: 2026-11-17
 Status: Accepted
+Update (2026-11-24): Historical only — the HTTP host is retired; decision 7's `--force`/`--yes` pairing requirement and SIGTERM → grace → SIGKILL shutdown sequence no longer apply to the in-process-only build.
 
 ## Context
 

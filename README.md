@@ -44,8 +44,16 @@ shipped bridge bundle is materialized as a real directory copy of this
 installation (no symlink, no copy of any `@deepseek-ai/*` package into the
 profile) and checked against a build-time fingerprint. The copy converges
 idempotently on every launch, so a damaged or stale bridge is replaced on the
-next start; `--repair-bridge` is still accepted for compatibility but is a
-no-op (a fingerprint mismatch still fails loud).
+next start. `--repair-bridge` is a terminal maintenance command: it kills this
+profile's stale instances (SIGTERM, then SIGKILL for survivors), reruns the
+provisioner in repair mode, and exits without launching the TUI. A fingerprint
+mismatch still fails loud.
+
+The legacy `--force` and `--yes` launcher flags are deprecated no-ops in this
+in-process-only build: `--yes` is accepted only alongside `--force`, and neither
+kills processes nor clears markers. Use `--repair-bridge` to clear stale
+instances and repair the bridge. Both flags will be removed in the next minor
+release.
 
 Run `dsh-opentui --help` for the full list of launcher options.
 
@@ -75,8 +83,10 @@ Every launch provisions one profile:
   bridge, the session shim, a host-version compatibility exemption, the
   approval gate, the inproc-only cordis patch and the companion set declared by
   `scripts/lib/companion-policy.mjs`. The bridge copy converges on every launch;
-  `--repair-bridge` is accepted but is a no-op. Companion versions resolve to
-  the registry `latest` within each catalog range and are never downgraded.
+  `--repair-bridge` clears this profile's stale instances, reruns provisioning
+  in repair mode, and exits without launching the TUI. Companion versions
+  resolve to the registry `latest` within each catalog range and are never
+  downgraded.
 - **SDK closure link** — the client still imports
   `@deepseek-ai/dsh-client-connection` at runtime (host label/lifecycle). That
   SDK is not on the public npm registry; it ships inside the globally-installed

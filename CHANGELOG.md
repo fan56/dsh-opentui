@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **`--force` and `--yes` are deprecated no-ops.** The in-process-only launcher
+  does not kill processes or clear markers with these legacy flags; use
+  `--repair-bridge` to clear stale instances and repair the bridge. Both flags
+  will be removed in the next minor release.
+
 ## [0.27.2] - 2026-11-24
 
 ### Changed

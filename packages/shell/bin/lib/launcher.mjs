@@ -1,6 +1,6 @@
 /**
  * Launcher support for bin/dsh-opentui.mjs — the pure parts behind the
- * `--version` / reserved `--force` / `--yes` flags.
+ * `--version` / deprecated `--force` / `--yes` flags.
  *
  * WHY A SEPARATE MODULE: the bin is a top-level script (importing it would
  * RUN it — provision, spawn, exit). Everything here is a pure function over
@@ -10,10 +10,10 @@
  * The capabilities:
  *   1. `--version` — print `dsh-opentui <version>` and exit 0, BEFORE any
  *      provision/profile work (see the bin's step 0).
- *   2. `--force` / `--yes` — reserved flags in this in-process-only build.
- *      They are parsed but currently do not kill or reset anything; the host
- *      cleanup behavior is scheduled for T12. Stale-instance cleanup remains
- *      a `--repair-bridge` maintenance action.
+ *   2. `--force` / `--yes` — deprecated no-ops in this in-process-only build.
+ *      They remain parsed for compatibility but do not kill or reset anything;
+ *      stale-instance cleanup belongs to `--repair-bridge`. Both flags will be
+ *      removed in the next minor release.
  *
  * SCOPE (requirement: never touch another profile's instances):
  * a candidate is "ours" only when BOTH hold:
@@ -89,8 +89,8 @@ export function parseLauncherArgs(argv) {
 			repairBridge = true
 			continue
 		}
-		// Reserved alongside `--force`; currently has no kill/reset side effect
-		// (T12). Consumed by the bin, never forwarded to dsh/the client.
+		// Deprecated alongside `--force`; no kill/reset side effect. Consumed by
+		// the bin, never forwarded to dsh/the client.
 		if (arg === '--yes') {
 			yes = true
 			continue
@@ -284,9 +284,9 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
  *
  * Returns a conflict code, or null when the combination is fine:
  *   'repair-force'      --repair-bridge + --force → mutually exclusive
- *   'yes-without-force' --yes without --force/--repair-bridge (under
- *                       --repair-bridge, --yes is tolerated — the repair branch
- *                       never reads it — and is intentionally allowed through)
+ *   'yes-without-force' --yes without --force (under
+ *                       --repair-bridge, --yes is tolerated and ignored — the
+ *                       repair branch never reads it — and is allowed through)
  */
 export function launcherFlagConflict({ force, repairBridge, yes } = {}) {
   if (repairBridge && force) return 'repair-force'
@@ -303,8 +303,8 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    reserved in this in-process-only build; currently does not kill or reset anything (T12)',
-		'  --yes                      reserved with --force in this in-process-only build; currently does not confirm or perform any kill/reset (T12)',
+		'  --force                    deprecated no-op; use --repair-bridge to clear stale instances; removed in the next minor release',
+		'  --yes                      deprecated no-op; only accepted with --force; use --repair-bridge to clear stale instances; removed in the next minor release',
 		'  --repair-bridge            kill stale instances, repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
