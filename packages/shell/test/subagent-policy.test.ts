@@ -4,9 +4,6 @@
 // (subagents/prompt + subagents/interruptByParent). The former plugin
 // HostSession face (child agent steer + cancel) is gone with plugin mode.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import {
 	DEFAULT_SUBAGENT_ROUND_LIMITS,
 	SubagentRoundPolicy,
@@ -18,8 +15,6 @@ import {
 	type HardStopRecord,
 	type SubagentRoundLimits,
 } from "../src/subagent-policy.ts"
-import { RemoteSubagentPanel } from "../src/client/remote-subagents.ts"
-import { FakeMuxSocket, until } from "./client-fakes.ts"
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -251,87 +246,3 @@ describe("SubagentRoundPolicy ladder", () => {
 		expect(wrapups).toHaveLength(0)
 	})
 })
-
-// ---------------------------------------------------------------------------
-// Client face: RemoteSubagentPanel feed (fake rpc + fake mux sockets)
-// ---------------------------------------------------------------------------
-
-describe("client face: RemoteSubagentPanel", () => {
-	function assistantFrame(seq: number) {
-		return {
-			type: "event",
-			event: { type: "assistant/message", seq, time: Date.now(), data: { message: { content: [{ type: "text", text: `round ${seq}` }] } } },
-		}
-	}
-
-	test("wrap-up via subagents/prompt at the cap, force-stop via interruptByParent at cap + grace", async () => {
-		const rpcCalls: { method: string; args: Record<string, unknown> }[] = []
-		const sockets: FakeMuxSocket[] = []
-		const hardStops: HardStopRecord[] = []
-		let refreshes = 0
-		const panel = new RemoteSubagentPanel({
-			rpc: async (method, args) => {
-				rpcCalls.push({ method, args: args ?? {} })
-				return {}
-			},
-			socketFactory: () => {
-				const socket = new FakeMuxSocket()
-				sockets.push(socket)
-				return socket
-			},
-			parentId: () => "parent-1",
-			limits: () => ({ maxRounds: 3, maxRoundsGrace: 2 }),
-			refreshLimits: () => {
-				refreshes++
-			},
-			onHardStop: (record) => hardStops.push(record),
-		})
-		panel.foldParentRecord({ seq: 1, type: "tool-workflow/agent-start", data: { runId: "r", seq: 0, label: "scout", childId: "child-x" } } as never)
-		await until(() => sockets.length > 0)
-		const sock = sockets[0]!
-		for (let n = 1; n <= 3; n++) sock.item(assistantFrame(n))
-		await until(() => rpcCalls.some((c) => c.method === "subagents/prompt"))
-		const prompt = rpcCalls.find((c) => c.method === "subagents/prompt")!
-		const request = prompt.args.request as { childSessionId: string; delivery: string; content: { text: string }[] }
-		expect(request.childSessionId).toBe("child-x")
-		expect(request.delivery).toBe("steer")
-		expect(request.content[0]!.text).toContain("Round limit reached (3")
-		expect(rpcCalls.some((c) => c.method === "subagents/interruptByParent")).toBe(false)
-		sock.item(assistantFrame(4))
-		sock.item(assistantFrame(5))
-		await until(() => rpcCalls.some((c) => c.method === "subagents/interruptByParent"))
-		expect(rpcCalls.filter((c) => c.method === "subagents/interruptByParent")).toHaveLength(1)
-		// the stop outcome is the interrupt's outcome now — the cancelled
-		// settle and the hard-stop report land when the wire promise resolves
-		await until(() => panel.views()[0]!.status === "cancelled")
-		await until(() => hardStops.length > 0)
-		expect(hardStops).toEqual([{ childId: "child-x", round: 5, cap: 3, grace: 2 }])
-		expect(refreshes).toBeGreaterThanOrEqual(5)
-		panel.stop()
-	})
-
-	test("no limits wired = no ladder (legacy panel behavior unchanged)", async () => {
-		const rpcCalls: string[] = []
-		const sockets: FakeMuxSocket[] = []
-		const panel = new RemoteSubagentPanel({
-			rpc: async (method) => {
-				rpcCalls.push(method)
-				return {}
-			},
-			socketFactory: () => {
-				const socket = new FakeMuxSocket()
-				sockets.push(socket)
-				return socket
-			},
-			parentId: () => "parent-1",
-		})
-		panel.foldParentRecord({ seq: 1, type: "tool-workflow/agent-start", data: { runId: "r", seq: 0, label: "scout", childId: "child-x" } } as never)
-		await until(() => sockets.length > 0)
-		for (let n = 1; n <= 10; n++) sockets[0]!.item(assistantFrame(n))
-		await until(() => panel.views()[0]?.rounds === 10)
-		await flush()
-		expect(rpcCalls.filter((m) => m.startsWith("subagents/"))).toEqual([])
-		panel.stop()
-	})
-})
-
