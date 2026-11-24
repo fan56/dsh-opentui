@@ -7,30 +7,30 @@
 // injectable executor for the same reason.
 //
 // Why this table exists: the inproc profile is deliberately minimal
-// (dsh-base + the in-process bridge + the bridge-owned approval gate). Adding
-// every @aiwayds companion "just in case" would pull client UI bundles into a
-// headless-ish profile and create new failure modes. Each candidate below is
-// judged by whether the inproc assembly has a CONSUMER for it; the ones without
-// one are listed explicitly with `defaultOn: false` and are opt-in only.
+// (dsh-base + the in-process bridge + the bridge-owned approval gate). The
+// default roster is the D2 user decision recorded on 2026-11-24; package specs
+// and version guards live here while the ordered default IDs live in
+// companion-policy.mjs.
 //
 // Reference precedent: dsh-tui-pi 2.38.2's `bin/companion-policy.mjs` +
 // `DSH_TUI_COMPANION_LATEST`. The switch name here follows the same style with
 // the opentui prefix.
 
 import { execFileSync } from 'node:child_process'
+import { DEFAULT_COMPANION_IDS } from './companion-policy.mjs'
 
 /** Master kill switch. Anything other than 0/false/off (including unset) = enabled. */
 export const COMPANION_LATEST_ENV = 'DSH_OPENTUI_COMPANION_LATEST'
-/** Opt-in list of additional companions (comma-separated short names or full package names). */
+/** Override list of companions (comma-separated catalog IDs or full package names). */
 export const COMPANIONS_ENV = 'DSH_OPENTUI_COMPANIONS'
 
 /**
  * The companion catalog.
  *
- * `short` is the token accepted by DSH_OPENTUI_COMPANIONS. `declaredRange` is
- * the caret range used ONLY as a breaking-version guard against a moved
+ * `short` is the catalog ID accepted by DSH_OPENTUI_COMPANIONS. `declaredRange`
+ * is the caret range used ONLY as a breaking-version guard against a moved
  * `latest` dist-tag (major, plus minor while still 0.x) — it is never
- * installed. `defaultOn` marks the minimal set.
+ * installed. `defaultOn` marks the D2 default roster.
  */
 export const COMPANIONS = Object.freeze([
   Object.freeze({
@@ -44,57 +44,71 @@ export const COMPANIONS = Object.freeze([
     name: '@aiwayds/dsh-ask-router',
     short: 'ask-router',
     declaredRange: '^0.7.0',
-    defaultOn: false,
-    reason: 'inproc owns the ask surface bridge-side (ask.request frames from packages/bridge/src/ask-registry.ts); no inproc row consumes @aiwayds/dsh-ask-router.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision to own the ask surface for companion UI bundles.',
   }),
   Object.freeze({
     name: '@aiwayds/dsh-approval-policy',
     short: 'approval-policy',
     declaredRange: '^0.3.0',
-    defaultOn: false,
-    reason: 'inproc uses its own bridge /approval-gate row plus @deepseek-ai/dsh-permission-presets; no consumer of the @aiwayds policy plugin.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision for tool-approval policy shared with shell approval cards.',
   }),
   Object.freeze({
     name: '@aiwayds/dsh-llm-net-retry',
     short: 'llm-net-retry',
     declaredRange: '^0.8.0',
-    defaultOn: false,
-    reason: 'dsh-base already mounts @deepseek-ai/dsh-llm-retry in the inproc assembly; a second retry layer has no consumer.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision to retry transient provider and network failures.',
   }),
   Object.freeze({
     name: '@aiwayds/dsh-model-sync',
     short: 'model-sync',
     declaredRange: '^0.9.0',
-    defaultOn: false,
-    reason: 'the inproc patch pins its own provider model list; nothing in the profile asks this plugin to sync it.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision to keep the profile model list in sync with the provider catalog.',
   }),
   Object.freeze({
     name: '@aiwayds/dsh-llm-stats',
     short: 'llm-stats',
     declaredRange: '^0.9.0',
-    defaultOn: false,
-    reason: 'token/cost accounting behind /usage; no /usage consumer exists in the inproc client path.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision for token and cost accounting behind /usage.',
   }),
   Object.freeze({
     name: '@aiwayds/dsh-mcp-adapter',
     short: 'mcp-adapter',
     declaredRange: '^0.8.0',
-    defaultOn: false,
-    reason: 'the inproc patch carries a mcp-context7 client row, but no inproc row consumes the adapter\'s mcp_list/mcp_call meta-tools; opt-in only.',
-  }),
-  Object.freeze({
-    name: '@aiwayds/dsh-web-search-anysearch',
-    short: 'web-search',
-    declaredRange: '^0.9.0',
-    defaultOn: false,
-    reason: 'tool-web is enabled in the inproc patch but no search provider is pinned; independent of delegation, opt-in only.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision for MCP catalog and dispatch meta-tools paired with the context7 server row.',
   }),
   Object.freeze({
     name: '@aiwayds/dsh-vault',
     short: 'vault',
     declaredRange: '^0.8.2',
-    defaultOn: false,
-    reason: 'secret storage; no consumer in the minimal inproc set.',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision for secret storage used by companion plugins.',
+  }),
+  Object.freeze({
+    name: '@aiwayds/dsh-web-search-anysearch',
+    short: 'web-search',
+    declaredRange: '^0.9.0',
+    defaultOn: true,
+    reason: 'retained by the D2 user decision for web search without a per-provider key.',
+  }),
+  Object.freeze({
+    name: '@aiwayds/dsh-topics-memory',
+    short: 'topics-memory',
+    declaredRange: '^0.26.0',
+    defaultOn: true,
+    reason: 'added by the D2 user decision for cross-session topic memory.',
+  }),
+  Object.freeze({
+    name: '@aiwayds/dsh-cron',
+    short: 'cron',
+    declaredRange: '^0.7.0',
+    defaultOn: true,
+    reason: 'added by the D2 user decision for scheduled prompts.',
   }),
 ])
 
@@ -109,14 +123,18 @@ export function companionLatestEnabled(env = process.env) {
  * The companions this launch should satisfy.
  * - master switch off => no companions at all (non-destructive: already
  *   installed packages are left in place, they are just not queried/installed)
- * - DSH_OPENTUI_COMPANIONS unset => the `defaultOn` set (registry only)
- * - explicit list => defaultOn set is replaced by the named entries;
+ * - DSH_OPENTUI_COMPANIONS unset => DEFAULT_COMPANION_IDS, in policy order
+ * - explicit list => default set is replaced by the named entries;
  *   `none` means empty, `all` means the whole catalog.
  */
 export function selectCompanions(env = process.env) {
   if (!companionLatestEnabled(env)) return []
   const raw = env[COMPANIONS_ENV]
-  if (raw === undefined || String(raw).trim() === '') return COMPANIONS.filter((entry) => entry.defaultOn)
+  if (raw === undefined || String(raw).trim() === '') {
+    return DEFAULT_COMPANION_IDS
+      .map((id) => COMPANIONS.find((entry) => entry.short === id))
+      .filter(Boolean)
+  }
   const tokens = String(raw).split(',').map((token) => token.trim()).filter(Boolean)
   if (tokens.includes('none')) return []
   if (tokens.includes('all')) return [...COMPANIONS]

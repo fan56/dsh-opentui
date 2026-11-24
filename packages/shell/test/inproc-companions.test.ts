@@ -3,13 +3,14 @@
  *
  * Pure: no network, no real profile, no process spawn. The policy module takes
  * its environment and registry answer as arguments; this file pins the
- * minimal-set decision, the kill switch, the opt-in list and the no-downgrade
+ * D2 default roster, the kill switch, the override list and the no-downgrade
  * / idempotence / breaking-version guards (major, plus minor in 0.x) that keep
  * a `latest` install safe.
  */
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_COMPANION_IDS } from '../scripts/lib/companion-policy.mjs'
 import {
   COMPANIONS,
   COMPANIONS_ENV,
@@ -24,11 +25,33 @@ const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', 
 const scriptSrc = readFileSync(SCRIPT, 'utf8')
 
 describe('inproc companion catalog', () => {
-  test('only the registry is default-on; every other candidate is explicitly justified and off', () => {
-    const defaults = COMPANIONS.filter((entry) => entry.defaultOn)
-    expect(defaults.map((entry) => entry.name)).toEqual(['@aiwayds/dsh-subagent-registry'])
-    for (const entry of COMPANIONS.filter((c) => !c.defaultOn)) {
+  test('policy IDs and default-on catalog IDs match exactly', () => {
+    const catalogIds = COMPANIONS.map((entry) => entry.short)
+    const defaultOnIds = COMPANIONS.filter((entry) => entry.defaultOn).map((entry) => entry.short)
+    expect(DEFAULT_COMPANION_IDS).toHaveLength(11)
+    expect(new Set(DEFAULT_COMPANION_IDS).size).toBe(DEFAULT_COMPANION_IDS.length)
+    expect([...DEFAULT_COMPANION_IDS].sort()).toEqual([...defaultOnIds].sort())
+    for (const id of DEFAULT_COMPANION_IDS) expect(catalogIds).toContain(id)
+  })
+
+  test('the eight former opt-ins plus topics-memory and cron are default-on', () => {
+    for (const id of DEFAULT_COMPANION_IDS.filter((id) => id !== 'registry')) {
+      expect(COMPANIONS.find((entry) => entry.short === id)?.defaultOn).toBe(true)
+    }
+    expect(COMPANIONS.find((entry) => entry.short === 'topics-memory')).toMatchObject({
+      name: '@aiwayds/dsh-topics-memory',
+      declaredRange: '^0.26.0',
+    })
+    expect(COMPANIONS.find((entry) => entry.short === 'cron')).toMatchObject({
+      name: '@aiwayds/dsh-cron',
+      declaredRange: '^0.7.0',
+    })
+  })
+
+  test('catalog reasons do not contradict the D2 default decision', () => {
+    for (const entry of COMPANIONS) {
       expect(entry.reason.length).toBeGreaterThan(20)
+      expect(entry.reason).not.toMatch(/opt-in only|no consumer/i)
       expect(entry.declaredRange).toMatch(/^\^\d+\.\d+\.\d+$/)
     }
   })
@@ -43,20 +66,28 @@ describe('inproc companion catalog', () => {
 })
 
 describe('companion selection + switch', () => {
+  test('default selection is exactly the D2 policy roster in policy order', () => {
+    const defaults = selectCompanions({}).map((entry) => entry.short)
+    expect(defaults).toEqual(DEFAULT_COMPANION_IDS)
+    expect(selectCompanions({ [COMPANIONS_ENV]: '' }).map((entry) => entry.short)).toEqual(DEFAULT_COMPANION_IDS)
+    expect(defaults).toContain('registry')
+    expect(defaults).not.toContain('workflow')
+  })
+
   test('unset or truthy master switch enables; 0/false/off disables', () => {
-    expect(selectCompanions({})).toHaveLength(1)
-    expect(selectCompanions({ [COMPANION_LATEST_ENV]: '' })).toHaveLength(1)
-    expect(selectCompanions({ [COMPANION_LATEST_ENV]: '1' })).toHaveLength(1)
+    expect(selectCompanions({})).toHaveLength(11)
+    expect(selectCompanions({ [COMPANION_LATEST_ENV]: '' })).toHaveLength(11)
+    expect(selectCompanions({ [COMPANION_LATEST_ENV]: '1' })).toHaveLength(11)
     for (const value of ['0', 'false', 'OFF', ' off ']) {
       expect(selectCompanions({ [COMPANION_LATEST_ENV]: value })).toEqual([])
     }
   })
 
-  test('DSH_OPENTUI_COMPANIONS opt-in list replaces the default set; none/all are honoured', () => {
+  test('DSH_OPENTUI_COMPANIONS override list replaces the default set; none/all are honoured', () => {
     expect(selectCompanions({ [COMPANIONS_ENV]: 'llm-stats' }).map((c) => c.short)).toEqual(['llm-stats'])
     expect(selectCompanions({ [COMPANIONS_ENV]: 'registry, llm-stats' }).map((c) => c.short)).toEqual(['registry', 'llm-stats'])
     expect(selectCompanions({ [COMPANIONS_ENV]: 'none' })).toEqual([])
-    expect(selectCompanions({ [COMPANIONS_ENV]: 'all' })).toHaveLength(COMPANIONS.length)
+    expect(selectCompanions({ [COMPANIONS_ENV]: 'all' }).map((c) => c.short)).toEqual(COMPANIONS.map((c) => c.short))
     // Full package names are accepted too.
     expect(selectCompanions({ [COMPANIONS_ENV]: '@aiwayds/dsh-vault' }).map((c) => c.short)).toEqual(['vault'])
   })

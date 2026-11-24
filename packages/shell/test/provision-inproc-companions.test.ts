@@ -21,9 +21,18 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { COMPANIONS } from '../scripts/lib/inproc-companions.mjs'
+import { DEFAULT_COMPANION_IDS } from '../scripts/lib/companion-policy.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
 const REGISTRY = '@aiwayds/dsh-subagent-registry'
+const DEFAULT_COMPANIONS = DEFAULT_COMPANION_IDS
+  .map((id) => COMPANIONS.find((entry) => entry.short === id))
+  .filter(Boolean)
+const LATEST_BY_NAME = Object.fromEntries(
+  DEFAULT_COMPANIONS.map((entry) => [entry.name, entry.declaredRange.slice(1)]),
+)
+const DEFAULT_SPECS = DEFAULT_COMPANIONS.map((entry) => `${entry.name}@${LATEST_BY_NAME[entry.name]}`)
 const tempDirs: string[] = []
 
 const STUB_DSH = `#!/usr/bin/env node
@@ -61,7 +70,9 @@ process.exit(0)
 `
 const STUB_NPM = `#!/usr/bin/env node
 if (process.env.DSH_STUB_NPM_FAIL === '1') { console.error('offline stub'); process.exit(1) }
-process.stdout.write(JSON.stringify({ latest: process.env.DSH_STUB_LATEST || '0.21.0' }) + '\\n')
+const latestByPkg = ${JSON.stringify(LATEST_BY_NAME)}
+const name = process.argv[3]
+process.stdout.write(JSON.stringify({ latest: process.env.DSH_STUB_LATEST || latestByPkg[name] || '0.21.0' }) + '\\n')
 `
 // A `which` stub that never finds its target: putting this first on PATH
 // deterministically simulates a host with no global `dsh`, independent of
@@ -121,16 +132,18 @@ afterEach(() => {
 })
 
 describe('provision-inproc-profile.mjs companion step (spawned, offline)', () => {
-  test('fresh profile: installs the registry at the resolved latest and records a consistent manifest', () => {
+  test('fresh profile: installs the D2 default companions at their resolved latest versions', () => {
     const fx = fixture()
     const run = provision(fx)
     expect(run.exitCode).toBe(0)
-    expect(text(run.stdout)).toContain('[4/7] companions — installed 1 of 1')
-    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${REGISTRY}@0.21.0`])
+    expect(text(run.stdout)).toContain('[4/7] companions — installed 11 of 11')
+    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${DEFAULT_SPECS.join(' ')}`])
     const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8'))
-    expect(manifest.dependencies[REGISTRY]).toBe('0.21.0')
-    expect(manifest.dsh.profile.bundles).toContain(REGISTRY)
-    expect(existsSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...REGISTRY.split('/'), 'package.json'))).toBe(true)
+    for (const entry of DEFAULT_COMPANIONS) {
+      expect(manifest.dependencies[entry.name]).toBe(LATEST_BY_NAME[entry.name])
+      expect(manifest.dsh.profile.bundles).toContain(entry.name)
+      expect(existsSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...entry.name.split('/'), 'package.json'))).toBe(true)
+    }
   })
 
   test('second run is idempotent: no second install, no manifest rewrite', () => {
@@ -140,7 +153,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const manifestBefore = readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')
     const second = provision(fx)
     expect(second.exitCode).toBe(0)
-    expect(text(second.stdout)).toContain('already satisfied (1/1)')
+    expect(text(second.stdout)).toContain('already satisfied (11/11)')
     expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
     expect(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')).toBe(manifestBefore)
   })
@@ -161,7 +174,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const run = provision(fx, { DSH_STUB_ADD_FAIL: '1' })
     expect(run.exitCode).toBe(0)
     expect(text(run.stderr)).toContain('companions are optional')
-    expect(text(run.stdout)).toContain('installed 0 of 1')
+    expect(text(run.stdout)).toContain('installed 0 of 11')
   })
 
   test('no global dsh on PATH degrades to WARN-skip and still yields a usable profile', () => {
@@ -240,11 +253,12 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(text(run.stderr)).toContain(REGISTRY)
   })
 
-  test('an unresolved registry answer uses the @latest fallback on a fresh profile', () => {
+  test('unresolved registry answers use the @latest fallback for the full default roster', () => {
     const fx = fixture()
     const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
     expect(run.exitCode).toBe(0)
-    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${REGISTRY}@latest`])
+    const specs = DEFAULT_COMPANIONS.map((entry) => `${entry.name}@latest`)
+    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${specs.join(' ')}`])
   })
 })
 
