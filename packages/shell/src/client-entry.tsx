@@ -15,7 +15,14 @@
  * The solid transform (`@opentui/solid`'s bun preload) is installed by the
  * ROOT LAUNCHER's `--preload` flag, not by an import here.
  */
+import { defaultDshHome } from "./client/append-system.ts"
+import { installClientErrorLog } from "./client/boot-shared.ts"
+
 async function main(): Promise<void> {
+	// Last-resort async-error sink: unhandled rejections / uncaught exceptions
+	// land in $DSH_HOME/opentui-client.errors.log before the process dies.
+	// Restored after T9 removed the old bootClient() that installed it.
+	installClientErrorLog(defaultDshHome())
 	try {
 		// Computed specifier: opaque to tsc while bun resolves it relative
 		// to this file through the normal loader.

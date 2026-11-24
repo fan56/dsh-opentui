@@ -5,10 +5,10 @@ import {
 	skinMigrationPlan,
 	themeModeFromConfig,
 } from "../src/client/boot-shared.ts"
-import type { ShellSessionSurface } from "../src/client/shell-session.ts"
+import type { BridgeSessionSeam } from "../src/client/bridge-session-seam.ts"
 
-function fakeSession(config: Record<string, unknown>): ShellSessionSurface {
-	return { configLoad: () => config } as unknown as ShellSessionSurface
+function fakeSession(config: Record<string, unknown>): BridgeSessionSeam {
+	return { configLoad: () => config } as unknown as BridgeSessionSeam
 }
 
 describe("skin migration plan (α skin layer, one-shot, layered)", () => {
@@ -78,7 +78,7 @@ describe("themeModeFromConfig (α skin layer, auto/dark/light)", () => {
 	})
 
 	test("a throwing configLoad degrades to auto", () => {
-		const throwing = { configLoad: () => { throw new Error("no host") } } as unknown as ShellSessionSurface
+		const throwing = { configLoad: () => { throw new Error("no host") } } as unknown as BridgeSessionSeam
 		expect(themeModeFromConfig(throwing)).toBeUndefined()
 	})
 })

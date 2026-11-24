@@ -5,7 +5,7 @@
 // synthetic output and the real `ps` on this machine.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { constants as osConstants, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,23 +21,11 @@ import {
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
-  prelaunchFailurePolicy,
   readLauncherVersion,
   selectStaleProcesses,
   validateLauncherArgs,
 } from '../bin/lib/launcher.mjs'
 import { CLI_LAUNCH_FLAGS } from '../../tui-base/src/routes/session/auto-resume.ts'
-import {
-  DEFAULT_CONNECT_TIMEOUT_MS,
-  DEFAULT_READINESS_TIMEOUT_MS,
-  DEFAULT_SERVE_PROBE_BUDGET_MS,
-  ENV_BOOT_TIMEOUT_MS,
-  ENV_CONNECT_TIMEOUT_MS,
-  ENV_MUX_TIMEOUT_MS,
-  resolveBootTimeoutMs,
-  resolveConnectTimeoutMs,
-  resolveMuxTimeoutMs,
-} from '../src/client/lifecycle.ts'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const binPath = join(pkgRoot, 'bin', 'dsh-opentui.mjs')
@@ -664,88 +652,15 @@ describe('bin integration: usage errors fail before provisioning', () => {
   })
 })
 
-// The client-side resolvers share the launcher's env contract. `Number()` on
-// its own also accepts hex/exponent/separator spellings that are NOT valid
-// millisecond budgets, so each env value must pass a plain-decimal gate first.
-describe('timeout env parsing rejects non-decimal Number() spellings', () => {
-  const resolvers = [
-    {
-      name: 'resolveBootTimeoutMs',
-      env: ENV_BOOT_TIMEOUT_MS,
-      def: DEFAULT_READINESS_TIMEOUT_MS,
-      fn: resolveBootTimeoutMs,
-    },
-    {
-      name: 'resolveMuxTimeoutMs',
-      env: ENV_MUX_TIMEOUT_MS,
-      def: DEFAULT_SERVE_PROBE_BUDGET_MS,
-      fn: resolveMuxTimeoutMs,
-    },
-    {
-      name: 'resolveConnectTimeoutMs',
-      env: ENV_CONNECT_TIMEOUT_MS,
-      def: DEFAULT_CONNECT_TIMEOUT_MS,
-      fn: resolveConnectTimeoutMs,
-    },
-  ]
-  const saved = new Map<string, string | undefined>()
-
-  beforeEach(() => {
-    for (const r of resolvers) {
-      saved.set(r.env, process.env[r.env])
-      delete process.env[r.env]
-    }
-  })
-
-  afterEach(() => {
-    for (const r of resolvers) {
-      const value = saved.get(r.env)
-      if (value === undefined) delete process.env[r.env]
-      else process.env[r.env] = value
-    }
-  })
-
-  for (const r of resolvers) {
-    for (const bad of ['0x1D', '30e2', '1_000']) {
-      test(`${r.name}: env '${bad}' falls back to the default`, () => {
-        process.env[r.env] = bad
-        expect(r.fn()).toBe(r.def)
-      })
-    }
-  }
-})
-
-describe('prelaunchFailurePolicy — --force never silently degrades to a no-op (P1-5)', () => {
-  const needsYes = Object.assign(new Error('will disconnect 2 live clients'), { code: 'force-needs-yes' })
-
-  test('force-needs-yes is always a usage error (exit 2), force or not', () => {
-    expect(prelaunchFailurePolicy(needsYes, false)).toBe('usage-error')
-    expect(prelaunchFailurePolicy(needsYes, true)).toBe('usage-error')
-  })
-
-  test('any other pre-launch failure under --force is a hard abort (exit 1)', () => {
-    for (const err of [
-      new Error('Cannot find module .../dist/host-launch.mjs'),
-      new TypeError('ensureLaunchHost is not a function'),
-      'string rejection',
-    ]) {
-      expect(prelaunchFailurePolicy(err, true)).toBe('abort')
-    }
-  })
-
-  test('without --force the same failure stays best-effort (warn)', () => {
-    expect(prelaunchFailurePolicy(new Error('ENOENT'), false)).toBe('warn')
-  })
-})
-
 // ---- bin integration: async client spawn exit mapping (PR B) -------------
 // Exercise the launcher's real `spawn('bun', …)` path end to end. To avoid a
 // real host (and any dependence on a globally installed dsh), copy the bin +
 // its lib into a throwaway package root, stub the two filesystem gates
 // (dist/client/index.js and the SDK link), put a fake `dsh` and a controllable
-// fake `bun` first on PATH, and pass `--dry-run` so step 6a host pre-launch is
-// skipped. The subject under test is the launcher's exit-code mapping of the
-// child's outcome, so only the fake bun's exit code / signal death matters.
+// fake `bun` first on PATH, and pass `--dry-run` (there is no HTTP host
+// pre-launch any more; the flag is simply forwarded). The subject under test
+// is the launcher's exit-code mapping of the child's outcome, so only the
+// fake bun's exit code / signal death matters.
 function makeAsyncLauncherHarness() {
   const root = mkdtempSync(join(tmpdir(), 'dsh-launcher-async-'))
   const tmpBinDir = join(root, 'bin')
@@ -765,6 +680,11 @@ function makeAsyncLauncherHarness() {
   const sdkDir = join(root, 'node_modules', '@deepseek-ai', 'dsh-client-connection')
   mkdirSync(sdkDir, { recursive: true })
   writeFileSync(join(sdkDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-client-connection', version: '0.0.0' }))
+  // The copied scripts/ tree imports `yaml` and `@deepseek-ai/cordis`; link
+  // them from this package's installed node_modules so step-3b provisioning
+  // resolves them (the throwaway root has no manifest deps of its own).
+  symlinkSync(join(pkgRoot, 'node_modules', 'yaml'), join(root, 'node_modules', 'yaml'), 'dir')
+  symlinkSync(join(pkgRoot, 'node_modules', '@deepseek-ai', 'cordis'), join(root, 'node_modules', '@deepseek-ai', 'cordis'), 'dir')
 
   const shimDir = join(root, 'shim')
   mkdirSync(shimDir)

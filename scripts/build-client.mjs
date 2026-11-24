@@ -34,14 +34,9 @@
  *   where a closure symlink makes the package resolvable at build time. At
  *   runtime the bin (bin/dsh-opentui.mjs) bridges resolution by symlinking
  *   the SDK from the global dsh closure into the package's node_modules.
- * - The idle reaper spawn resolves `join(import.meta.dir, "../scripts",
- *   "idle-reaper.mjs")` first (in the bundle that is dist/scripts/, so the
- *   reaper script is copied there); from the source tree it falls back to
- *   `../../scripts/idle-reaper.mjs` (src/client/ → <pkg>/scripts/).
- *
  * The output is gitignored (root .gitignore: dist/).
  */
-import { copyFileSync, cpSync, mkdirSync, readFileSync } from "node:fs"
+import { cpSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -184,11 +179,6 @@ if (!result.success) {
   process.exit(1)
 }
 
-// The bundle's import.meta.dir is dist/client -> the reaper path becomes
-// dist/scripts/idle-reaper.mjs; ship it there.
-mkdirSync(join(shellDir, "dist", "scripts"), { recursive: true })
-copyFileSync(join(shellDir, "scripts", "idle-reaper.mjs"), join(shellDir, "dist", "scripts", "idle-reaper.mjs"))
-
 // Ship the locale tables: registry.ts's bundledLocalesDir() walks UP from the
 // bundle's directory looking for locales/en.json — from dist/client it checks
 // dist/client/locales then dist/locales, so a copy of packages/i18n/locales
@@ -212,46 +202,3 @@ if (leaked.length > 0) {
   console.error("[build-client] bundle still contains computed dynamic import(s):", [...new Set(leaked)])
   process.exit(1)
 }
-
-// --- T3a: launcher-side host orchestration bundle --------------------------
-// bin/dsh-opentui.mjs is plain node ESM and cannot import the .ts sources;
-// it lazily imports THIS bundle to pre-launch/adopt the host and render the
-// `spawn → booting → ready + elapsed` progress BEFORE the bun client takes the
-// TTY into its alternate screen. Separate entry (client bundle stays intact),
-// target "node" to match the bin's runtime. Bare deps stay external so they
-// resolve from the package's own node_modules at runtime.
-const hostLaunchOut = join(shellDir, "dist", "host-launch.mjs")
-const hostLaunchResult = await Bun.build({
-  entrypoints: [join(shellDir, "src", "client", "host-launch.ts")],
-  target: "node",
-  format: "esm",
-  outdir: join(shellDir, "dist"),
-  naming: "host-launch.mjs",
-  sourcemap: "linked",
-  external: ["ws", "@opentui/core", "@deepseek-ai/dsh-client-connection", "@aiwayds/dsh-jev-core"],
-})
-if (!hostLaunchResult.success) {
-  for (const log of hostLaunchResult.logs) console.error(log)
-  process.exit(1)
-}
-console.log(`[build-client] built ${hostLaunchOut}`)
-
-// --- T3b: detached all-crash watchdog bundle -------------------------------
-// The client spawns this detached node process (see spawnWatchdog) to reclaim a
-// host whose clients all crashed without a clean exit. Separate entry so the
-// launcher/host-launch path stays lean; all logic lives in client-lifecycle.ts.
-const watchdogOut = join(shellDir, "dist", "watchdog.mjs")
-const watchdogResult = await Bun.build({
-  entrypoints: [join(shellDir, "src", "client", "watchdog-cli.ts")],
-  target: "node",
-  format: "esm",
-  outdir: join(shellDir, "dist"),
-  naming: "watchdog.mjs",
-  sourcemap: "linked",
-  external: ["ws", "@opentui/core", "@deepseek-ai/dsh-client-connection", "@aiwayds/dsh-jev-core"],
-})
-if (!watchdogResult.success) {
-  for (const log of watchdogResult.logs) console.error(log)
-  process.exit(1)
-}
-console.log(`[build-client] built ${watchdogOut}`)

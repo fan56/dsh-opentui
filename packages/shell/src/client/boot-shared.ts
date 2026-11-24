@@ -37,16 +37,13 @@ export function installExitPaths(
 	}
 }
 
-/** The lockfile lifecycle.ts maintains for the resident host (same
- * `<dshHome>/opentui-host.<profile>.json` contract — the reaper re-reads
- * it to detect a host replacement). */
+/** The lockfile path for the resident host
+ * (`<dshHome>/opentui-host.<profile>.json`). */
 export function hostLockPath(dshHome: string, profile: string): string {
 	return join(dshHome, `opentui-host.${profile}.json`)
 }
 
-/** Client error-log path (idle-reaper convention:
- * `<dshHome>/opentui-host.idle.log` → the client mirrors it as
- * `<dshHome>/opentui-client.errors.log`). */
+/** Client error-log path (`<dshHome>/opentui-client.errors.log`). */
 export function clientErrorLogPath(dshHome: string): string {
 	return join(dshHome, "opentui-client.errors.log")
 }
@@ -99,71 +96,8 @@ export function installClientErrorLog(
 	})
 }
 
-/** Detached idle-exit hand-off (decision 5): see scripts/idle-reaper.mjs.
- * `idleMs` is the window after the LAST client disconnect; the reaper
- * survives this process, cancels itself if a client re-attaches inside the
- * window, escalates a stuck SIGTERM to SIGKILL, appends one
- * `reason=idle` log line, and clears the lockfile only while it still
- * describes this host. */
-export interface IdleReaperArgs {
-	pid: number
-	port: number
-	lockPath: string
-	idleMs: number
-}
-
-/** Resolution of the reaper script across the two layouts this module runs
- * in: the built bundle (`dist/client/index.js` → `dist/scripts/`, the
- * packaged copy the bin ships) and the source tree (`src/client/` →
- * `<pkg>/scripts/`, what tests and the --v2 dev entry import). Throws when
- * neither exists so the spawn failure is reported instead of silently
- * orphaning the host. */
-export function resolveReaperScript(): string {
-	const candidates = [
-		join(import.meta.dir, "..", "scripts", "idle-reaper.mjs"),
-		join(import.meta.dir, "..", "..", "scripts", "idle-reaper.mjs"),
-	]
-	for (const candidate of candidates) {
-		if (existsSync(candidate)) return candidate
-	}
-	throw new Error(`idle-reaper.mjs not found (looked in: ${candidates.join(", ")})`)
-}
-
-export function defaultSpawnReaper(args: IdleReaperArgs): void {
-	const script = resolveReaperScript()
-	const child = spawn(process.execPath, [script, String(args.pid), String(args.port), args.lockPath, String(args.idleMs)], {
-		detached: true,
-		stdio: "ignore",
-	})
-	child.unref?.()
-}
-
-/** Reaper hand-off wrapper (client-entry parity; injectable seam kept for
- * the old entry's tests). `idleMs` is already resolved (see lifecycle.ts
- * `resolveIdleExitMs`); a non-positive window never spawns a reaper. */
-export function spawnIdleReaper(
-	host: { pid: number; port: number; dshHome: string; profile: string; refCount: number },
-	idleMs: number,
-	spawnReaper: (args: IdleReaperArgs) => void = defaultSpawnReaper,
-): void {
-	if (!(idleMs > 0)) return
-	try {
-		spawnReaper({
-			pid: host.pid,
-			port: host.port,
-			lockPath: hostLockPath(host.dshHome, host.profile),
-			idleMs,
-		})
-	} catch (error) {
-		// reaper spawn is best-effort: the fallback state is the documented
-		// v1 limit (a resident host the next client adopts via the lockfile)
-		console.error("[client-entry] idle reaper spawn failed:", error)
-	}
-}
-
 import { join } from "node:path"
-import { appendFileSync, existsSync } from "node:fs"
-import { spawn } from "node:child_process"
+import { appendFileSync } from "node:fs"
 import { ENV_THEME } from "./workspace-config.ts"
 
 /** The theme ShellHost boots with: configLoad().theme (post-start, so the

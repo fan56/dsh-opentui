@@ -8,8 +8,7 @@
 //      route), `say ok` answers, the 🧠 context segment increases.
 //   b. Multi-TUI attach — a second client in a second tmux session JOINS
 //      the same host (same pid via the single-instance lockfile; exactly
-//      one host process); both quit → the host exits after the idle grace
-//      (the detached idle-reaper path).
+//      one host process); both quit → the host exits after the idle grace.
 //   c. Crash-recovery adoption — kill -9 client 1's bun process → the host
 //      survives → client 2 boots and ADOPTS the existing host (lockfile
 //      pid unchanged, no respawn) → clean quit → full teardown.
@@ -599,8 +598,8 @@ const scenarioB = async () => {
     const q2 = await quitClient(n2)
     notes.push(`quits: client1=${q1} client2=${q2}`)
 
-    // the idle-reaper path: the last quit spawned the detached reaper with
-    // the 5s window (DSH_OPENTUI_HOST_IDLE_MS) — the host exits inside ~5-10s
+    // after both clients quit, wait for the host to exit after the idle grace
+    // (DSH_OPENTUI_HOST_IDLE_MS) — bounded by the wait below
     const hostGone = await waitPidGone(lock1.pid, 110_000)
     const lockAfter = readLock()
     notes.push(`host dead after grace=${hostGone} · lockfile now: ${lockAfter ? `pid=${lockAfter.pid}` : 'gone'}`)
