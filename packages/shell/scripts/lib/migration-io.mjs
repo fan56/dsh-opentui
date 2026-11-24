@@ -9,19 +9,27 @@
  *   readMigrationInputs({ dshHome, profileDir, templatePatchText })
  *     -> { markerExists, marker, inprocPatchText, opentuiPatchText,
  *          opentuiConfigText, opentuiKeybindingsText, opentuiProviderKeysText }
- *   applyMigrationPlan({ profileDir, plan, version, now = new Date() })
+ *   applyMigrationPlan({ profileDir, plan, version, now = new Date(), backupsOnly = false, skipBackups = false })
  *     -> { wroteConfig, wroteKeybindings, backupsWritten, markerWritten, notices }
  *
  * Hard rules:
  *  - readMigrationInputs is read-only and creates no directory;
+ *  - marker present on entry => the legacy files are NEVER read (an EACCES /
+ *    EISDIR artifact must not break an already-migrated machine's startup);
  *  - invalid config/keybindings payloads are NOT written to the active files;
  *  - marker is written LAST; any write failure throws before the marker;
+ *  - backupsOnly writes ONLY backups (wroteConfig / wroteKeybindings /
+ *    markerWritten all stay false) — used to snapshot the source before
+ *    converge rewrites it when source B is the target profile;
+ *  - skipBackups leaves an existing snapshot untouched on crash re-entry while
+ *    still writing config / keybindings / marker;
  *  - marker present on entry => immediate no-op (no overwrite, no notice replay);
  *  - every write is tmp+rename in the target's own directory, mode 0600 for
  *    active files / marker / provider-keys backup, 0644 for other backups;
  *  - equal content is skipped (no mtime churn); a differing backup rotates a
  *    single `.bak` before being overwritten;
- *  - no console output — notices are returned for the caller to print.
+ *  - no console output — notices are returned for the caller to print. A
+ *    "已备份" claim is dropped unless a matching backup file exists.
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -80,6 +88,29 @@ function markerDigest(marker, backups) {
 }
 
 /**
+ * A printed notice must match what is actually on disk. The planner emits an
+ * "已备份" claim in its invalid config/keybindings notices, but those payloads
+ * are never part of `plan.backups` (only patches and provider-keys are) and no
+ * backup file is written for them. Drop the false claim in that case; genuine
+ * patch / provider-keys backup notices keep their exact wording.
+ */
+function honestBackupNotices(notices, plan, profileDir) {
+  const backedKinds = new Set(
+    (Array.isArray(plan.backups) ? plan.backups : []).map((entry) => entry && entry.kind),
+  )
+  return notices.map((notice) => {
+    if (typeof notice !== 'string') return notice
+    let text = notice
+    for (const name of ['config.json', 'keybindings.json']) {
+      if (backedKinds.has(name)) continue
+      if (typeof profileDir === 'string' && existsSync(join(profileDir, BACKUP_DIR, `opentui-${name}`))) continue
+      text = text.replace(`${name} 解析失败：已备份、`, `${name} 解析失败：`)
+    }
+    return text
+  })
+}
+
+/**
  * Read everything the planner needs. No directory creation, no writes.
  * A missing file yields `undefined` for that field; a corrupt marker still sets
  * `markerExists: true` but yields `marker: undefined` (safe direction: block).
@@ -89,10 +120,23 @@ export function readMigrationInputs({ dshHome, profileDir, templatePatchText } =
   const markerExists = existsSync(mp)
   let marker
   if (markerExists) {
+    // Migration is already done: do NOT open ANY legacy file. A source that
+    // turned into a directory (EISDIR), lost its read bit (EACCES) or holds a
+    // half-written payload must never make every later start fail. A corrupt
+    // marker takes the same safe route (marker: undefined => planner no-op).
     try {
       marker = JSON.parse(readFileSync(mp, 'utf8'))
     } catch {
       marker = undefined
+    }
+    return {
+      markerExists: true,
+      marker,
+      inprocPatchText: undefined,
+      opentuiPatchText: undefined,
+      opentuiConfigText: undefined,
+      opentuiKeybindingsText: undefined,
+      opentuiProviderKeysText: undefined,
     }
   }
   const legacy = (name) => join(dshHome, 'profiles', name)
@@ -114,8 +158,8 @@ export function readMigrationInputs({ dshHome, profileDir, templatePatchText } =
  * config / keybindings / backups leaves no marker and the next call re-runs.
  * Files already holding the exact payload are skipped (idempotent re-entry).
  */
-export function applyMigrationPlan({ profileDir, plan = {}, version, now = new Date() } = {}) {
-  const notices = Array.isArray(plan.notices) ? [...plan.notices] : []
+export function applyMigrationPlan({ profileDir, plan = {}, version, now = new Date(), backupsOnly = false, skipBackups = false } = {}) {
+  const notices = honestBackupNotices(Array.isArray(plan.notices) ? plan.notices : [], plan, profileDir)
   const result = {
     wroteConfig: false,
     wroteKeybindings: false,
@@ -130,24 +174,28 @@ export function applyMigrationPlan({ profileDir, plan = {}, version, now = new D
   }
 
   // ---- active config / keybindings (invalid payloads are never activated) --
-  const active = [
-    ['wroteConfig', plan.config, 'config.json'],
-    ['wroteKeybindings', plan.keybindings, 'keybindings.json'],
-  ]
-  if (active.some(([, payload]) => payload && payload.invalid !== true && typeof payload.text === 'string')) {
-    ensureProfileDir(profileDir)
-  }
-  for (const [flag, payload, name] of active) {
-    if (!payload || payload.invalid === true || typeof payload.text !== 'string') continue
-    const target = join(profileDir, name)
-    if (readTextIfExists(target) === payload.text) continue
-    atomicWrite(target, payload.text, 0o600)
-    result[flag] = true
+  // backupsOnly snapshots the source BEFORE converge rewrites it; it must not
+  // activate any payload, so these flags stay false on that path.
+  if (!backupsOnly) {
+    const active = [
+      ['wroteConfig', plan.config, 'config.json'],
+      ['wroteKeybindings', plan.keybindings, 'keybindings.json'],
+    ]
+    if (active.some(([, payload]) => payload && payload.invalid !== true && typeof payload.text === 'string')) {
+      ensureProfileDir(profileDir)
+    }
+    for (const [flag, payload, name] of active) {
+      if (!payload || payload.invalid === true || typeof payload.text !== 'string') continue
+      const target = join(profileDir, name)
+      if (readTextIfExists(target) === payload.text) continue
+      atomicWrite(target, payload.text, 0o600)
+      result[flag] = true
+    }
   }
 
   // ---- backups (copy into the new profile; old profiles stay untouched) ----
   const backups = Array.isArray(plan.backups) ? plan.backups : []
-  if (backups.length > 0) {
+  if (backups.length > 0 && !skipBackups) {
     const dir = join(profileDir, BACKUP_DIR)
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     for (const entry of backups) {
@@ -163,7 +211,7 @@ export function applyMigrationPlan({ profileDir, plan = {}, version, now = new D
   }
 
   // ---- marker: last write, and only when the planner allows it -------------
-  if (plan.marker && plan.canWriteMarker === true) {
+  if (!backupsOnly && plan.marker && plan.canWriteMarker === true) {
     ensureProfileDir(profileDir)
     const record = {
       from: plan.marker.from,

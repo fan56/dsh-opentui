@@ -260,6 +260,36 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     const specs = DEFAULT_COMPANIONS.map((entry) => `${entry.name}@latest`)
     expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${specs.join(' ')}`])
   })
+
+  test('version mismatch produces ONE summary WARN naming every skipped companion in roster order', () => {
+    const fx = fixture()
+    const run = provision(fx, { DSH_STUB_LATEST: '1.0.0' })
+    expect(run.exitCode).toBe(0)
+    const summaryLines = text(run.stderr).split('\n').filter((line) =>
+      line.includes('companion(s) skipped (version query failed or outside declared range)'))
+    expect(summaryLines).toHaveLength(1)
+    expect(summaryLines[0]).toContain('11 companion(s)')
+    expect(summaryLines[0]).toContain(DEFAULT_COMPANION_IDS.join(', '))
+    expect(stubCalls(fx)).toEqual([])
+  })
+
+  test('a failed registry query is skipped in one WARN while the @latest fallback still installs', () => {
+    const fx = fixture()
+    const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stdout)).toContain('[4/7] companions — installed 11 of 11')
+    const summaryLines = text(run.stderr).split('\n').filter((line) =>
+      line.includes('companion(s) skipped (version query failed or outside declared range)'))
+    expect(summaryLines).toHaveLength(1)
+    expect(summaryLines[0]).toContain(DEFAULT_COMPANION_IDS.join(', '))
+  })
+
+  test('all-version-success path emits no skip summary WARN', () => {
+    const fx = fixture()
+    const run = provision(fx)
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stderr)).not.toContain('companion(s) skipped (version query failed')
+  })
 })
 
 /**

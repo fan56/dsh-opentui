@@ -139,7 +139,8 @@ import {
   COMPANIONS,
   COMPANION_LATEST_ENV,
   decideCompanionInstall,
-  queryDistTagLatest,
+  formatSkippedCompanionsWarning,
+  queryDistTagLatestBatch,
   selectCompanions,
 } from './lib/inproc-companions.mjs'
 
@@ -646,10 +647,14 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
   config:
     enabled: true
 
-# D2: host-writable approval window (design 06 §5.2 / L1). Append at the END so
-# the ledger-anchored approval-gate block keeps its line number (R13 already
-# added one line above it). origins is intentionally not written: its default
-# stays empty and is host-owned.
+# D2: approval-policy windowSeconds:300 (design 06 §5.2 / L1). Append at END to
+# keep approval-gate line anchors. windowSeconds defaults to 60 (range 0-86400,
+# volatile); 0 skips forwarding and immediately adopts defaultOutcome. The
+# explicit 300 below is intentional. defaultOutcome (default 'rejected', or
+# 'unavailable') applies only on timeout; an earlier downstream outcome wins.
+# When origins is unset, the plugin uses ['subagent','scheduled'] by default;
+# schedule is scheduled, cron needs explicit opt-in, and human steer returns to
+# the interactive path.
 - insert:
     - id: dsh-approval-policy
       name: '@aiwayds/dsh-approval-policy'
@@ -663,10 +668,16 @@ const PATCH_CONTENT = `${PATCH_HEADER}${PATCH_TEMPLATE}`
 // Testability seam for scratch-HOME migration tests: the shipped name constant
 // stays authoritative in production; an explicit override keeps the two legacy
 // source dirs (opentui / opentui-inproc) separate and provably read-only.
+// P1-3: the override requires NODE_ENV=test as well. A leaked
+// DSH_OPENTUI_TEST_PROFILE_NAME in a user's shell must NOT redirect the
+// provisioner away from the profile the client actually launches.
 // Hoisted so the profile constants above can use it without shifting the
 // ledger-anchored template block at lines 567-579.
 function activeProfile() {
-  return process.env.DSH_OPENTUI_TEST_PROFILE_NAME || PROFILE
+  if (process.env.NODE_ENV === 'test' && process.env.DSH_OPENTUI_TEST_PROFILE_NAME) {
+    return process.env.DSH_OPENTUI_TEST_PROFILE_NAME
+  }
+  return PROFILE
 }
 
 // MD5 of the web/opentui template this profile used to copy verbatim (see
@@ -910,7 +921,7 @@ function dshOnPath() {
  * immediately after a failed add, and on later offline starts — so step [5/7]
  * never hard-fails on a state this step itself could not resolve.
  */
-function provisionCompanions() {
+async function provisionCompanions() {
   const selected = selectCompanions(process.env)
   if (selected.length === 0) {
     const off = ['0', 'false', 'off'].includes(String(process.env[COMPANION_LATEST_ENV] ?? '').trim().toLowerCase())
@@ -919,11 +930,20 @@ function provisionCompanions() {
   }
 
   const manifest = readManifest() ?? {}
+  // One bounded concurrent pass replaces 11 serial `npm view` calls. Results
+  // are indexed by input position, so every note below stays in roster order
+  // no matter which lookup finishes first.
+  const resolvedList = await queryDistTagLatestBatch(
+    selected.map((entry) => entry.name),
+    { cwd: profileDir, env: process.env },
+  )
   const specs = []
   let unavailable = 0
-  for (const entry of selected) {
+  const skipped = []
+  for (let index = 0; index < selected.length; index++) {
+    const entry = selected[index]
+    const resolved = resolvedList[index]
     const currentPin = installedCompanionVersion(entry.name)
-    const resolved = queryDistTagLatest(entry.name, { cwd: profileDir, env: process.env })
     if (resolved === null && currentPin === undefined &&
         Object.prototype.hasOwnProperty.call(manifest.dependencies ?? {}, entry.name)) {
       // A previous add left the dependency behind but never mounted the
@@ -932,6 +952,7 @@ function provisionCompanions() {
       dropUnmountedCompanions('declared but not installed, and offline', [entry.name])
       note(`companion ${entry.name}: skip (offline-stale)`)
       unavailable++
+      skipped.push(entry.short)
       continue
     }
     const decision = decideCompanionInstall({
@@ -942,11 +963,20 @@ function provisionCompanions() {
     })
     if (decision.action === 'skip') {
       note(`companion ${entry.name}: skip (${decision.reason})`)
+      // idempotent means already satisfied — a success, not a skip worth
+      // warning about. Everything else is a query failure or a version guard.
+      if (resolved === null || decision.reason !== 'idempotent') skipped.push(entry.short)
     } else {
       note(`companion ${entry.name}: ${currentPin ?? 'absent'} -> ${decision.spec} (${decision.reason})`)
       specs.push(decision.spec)
+      // `resolved === null` keeps the existing @latest fallback, but the
+      // version check itself was skipped — report it once in the summary.
+      if (resolved === null) skipped.push(entry.short)
     }
   }
+
+  const summary = formatSkippedCompanionsWarning(skipped)
+  if (summary) warn(summary)
 
   if (specs.length === 0) {
     say(4, 'companions', unavailable > 0
@@ -1422,7 +1452,7 @@ function provisionShim() {
 }
 
 // --- The provision pass itself (runs under the lock) ------------------------
-function runProvision({ repair = false } = {}) {
+async function runProvision({ repair = false } = {}) {
   // S6: --repair is accepted for CLI compatibility but is a no-op — the bridge
   // copy converges unconditionally on every provision (no symlink to repair).
   if (repair) note('repair mode accepted (no-op — bridge copy converges every provision)')
@@ -1463,13 +1493,41 @@ function runProvision({ repair = false } = {}) {
   // valid payloads, but suppress the marker before failing fast.
   const applyPlan = incompleteReason ? { ...migrationPlan, canWriteMarker: false } : migrationPlan
 
+  // P1-3: in production source B (`opentui-inproc`) IS the target profile, so
+  // converge rewrites the very file that migration must preserve. Snapshot the
+  // legacy bytes FIRST (backups only — no config/keybindings/marker). Any I/O
+  // failure here is fatal: converge must not run on an unsnapshotted source.
+  // Crash re-entry: if a prior pass already snapshotted every source (e.g. it
+  // converged but crashed before the marker), keep those bytes. Re-reading a
+  // converged source B would otherwise present generated text as "legacy" and
+  // rotate/overwrite the genuine pre-migration backup.
+  const planBackups = Array.isArray(applyPlan.backups) ? applyPlan.backups : []
+  const alreadySnapshotted = planBackups.length > 0 && planBackups.every((entry) =>
+    entry && entry.source && entry.kind &&
+    existsSync(join(profileDir, BACKUP_DIR, `${entry.source}-${entry.kind}`)))
+  if (!alreadySnapshotted) {
+    try {
+      applyMigrationPlan({ profileDir, plan: applyPlan, version, backupsOnly: true })
+    } catch (error) {
+      throw new ProvisionError(
+        'migration pre-backup failed; the legacy patch was NOT converged',
+        [
+          `Diagnosis: ${error instanceof Error ? error.message : String(error)}`,
+          `The original patch is left untouched. Repair the backup target under ${join(profileDir, BACKUP_DIR)} and restart.`,
+        ].join('\n'),
+      )
+    }
+  }
+
   // [2/7] Manifest + patch + sidecar: the ONLY managed-segment writer, and it
   // consumes migration externalCarry in the same converge pass (06 §4.5).
   provisionProfileFiles({ externalCarry: migrationPlan.externalCarry })
 
   // Config -> keybindings -> backups -> marker. applyMigrationPlan writes the
-  // marker LAST and only when allowed; any I/O throw lands before the marker.
-  const migrationResult = applyMigrationPlan({ profileDir, plan: applyPlan, version })
+  // marker LAST and only when allowed; the pre-backup above already wrote the
+  // same bytes (or an existing snapshot was kept on re-entry), so backups are
+  // never rewritten here and that order stays unchanged.
+  const migrationResult = applyMigrationPlan({ profileDir, plan: applyPlan, version, skipBackups: alreadySnapshotted })
 
   // Print notices exactly once from the apply result. On a marker hit the
   // helper returns no notices, so "already migrated" is never replayed.
@@ -1511,7 +1569,7 @@ function runProvision({ repair = false } = {}) {
 
   // [4/7] Companion installation. Runs after the bridge copy and before the
   // verify step so a half-provisioned manifest is caught by step [5/7].
-  provisionCompanions()
+  await provisionCompanions()
 
   // [5/7] Verify: linkPath is a REAL directory (never a symlink) carrying the
   // shipped bridge files, and no @deepseek-ai package leaked into the profile.
@@ -1553,7 +1611,7 @@ function runProvision({ repair = false } = {}) {
   console.log(`${PREFIX}PASS`)
 }
 
-function main(argv = []) {
+async function main(argv = []) {
   // --repair is passed by `dsh-opentui --repair-bridge`; accept the long form
   // too so the underlying mode is unambiguous when invoked directly.
   const repair = argv.includes('--repair') || argv.includes('--repair-bridge')
@@ -1577,15 +1635,16 @@ function main(argv = []) {
     onWait: (message) => note(message),
   })
   try {
-    runProvision({ repair })
+    await runProvision({ repair })
   } finally {
     releaseProvisionRunLock(token, (message) => warn(message))
   }
 }
 
-try {
-  main(process.argv.slice(2))
-} catch (error) {
+// main() is async (the companion step's registry query is a bounded concurrent
+// batch). Its rejection is handled exactly like a synchronous throw used to be,
+// so the lock-release `finally` still runs before this handler sets exitCode.
+main(process.argv.slice(2)).catch((error) => {
   if (error instanceof ProvisionLockError || error?.name === 'ProfileLockTimeoutError') {
     console.error(`${PREFIX}FAIL — ${error.message}`)
     if (error.detail) console.error(error.detail)
@@ -1599,4 +1658,4 @@ try {
   // failure) so the launcher can tell "another live run owns this profile"
   // from a real error; either way the host is never started.
   process.exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1
-}
+})

@@ -15,9 +15,12 @@ import {
   COMPANIONS,
   COMPANIONS_ENV,
   COMPANION_LATEST_ENV,
+  COMPANION_QUERY_CONCURRENCY,
   decideCompanionInstall,
+  formatSkippedCompanionsWarning,
   normalizeVersion,
   queryDistTagLatest,
+  queryDistTagLatestBatch,
   selectCompanions,
 } from '../scripts/lib/inproc-companions.mjs'
 
@@ -53,6 +56,27 @@ describe('inproc companion catalog', () => {
       expect(entry.reason.length).toBeGreaterThan(20)
       expect(entry.reason).not.toMatch(/opt-in only|no consumer/i)
       expect(entry.declaredRange).toMatch(/^\^\d+\.\d+\.\d+$/)
+    }
+  })
+
+  test('the two formerly stale 0.x minors now admit their verified npm latest', () => {
+    expect(COMPANIONS.find((entry) => entry.short === 'ask-router')?.declaredRange).toBe('^0.8.0')
+    expect(COMPANIONS.find((entry) => entry.short === 'model-sync')?.declaredRange).toBe('^0.10.0')
+    // Guard semantics stay intact: the next 0.x minor is still rejected.
+    for (const short of ['ask-router', 'model-sync']) {
+      const entry = COMPANIONS.find((c) => c.short === short)!
+      const [major, minor] = entry.declaredRange.slice(1).split('.').map(Number)
+      expect(decideCompanionInstall({
+        packageName: entry.name,
+        declaredRange: entry.declaredRange,
+        resolved: `0.${minor}.0`,
+      }).action).toBe('install')
+      expect(decideCompanionInstall({
+        packageName: entry.name,
+        declaredRange: entry.declaredRange,
+        resolved: `0.${minor + 1}.0`,
+      }).reason).toContain('cross_minor')
+      expect(major).toBe(0)
     }
   })
 
@@ -172,12 +196,72 @@ describe('queryDistTagLatest', () => {
   })
 })
 
+describe('queryDistTagLatestBatch (bounded concurrency)', () => {
+  test('runs queries concurrently up to the concurrency cap, returns input order', async () => {
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+    let active = 0
+    let peak = 0
+    const results = await queryDistTagLatestBatch(names, {
+      concurrency: 4,
+      budgetMs: 1000,
+      query: async (name) => {
+        active++
+        peak = Math.max(peak, active)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        active--
+        return `1.0.0-${name}`
+      },
+    })
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(4)
+    expect(COMPANION_QUERY_CONCURRENCY).toBe(4)
+    // Completion order is deliberately the reverse of input order.
+    expect(results).toEqual(names.map((name) => `1.0.0-${name}`))
+  })
+
+  test('a thrown query or a null answer becomes null; the batch never rejects', async () => {
+    const results = await queryDistTagLatestBatch(['a', 'b', 'c', 'd', 'e'], {
+      query: async (name) => {
+        if (name === 'b') throw new Error('npm view timed out')
+        if (name === 'd') return null
+        return `0.2.0-${name}`
+      },
+    })
+    expect(results).toEqual(['0.2.0-a', null, '0.2.0-c', null, '0.2.0-e'])
+  })
+
+  test('the total budget stops new lookups; unqueried items stay null', async () => {
+    const called: string[] = []
+    let tick = 0
+    // Deadline = now() at entry (1) + 3 = 4. Worker checks at 2 and 3 start
+    // the first two lookups; the checks at 4/5 are past the deadline.
+    const results = await queryDistTagLatestBatch(['a', 'b', 'c', 'd'], {
+      concurrency: 2,
+      budgetMs: 3,
+      now: () => ++tick,
+      query: async (name) => { called.push(name); return name },
+    })
+    expect(called).toEqual(['a', 'b'])
+    expect(results).toEqual(['a', 'b', null, null])
+  })
+})
+
+describe('single aggregated skip summary', () => {
+  test('null when nothing was skipped; one deterministic line otherwise', () => {
+    expect(formatSkippedCompanionsWarning([])).toBeNull()
+    expect(formatSkippedCompanionsWarning(['ask-router', 'model-sync'])).toBe(
+      '2 companion(s) skipped (version query failed or outside declared range): ask-router, model-sync',
+    )
+    expect(formatSkippedCompanionsWarning(['b', 'a', 'c'])).toContain('b, a, c')
+  })
+})
+
 describe('provision script wiring (source guards)', () => {
   test('companion step runs before verification and the verify step cross-checks declaration state', () => {
     expect(scriptSrc).toContain('const TOTAL_STEPS = 7')
-    expect(scriptSrc).toContain('provisionCompanions()')
+    expect(scriptSrc).toContain('await provisionCompanions()')
     expect(scriptSrc).toContain('verifyCompanionState()')
-    const installAt = scriptSrc.indexOf('  provisionCompanions()')
+    const installAt = scriptSrc.indexOf('  await provisionCompanions()')
     const verifyAt = scriptSrc.indexOf('  const companionCount = verifyCompanionState()')
     expect(installAt).toBeGreaterThan(-1)
     expect(verifyAt).toBeGreaterThan(installAt)

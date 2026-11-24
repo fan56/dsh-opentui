@@ -717,7 +717,16 @@ function makeAsyncLauncherHarness() {
     // S6: scripts/ + dist/bridge are copied above so the unconditional
     // provisioning passes; the host-version override avoids spawning the fake
     // `dsh` for version detection. Subject remains fake-bun exit-code mapping.
-    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, DSH_HOME: dshHome, DSH_OPENTUI_HOST_VERSION: '0.2.2-rc.3' },
+    // Companions are not the subject of these exit-code tests. The existing
+    // master switch keeps provisioning offline here (no real `npm view`), so a
+    // slow registry cannot push the 4-launch case past bun's 5s per-test limit.
+    env: {
+      ...process.env,
+      PATH: `${shimDir}:${process.env.PATH}`,
+      DSH_HOME: dshHome,
+      DSH_OPENTUI_HOST_VERSION: '0.2.2-rc.3',
+      DSH_OPENTUI_COMPANION_LATEST: 'off',
+    },
     setBunShim(body: string) {
       writeFileSync(bunShim, `#!/bin/sh\n${body}\n`)
       chmodSync(bunShim, 0o755)

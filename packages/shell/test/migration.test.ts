@@ -659,6 +659,27 @@ test('windowSeconds: inproc insert 600 迁入 nested ext path 并进 marker.migr
   expect(result.marker!.migrated).toContain(WINDOW)
 })
 
+test('P2-3: approval insert 未知 config 叶进 dropped/notice，windowSeconds 合法仍 carry', () => {
+  const oldPatch = approvalInsert('600').replace(
+    '        windowSeconds: 600',
+    '        windowSeconds: 600\n        allowAlways: true\n        presets:\n          full: {}',
+  )
+  const result = planPolicy({ inprocPatchText: patch(oldPatch) })
+  const unknownPaths = [
+    'dsh-approval-policy.config.allowAlways',
+    'dsh-approval-policy.config.presets',
+  ]
+
+  expect(result.externalCarry!.values[WINDOW]).toBe(600)
+  expect(result.marker!.migrated).toContain(WINDOW)
+  expect(result.externalCarry!.dropped).not.toContainEqual({ path: WINDOW, reason: 'invalid-value' })
+  for (const path of unknownPaths) {
+    expect(result.externalCarry!.dropped).toContainEqual({ path, reason: 'invalid-value' })
+    expect(result.marker!.dropped).toContainEqual({ id: 'opentui-inproc', path, reason: 'invalid-value' })
+    expect(result.notices.join('\n')).toContain(path)
+  }
+})
+
 test('windowSeconds: 0 与 86400 边界接受', () => {
   for (const raw of ['0', '86400']) {
     const result = planPolicy({ inprocPatchText: patch(approvalInsert(raw)) })

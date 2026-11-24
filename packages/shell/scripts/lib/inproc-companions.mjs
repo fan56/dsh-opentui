@@ -3,8 +3,8 @@
 // No filesystem I/O, no process spawn and no ambient process.env reads in the
 // policy functions: every input is passed in, so the catalog, the selection and
 // the per-package install decision are unit-testable without a registry or a
-// real dsh profile. Only `queryDistTagLatest` performs I/O, and it takes an
-// injectable executor for the same reason.
+// real dsh profile. Only the `queryDistTagLatest*` functions perform I/O, and
+// they take injectable executors for the same reason.
 //
 // Why this table exists: the inproc profile is deliberately minimal
 // (dsh-base + the in-process bridge + the bridge-owned approval gate). The
@@ -16,8 +16,15 @@
 // `DSH_TUI_COMPANION_LATEST`. The switch name here follows the same style with
 // the opentui prefix.
 
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import { DEFAULT_COMPANION_IDS } from './companion-policy.mjs'
+
+// One `npm view` must never hold provisioning hostage; the batch below adds a
+// second, outer bound so a slow registry cannot stretch a launch indefinitely.
+export const COMPANION_QUERY_TIMEOUT_MS = 9_000
+export const COMPANION_QUERY_BUDGET_MS = 20_000
+export const COMPANION_QUERY_CONCURRENCY = 4
 
 /** Master kill switch. Anything other than 0/false/off (including unset) = enabled. */
 export const COMPANION_LATEST_ENV = 'DSH_OPENTUI_COMPANION_LATEST'
@@ -43,7 +50,7 @@ export const COMPANIONS = Object.freeze([
   Object.freeze({
     name: '@aiwayds/dsh-ask-router',
     short: 'ask-router',
-    declaredRange: '^0.7.0',
+    declaredRange: '^0.8.0',
     defaultOn: true,
     reason: 'retained by the D2 user decision to own the ask surface for companion UI bundles.',
   }),
@@ -64,7 +71,7 @@ export const COMPANIONS = Object.freeze([
   Object.freeze({
     name: '@aiwayds/dsh-model-sync',
     short: 'model-sync',
-    declaredRange: '^0.9.0',
+    declaredRange: '^0.10.0',
     defaultOn: true,
     reason: 'retained by the D2 user decision to keep the profile model list in sync with the provider catalog.',
   }),
@@ -221,11 +228,76 @@ export function queryDistTagLatest(name, { cwd, env, exec } = {}) {
       cwd,
       env,
       encoding: 'utf8',
-      timeout: 30_000,
+      timeout: COMPANION_QUERY_TIMEOUT_MS,
     })
     const tags = JSON.parse(typeof out === 'string' ? out : String(out?.stdout ?? ''))
     return typeof tags?.latest === 'string' ? normalizeVersion(tags.latest) : null
   } catch {
     return null
   }
+}
+
+const execFileAsync = promisify(execFile)
+
+/** Async twin of `queryDistTagLatest`, used by the bounded concurrent batch. */
+export async function queryDistTagLatestAsync(name, { cwd, env, exec } = {}) {
+  const run = exec ?? execFileAsync
+  try {
+    const out = await run('npm', ['view', name, 'dist-tags', '--json'], {
+      cwd,
+      env,
+      encoding: 'utf8',
+      timeout: COMPANION_QUERY_TIMEOUT_MS,
+    })
+    const stdout = typeof out === 'string' ? out : String(out?.stdout ?? '')
+    const tags = JSON.parse(stdout)
+    return typeof tags?.latest === 'string' ? normalizeVersion(tags.latest) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Query every name with bounded concurrency and a total wall-clock budget.
+ *
+ * Results land at the INPUT index (never completion order), so callers stay
+ * deterministic. A per-item failure — including a thrown injected query — is
+ * swallowed into `null`, which is exactly the existing "unresolved" fallback;
+ * provisioning never aborts because one registry lookup failed or timed out.
+ * New lookups stop once the budget is spent; lookups already in flight still
+ * settle on their own shorter timeout.
+ */
+export async function queryDistTagLatestBatch(
+  names,
+  {
+    cwd,
+    env,
+    query = queryDistTagLatestAsync,
+    concurrency = COMPANION_QUERY_CONCURRENCY,
+    budgetMs = COMPANION_QUERY_BUDGET_MS,
+    now = () => Date.now(),
+  } = {},
+) {
+  const results = new Array(names.length).fill(null)
+  const deadline = now() + budgetMs
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < names.length && now() < deadline) {
+      const index = cursor++
+      try {
+        results[index] = await query(names[index], { cwd, env })
+      } catch {
+        results[index] = null
+      }
+    }
+  }
+  const lanes = Math.max(1, Math.min(concurrency, names.length))
+  await Promise.all(Array.from({ length: lanes }, worker))
+  return results
+}
+
+/** One summary line for skipped companions, or null when every one succeeded. */
+export function formatSkippedCompanionsWarning(shortNames = []) {
+  if (shortNames.length === 0) return null
+  return `${shortNames.length} companion(s) skipped (version query failed or outside declared range): ${shortNames.join(', ')}`
 }

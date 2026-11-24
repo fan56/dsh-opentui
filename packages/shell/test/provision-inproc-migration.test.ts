@@ -18,6 +18,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -110,6 +111,7 @@ function run(fx: Fixture, extra: Record<string, string> = {}) {
     env: {
       ...process.env,
       DSH_HOME: fx.home,
+      NODE_ENV: 'test', // gate for the profile-name seam (production ignores it)
       DSH_OPENTUI_TEST_PROFILE_NAME: NEW_PROFILE,
       DSH_OPENTUI_TEST_BRIDGE_DIR: join(fx.root, 'bridge'),
       DSH_OPENTUI_HOST_VERSION: '0.2.2-rc.5',
@@ -150,6 +152,11 @@ const backup = (fx: Fixture, source: string, kind: string) => join(fx.profile, '
 const configPath = (fx: Fixture) => join(fx.profile, 'config.json')
 const newPatchPath = (fx: Fixture) => join(fx.profile, 'cordis.patch.yml')
 const readMarker = (fx: Fixture) => JSON.parse(readFileSync(markerPath(fx), 'utf8'))
+const DEFAULT_PROFILE = 'opentui-inproc'
+const OLD_TIME = new Date('2020-01-01T00:00:00.000Z')
+/** Source B == the target profile in production; route the test seam back to it. */
+const runAsB = (fx: Fixture, extra: Record<string, string> = {}) =>
+  run(fx, { DSH_OPENTUI_TEST_PROFILE_NAME: DEFAULT_PROFILE, ...extra })
 
 afterEach(() => {
   while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true })
@@ -335,5 +342,130 @@ describe('T8b migration wired into the provisioner', () => {
     expect(allOutput(result)).not.toContain('迁移完成')
     expect(allOutput(result)).not.toContain('migration incomplete')
     expect(readFileSync(newPatchPath(fx), 'utf8')).toContain('maxDepth: 1')
+  })
+
+  test('source B == 目标 profile：备份先于 converge，备份里是旧 patch 原文', () => {
+    const fx = fixture()
+    const oldPatch = patch(subagent('    maxActiveSubagents: 5'))
+    const legacyPatch = join(fx.legacyB, 'cordis.patch.yml')
+    seed(fx, 'B', 'cordis.patch.yml', oldPatch)
+    const before = snapshot(legacyPatch)
+
+    const result = runAsB(fx)
+    expect(result.exitCode).toBe(0)
+
+    // If converge had run first, this backup would hold the generated template
+    // instead of the pre-converge bytes — the assertion proves the ordering.
+    const backupPath = join(fx.legacyB, '.migrated-from', 'opentui-inproc-cordis.patch.yml')
+    expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
+    const after = readFileSync(legacyPatch, 'utf8')
+    expect(after).not.toBe(before.content)
+    expect(after).toContain('maxDepth: 1')
+    expect(after).toContain('maxActiveSubagents: 5')
+    const marker = JSON.parse(readFileSync(join(fx.legacyB, '.migration.json'), 'utf8'))
+    expect(marker.from).toEqual(['opentui-inproc'])
+    expect(marker.migrated).toContain('subagent.maxActiveSubagents')
+  })
+
+  test('pre-backup 失败：fail-fast，旧 patch 字节不变、converge 未执行', () => {
+    const fx = fixture()
+    const oldPatch = patch(subagent('    maxActiveSubagents: 5'))
+    const legacyPatch = join(fx.legacyB, 'cordis.patch.yml')
+    seed(fx, 'B', 'cordis.patch.yml', oldPatch)
+    // A regular file where the backup directory must be makes mkdirSync throw.
+    writeFileSync(join(fx.legacyB, '.migrated-from'), 'blocker')
+    const before = snapshot(legacyPatch)
+
+    const result = runAsB(fx)
+    expect(result.exitCode).not.toBe(0)
+    expect(snapshot(legacyPatch)).toEqual(before)
+    expect(existsSync(join(fx.legacyB, 'package.json'))).toBe(false)
+    expect(existsSync(join(fx.legacyB, '.migration.json'))).toBe(false)
+    const out = allOutput(result)
+    expect(out).toContain('migration pre-backup failed')
+    expect(out).toContain('NOT converged')
+  })
+
+  test('正常迁移：backup 原文正确，二次启动备份不重写、marker 最后落盘', () => {
+    const fx = fixture()
+    const oldPatch = patch(subagent('    maxActiveSubagents: 7'))
+    seed(fx, 'A', 'cordis.patch.yml', oldPatch)
+    const first = run(fx)
+    expect(first.exitCode).toBe(0)
+
+    const backupPath = backup(fx, 'opentui', 'cordis.patch.yml')
+    expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
+    expect(existsSync(markerPath(fx))).toBe(true)
+    utimesSync(backupPath, OLD_TIME, OLD_TIME)
+    const beforeMarker = snapshot(markerPath(fx))
+
+    const second = run(fx)
+    expect(second.exitCode).toBe(0)
+    expect(statSync(backupPath).mtimeMs).toBe(OLD_TIME.getTime())
+    expect(snapshot(markerPath(fx))).toEqual(beforeMarker)
+  })
+
+  test('marker 存在 + 旧文件变目录/坏 JSON：启动不失败、不读旧文件', () => {
+    const fx = fixture()
+    seed(fx, 'A', 'cordis.patch.yml', patch(subagent('    maxActiveSubagents: 7')))
+    seed(fx, 'A', 'config.json', '{"theme":"carbonfox"}')
+    expect(run(fx).exitCode).toBe(0)
+
+    // Anything that would throw EISDIR if readMigrationInputs touched it.
+    for (const name of ['cordis.patch.yml', 'config.json', 'keybindings.json']) {
+      rmSync(join(fx.legacyA, name), { force: true })
+      mkdirSync(join(fx.legacyA, name), { recursive: true })
+    }
+    writeFileSync(join(fx.legacyA, 'provider-keys.json'), '{bad json')
+    const beforeMarker = snapshot(markerPath(fx))
+
+    const second = run(fx)
+    expect(second.exitCode).toBe(0)
+    expect(snapshot(markerPath(fx))).toEqual(beforeMarker)
+    expect(allOutput(second)).not.toContain('迁移完成')
+  })
+
+  test('生产模式（NODE_ENV 非 test）泄漏测试变量：仍使用 DEFAULT_PROFILE', () => {
+    const fx = fixture()
+    const result = run(fx, { NODE_ENV: 'production', DSH_OPENTUI_TEST_PROFILE_NAME: NEW_PROFILE })
+    expect(result.exitCode).toBe(0)
+    const defaultProfile = join(fx.home, 'profiles', DEFAULT_PROFILE)
+    expect(existsSync(join(defaultProfile, 'package.json'))).toBe(true)
+    expect(existsSync(join(fx.profile, 'package.json'))).toBe(false)
+  })
+
+  test('notice 与事实一致：坏 config 不谎称已备份，真实 patch 备份仍存在', () => {
+    const fx = fixture()
+    const oldPatch = patch(subagent('    maxActiveSubagents: 7'))
+    seed(fx, 'A', 'cordis.patch.yml', oldPatch)
+    seed(fx, 'A', 'config.json', '{bad')
+
+    const result = run(fx)
+    const out = allOutput(result)
+    expect(out).toContain('config.json 解析失败')
+    // No config backup file is written, so the notice must not claim one.
+    expect(out).not.toContain('config.json 解析失败：已备份')
+    expect(existsSync(backup(fx, 'opentui', 'config.json'))).toBe(false)
+    // The genuine patch backup still exists and is still reported.
+    expect(readFileSync(backup(fx, 'opentui', 'cordis.patch.yml'), 'utf8')).toBe(oldPatch)
+    expect(out).toContain('备份 1 份')
+  })
+
+  test('crash re-entry：converge 后 marker 前崩溃，重入不覆盖旧 patch 备份', () => {
+    const fx = fixture()
+    const oldPatch = patch(subagent('    maxActiveSubagents: 5'))
+    seed(fx, 'B', 'cordis.patch.yml', oldPatch)
+    expect(runAsB(fx).exitCode).toBe(0)
+    const backupPath = join(fx.legacyB, '.migrated-from', 'opentui-inproc-cordis.patch.yml')
+    expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
+
+    // Simulate a crash after converge rewrote source B but before the marker
+    // was committed. The re-read source now holds generated text; the snapshot
+    // on disk must still win and stay byte-identical.
+    rmSync(join(fx.legacyB, '.migration.json'), { force: true })
+    const second = runAsB(fx)
+    expect(second.exitCode).toBe(0)
+    expect(readFileSync(backupPath, 'utf8')).toBe(oldPatch)
+    expect(existsSync(`${backupPath}.bak`)).toBe(false)
   })
 })

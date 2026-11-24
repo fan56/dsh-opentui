@@ -407,3 +407,166 @@ describe('旧 profile 只读', () => {
     })
   })
 })
+
+describe('readMigrationInputs — marker early return', () => {
+  test('marker 存在 + 旧文件变目录/坏 JSON：一个旧文件都不读，全部文本字段 undefined', () => {
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(join(profileDir, '.migration.json'), JSON.stringify({ from: ['opentui'] }))
+    // Any read of these paths would throw EISDIR; provider-keys is bad JSON that
+    // the planner would reject if it ever saw it. None of it may be touched.
+    for (const [name, file] of [
+      ['opentui-inproc', 'cordis.patch.yml'],
+      ['opentui', 'cordis.patch.yml'],
+      ['opentui', 'config.json'],
+      ['opentui', 'keybindings.json'],
+    ]) {
+      mkdirSync(oldPath(name, file), { recursive: true })
+    }
+    writeFileSync(oldPath('opentui', 'provider-keys.json'), '{bad json')
+
+    const inputs = readMigrationInputs({ dshHome, profileDir, templatePatchText: '' })
+    expect(inputs).toEqual({
+      markerExists: true,
+      marker: { from: ['opentui'] },
+      inprocPatchText: undefined,
+      opentuiPatchText: undefined,
+      opentuiConfigText: undefined,
+      opentuiKeybindingsText: undefined,
+      opentuiProviderKeysText: undefined,
+    })
+  })
+
+  test('marker 损坏 + 旧文件不可读：仍安全早退，不抛、不创建目录', () => {
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(join(profileDir, '.migration.json'), '{bad json')
+    mkdirSync(oldPath('opentui-inproc', 'cordis.patch.yml'), { recursive: true })
+
+    const inputs = readMigrationInputs({ dshHome, profileDir, templatePatchText: '' })
+    expect(inputs.markerExists).toBe(true)
+    expect(inputs.marker).toBeUndefined()
+    expect(inputs.inprocPatchText).toBeUndefined()
+    expect(inputs.opentuiPatchText).toBeUndefined()
+    expect(existsSync(join(dshHome, 'profiles', 'opentui'))).toBe(false)
+  })
+})
+
+describe('applyMigrationPlan — backupsOnly', () => {
+  const OLD_PATCH = '- id: subagent\n  config:\n    maxActiveSubagents: 5\n'
+
+  test('只写 backups：config/keybindings/marker 全不写，对应 flags 为 false', () => {
+    const plan = basePlan({
+      config: { source: 'opentui', text: '{"theme":"x"}' },
+      keybindings: { source: 'opentui', text: '{"bindings":{}}' },
+      backups: [{ source: 'opentui-inproc', kind: 'cordis.patch.yml', text: OLD_PATCH }],
+      marker: SIMPLE_MARKER,
+      canWriteMarker: true,
+    })
+    const result = applyMigrationPlan({ profileDir, plan, version: 1, now: NOW, backupsOnly: true })
+    expect(result).toEqual({
+      wroteConfig: false,
+      wroteKeybindings: false,
+      backupsWritten: ['.migrated-from/opentui-inproc-cordis.patch.yml'],
+      markerWritten: false,
+      notices: plan.notices,
+    })
+    expect(existsSync(join(profileDir, 'config.json'))).toBe(false)
+    expect(existsSync(join(profileDir, 'keybindings.json'))).toBe(false)
+    expect(existsSync(join(profileDir, '.migration.json'))).toBe(false)
+    expect(readFileSync(join(profileDir, '.migrated-from', 'opentui-inproc-cordis.patch.yml'), 'utf8')).toBe(OLD_PATCH)
+  })
+
+  test('pre-backup 后完整 apply：备份内容相同即跳过，config/marker 依次落盘', () => {
+    const config = '{"theme":"x"}'
+    const plan = basePlan({
+      config: { source: 'opentui', text: config },
+      backups: [{ source: 'opentui-inproc', kind: 'cordis.patch.yml', text: OLD_PATCH }],
+      marker: SIMPLE_MARKER,
+      canWriteMarker: true,
+    })
+    applyMigrationPlan({ profileDir, plan, version: 1, now: NOW, backupsOnly: true })
+    const backupPath = join(profileDir, '.migrated-from', 'opentui-inproc-cordis.patch.yml')
+    utimesSync(backupPath, OLD_TIME, OLD_TIME)
+
+    const second = applyMigrationPlan({ profileDir, plan, version: 1, now: NOW })
+    expect(second.wroteConfig).toBe(true)
+    expect(second.backupsWritten).toEqual([])
+    expect(second.markerWritten).toBe(true)
+    expect(statSync(backupPath).mtimeMs).toBe(OLD_TIME.getTime())
+    expect(readFileSync(backupPath, 'utf8')).toBe(OLD_PATCH)
+    expect(existsSync(join(profileDir, '.migration.json'))).toBe(true)
+  })
+
+  test('marker 在 config 之后：config 写入失败时不留 marker', () => {
+    mkdirSync(profileDir, { recursive: true })
+    mkdirSync(join(profileDir, 'config.json')) // rename onto a dir throws
+    const plan = basePlan({
+      config: { source: 'opentui', text: '{"theme":"x"}' },
+      marker: SIMPLE_MARKER,
+      canWriteMarker: true,
+    })
+    expect(() => applyMigrationPlan({ profileDir, plan, version: 1, now: NOW })).toThrow()
+    expect(existsSync(join(profileDir, '.migration.json'))).toBe(false)
+  })
+
+  test('crash re-entry：重复 pre-backup 不覆盖既有备份、不留 .bak、不改 mtime', () => {
+    const firstPlan = basePlan({
+      backups: [{ source: 'opentui-inproc', kind: 'cordis.patch.yml', text: OLD_PATCH }],
+      notices: [],
+    })
+    const first = applyMigrationPlan({ profileDir, plan: firstPlan, version: 1, now: NOW, backupsOnly: true })
+    expect(first.backupsWritten).toHaveLength(1)
+    const dest = join(profileDir, '.migrated-from', 'opentui-inproc-cordis.patch.yml')
+    utimesSync(dest, OLD_TIME, OLD_TIME)
+
+    // Same plan re-entered after a crash before converge: content is identical,
+    // so the backup is skipped instead of being rotated/rewritten.
+    const retry = applyMigrationPlan({ profileDir, plan: firstPlan, version: 1, now: NOW, backupsOnly: true })
+    expect(retry.backupsWritten).toEqual([])
+    expect(statSync(dest).mtimeMs).toBe(OLD_TIME.getTime())
+    expect(readdirSync(join(profileDir, '.migrated-from'))).toEqual(['opentui-inproc-cordis.patch.yml'])
+  })
+})
+
+describe('applyMigrationPlan — notice 与写盘一致', () => {
+  test('invalid config/keybindings 不谎称已备份；patch/provider-keys 的真实备份措辞保留', () => {
+    const plan = basePlan({
+      config: { source: 'opentui', text: '{bad', invalid: true },
+      keybindings: { source: 'opentui', text: '{bad', invalid: true },
+      backups: [
+        { source: 'opentui', kind: 'cordis.patch.yml', text: '- id: x\n' },
+        { source: 'opentui', kind: 'provider-keys.json', text: '{"keys":{}}' },
+      ],
+      notices: [
+        'config.json 解析失败：已备份、未写入新 profile，需人工修复；原文原样保留。',
+        'keybindings.json 解析失败：已备份、未写入新 profile，需人工修复；原文原样保留。',
+        'opentui 的旧 patch 解析失败，已备份但未迁移/未写入新 profile，请修复后等待下次启动重试。',
+        '旧 provider-keys.json 已备份；新版请重新 /login，宿主凭据在 ~/.dsh/.credentials.yaml。',
+      ],
+      canWriteMarker: false,
+    })
+    const result = applyMigrationPlan({ profileDir, plan, version: 1, now: NOW })
+    expect(result.notices[0]).toBe('config.json 解析失败：未写入新 profile，需人工修复；原文原样保留。')
+    expect(result.notices[1]).toBe('keybindings.json 解析失败：未写入新 profile，需人工修复；原文原样保留。')
+    expect(result.notices[2]).toContain('已备份')
+    expect(result.notices[3]).toContain('已备份')
+    // No config/keybindings backup file exists — that is exactly why the
+    // claim had to be removed.
+    expect(readdirSync(join(profileDir, '.migrated-from')).sort()).toEqual([
+      'opentui-cordis.patch.yml',
+      'opentui-provider-keys.json',
+    ])
+  })
+
+  test('若确实存在 config 备份文件，则保留已备份措辞', () => {
+    mkdirSync(join(profileDir, '.migrated-from'), { recursive: true })
+    writeFileSync(join(profileDir, '.migrated-from', 'opentui-config.json'), '{"theme":"x"}')
+    const notice = 'config.json 解析失败：已备份、未写入新 profile，需人工修复；原文原样保留。'
+    const plan = basePlan({
+      config: { source: 'opentui', text: '{bad', invalid: true },
+      notices: [notice],
+      canWriteMarker: false,
+    })
+    const result = applyMigrationPlan({ profileDir, plan, version: 1, now: NOW })
+    expect(result.notices).toEqual([notice])
+  })
+})

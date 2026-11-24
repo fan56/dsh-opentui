@@ -831,6 +831,35 @@ describe('externalCarry — nested insert windowSeconds', () => {
     expect(withMarker.content).toBe(first.content)
   })
 
+  test('absent: insert rerender preserves template disabled and unknown extra fields', () => {
+    const template = TEMPLATE_POLICY.replace(
+      "      name: '@aiwayds/dsh-approval-policy'\n      config:",
+      "      name: '@aiwayds/dsh-approval-policy'\n      disabled: true\n      futureKnob: keep-me\n      config:",
+    )
+    const out = converge({
+      template,
+      current: undefined,
+      sidecar: sidecar(template, REV),
+      templateRevision: REV,
+      externalCarry: windowExt(600),
+    })
+
+    expect(out.write).toBe(true)
+    expect(out.reason).toBe('absent')
+    expect(out.content).toContain('      disabled: true')
+    expect(out.content).toContain('      futureKnob: keep-me')
+    expect(out.content).toContain('        windowSeconds: 600')
+    expect(out.content).not.toContain('windowSeconds: 300')
+  })
+
+  test('absent: insert rerender without extra fields keeps the existing output bytes', () => {
+    const out = policyRun(undefined, windowExt(600))
+    const existingBytes = TEMPLATE_POLICY
+      .replace("name: '@aiwayds/dsh-approval-policy'", 'name: "@aiwayds/dsh-approval-policy"')
+      .replace('windowSeconds: 300', 'windowSeconds: 600')
+    expect(out.content).toBe(existingBytes)
+  })
+
   test('existing file: ext overrides the template value and is not reported as drift', () => {
     const out = policyRun(TEMPLATE_POLICY, windowExt(600))
     expect(out.write).toBe(true)

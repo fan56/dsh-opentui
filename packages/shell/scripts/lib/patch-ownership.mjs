@@ -965,6 +965,10 @@ function absentConverge({ template, templateIndex, revision, externalCarry, note
         id,
         name: shape.name === ABSENT ? undefined : shape.name,
         config: eff.config === ABSENT ? undefined : cloneValue(eff.config),
+        // Match row rendering: template disabled/extra fields stay authoritative.
+        // Omit absent fields so entries without extras keep their existing bytes.
+        ...(shape.disabled === ABSENT ? {} : { disabled: cloneValue(shape.disabled) }),
+        ...cloneValue(shape.extra),
       }
     })
     if (!changed) continue

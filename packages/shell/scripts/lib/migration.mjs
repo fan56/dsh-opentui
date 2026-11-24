@@ -73,6 +73,11 @@ const CARRY_LEAF_KEYS = {
  *  matching insert entry rather than to a top-level row. */
 const APPROVAL_POLICY_ID = 'dsh-approval-policy'
 const WINDOW_SECONDS_PATH = `${APPROVAL_POLICY_ID}.config.windowSeconds`
+/** Insert config leaves that are migration candidates; all others are audited
+ *  as unknown user values, just like the top-level carry rows above. */
+const CARRY_INSERT_LEAF_KEYS = {
+  [APPROVAL_POLICY_ID]: new Set(['windowSeconds']),
+}
 
 // ---------------------------------------------------------------------------
 // value helpers (mirror patch-ownership projection, no fs/clock)
@@ -449,17 +454,25 @@ function collectForbidden(sourceName, index, templateIndex, out) {
   }
 }
 
-/** P2-7: recognizable user values under carry rows that are not whitelisted. */
+/** P2-3/P2-7: recognizable user values under carry rows/insert configs that
+ *  are not whitelisted. */
 function collectUnknownLeaves(sourceName, index, out, unknownPaths) {
-  for (const [rowId, cfg] of index.rows) {
-    const allowed = hasOwn(CARRY_LEAF_KEYS, rowId) ? CARRY_LEAF_KEYS[rowId] : undefined
-    if (!allowed || !isPlainObject(cfg)) continue
+  const collect = (rowId, cfg, allowedKeys, prefix) => {
+    if (!allowedKeys || !isPlainObject(cfg)) return
     for (const key of Object.keys(cfg)) {
-      if (allowed.has(key)) continue
-      const path = `${rowId}.${key}`
+      if (allowedKeys.has(key)) continue
+      const path = `${rowId}.${prefix}${key}`
       out.push({ id: sourceName, path, reason: 'invalid-value' })
       unknownPaths.push(path)
     }
+  }
+  for (const [rowId, cfg] of index.rows) {
+    const allowed = hasOwn(CARRY_LEAF_KEYS, rowId) ? CARRY_LEAF_KEYS[rowId] : undefined
+    collect(rowId, cfg, allowed, '')
+  }
+  for (const [rowId, cfg] of index.insertRows) {
+    const allowed = hasOwn(CARRY_INSERT_LEAF_KEYS, rowId) ? CARRY_INSERT_LEAF_KEYS[rowId] : undefined
+    collect(rowId, cfg, allowed, 'config.')
   }
 }
 
