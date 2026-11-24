@@ -18,6 +18,7 @@ import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
 	foldBridgeModelRoute,
+	liveModelRoute,
 	type ModelRouteFold,
 	type BridgeConfirmClock,
 	bridgeChildJournalMeta,
@@ -49,6 +50,15 @@ type Reply =
 	| { kind: "value"; value: unknown }
 	| { kind: "error"; error: unknown }
 	| { kind: "fn"; fn: (params?: Record<string, unknown>) => Reply }
+	| { kind: "async"; fn: (params?: Record<string, unknown>) => Promise<Reply> }
+
+/** Test-only gate: drive a request round trip in two halves so a session can
+ *  be switched BEFORE the reply lands (the selectModel / ensure race). */
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((r) => { resolve = r })
+	return { promise, resolve }
+}
 
 interface LogCall {
 	level: "info" | "warn" | "error" | "debug"
@@ -71,6 +81,7 @@ function makeHarness(
 			let reply = replies.get(method)
 			if (reply === undefined) return {}
 			if (reply.kind === "fn") reply = reply.fn(params)
+			if (reply.kind === "async") reply = await reply.fn(params)
 			if (reply.kind === "error") throw reply.error
 			return reply.value
 		},
@@ -1717,9 +1728,13 @@ describe("footer telemetry parity (cacheHitRate / contextTokens / contextWindow)
 			value: {
 				rows: [
 					{ seq: 1, type: "request/context", payload: { ...selection, contextWindow: 1_000_000 } },
-					assistant(2, { inputTokens: 10, outputTokens: 2, totalTokens: 12 }),
+					// RESTORE: request/context now folds into lastUsed, so a stale
+					// window needs a NEWER route staged on top of it — otherwise the
+					// window would legitimately belong to the live route.
+					{ seq: 2, type: "model/selection", payload: { provider: "other", model: "other-model" } },
+					assistant(3, { inputTokens: 10, outputTokens: 2, totalTokens: 12 }),
 				],
-				cursor: 3,
+				cursor: 4,
 			},
 		})
 		const info = (await h.seam.sessionInfo())!
@@ -3898,6 +3913,25 @@ describe("RESTORE: session-level live model route", () => {
 		return h
 	}
 
+	/** A session actually bound through turn() (as sessionInfo needs) with an
+	 *  explicit turn-end gate, so journal drains can be scripted deterministically. */
+	function boundHarness(id = "sess-A", turnId = "t-RESTORE") {
+		const h = stagedHarness(id)
+		h.replies.set("session.open", { kind: "value", value: { sessionId: id, journalCursor: 1 } })
+		h.replies.set("session.send", { kind: "value", value: { turnId } })
+		const done = h.seam.turn("hi", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		return {
+			h,
+			async finish() {
+				await Bun.sleep(0)
+				h.emit({ type: "turn.end", payload: { turnId, text: "" } })
+				await done
+			},
+		}
+	}
+
 	test("pure fold: model/selection=pending, request/header.config=lastUsed, matching header consumes pending", () => {
 		const fold: ModelRouteFold = {}
 		foldBridgeModelRoute(fold, [
@@ -4039,5 +4073,143 @@ describe("RESTORE: session-level live model route", () => {
 			},
 		})
 		expect(await h.seam.thinking.efforts()).toEqual([{ id: "session-effort", name: "session-effort" }])
+	})
+
+	// ---- P1 regressions: partial-drain cache poisoning / wire shape / replay failure ----
+
+	test("pure fold: request/context.provider+model establishes lastUsed (no effort)", () => {
+		const fold: ModelRouteFold = {}
+		foldBridgeModelRoute(fold, [
+			{ seq: 1, type: "request/context", payload: { provider: "p1", model: "m1", contextWindow: 1_000_000 } },
+		])
+		expect(fold.lastUsed).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(liveModelRoute(fold)).toEqual({ providerID: "p1", modelID: "m1" })
+	})
+
+	test("request/context establishes the live route over the wire; request/header still works", async () => {
+		const ctx = stagedHarness("ctx-only")
+		ctx.replies.set("journal.replay", {
+			kind: "value",
+			value: { rows: [{ seq: 1, type: "request/context", payload: { provider: "p1", model: "m1" } }], cursor: 2 },
+		})
+		expect(await ctx.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+
+		const header = stagedHarness("header-only")
+		header.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "p2", "m2")], cursor: 2 } })
+		expect(await header.seam.currentModelSelection()).toEqual({ providerID: "p2", modelID: "m2" })
+	})
+
+	test("non-full drain (from>1, rows=[]) never creates a cache; ensure replays from 1", async () => {
+		const { h, finish } = boundHarness("sess-A", "t-nonfull")
+		const rows: BridgeReplayRow[] = [
+			headerRow(1, "p1", "m1"),
+			{ seq: 2, type: "user/message", payload: { content: [{ type: "text", text: "u" }] } },
+		]
+		const froms: number[] = []
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				froms.push(from)
+				return { kind: "value", value: { rows: rows.filter((r) => r.seq >= from), cursor: 3 } }
+			},
+		})
+		await finish()
+		expect(await h.seam.sessionInfo()).toBeDefined()
+		expect(froms).toEqual([1]) // first, full read establishes the route
+
+		// resume clears the MODEL cache but keeps the tally's lastSeq>0 — the exact
+		// shape that used to seed a permanently empty fold from an empty window.
+		h.seam.resumeSession("sess-A")
+		await h.seam.sessionInfo()
+		expect(froms).toEqual([1, 3, 1]) // incremental from=3, then ensure's full replay
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(froms).toEqual([1, 3, 1]) // no extra replay after the route is complete
+	})
+
+	test("non-full drain folds into an existing complete cache and creates no new one", async () => {
+		const { h, finish } = boundHarness("sess-A", "t-nonfull-update")
+		const rows: BridgeReplayRow[] = [
+			headerRow(1, "p1", "m1"),
+			{ seq: 2, type: "user/message", payload: { content: [{ type: "text", text: "u" }] } },
+		]
+		const froms: number[] = []
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				froms.push(from)
+				return { kind: "value", value: { rows: rows.filter((r) => r.seq >= from), cursor: rows.length + 1 } }
+			},
+		})
+		await finish()
+		expect(await h.seam.sessionInfo()).toBeDefined()
+		expect(froms).toEqual([1])
+
+		rows.push(headerRow(3, "p2", "m2"))
+		expect(await h.seam.sessionInfo()).toBeDefined()
+		expect(froms).toEqual([1, 3]) // updated in place, no full replay re-fire
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p2", modelID: "m2" })
+	})
+
+	test("replay failure clears the cache + degrades once; a retry establishes the route", async () => {
+		const h = stagedHarness("sess-fail")
+		let attempts = 0
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: () => {
+				attempts++
+				return attempts === 1
+					? { kind: "error", error: new Error("bridge timeout") }
+					: { kind: "value", value: { rows: [headerRow(1, "p1", "m1")], cursor: 2 } }
+			},
+		})
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p0", modelID: "m0" })
+		expect(h.warnFor("modelRoute")).toHaveLength(1)
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m1" })
+		expect(attempts).toBe(2)
+		expect(h.warnFor("modelRoute")).toHaveLength(1) // single-flight + degradeOnce, no log flood
+	})
+
+	// ---- same-batch races ----
+
+	test("selectModel: a session switch before the reply does not write A's route into B", async () => {
+		const h = stagedHarness("sess-A")
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p0", modelID: "m0" })
+		const gate = deferred<Reply>()
+		h.replies.set("selectModel", { kind: "async", fn: () => gate.promise })
+		const pending = h.seam.selectModel("pA", "mA")
+		h.seam.resumeSession("sess-B")
+		gate.resolve({ kind: "value", value: { selected: { provider: "pA", model: "mA" } } })
+		await pending
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "pB", "mB")], cursor: 2 } })
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "pB", modelID: "mB" })
+	})
+
+	test("ensure: a session switch while awaiting never returns the old session's fold", async () => {
+		const h = stagedHarness("sess-A")
+		const gate = deferred<unknown>()
+		h.replies.set("journal.replay", {
+			kind: "async",
+			fn: () => gate.promise.then(() => ({ kind: "value", value: { rows: [headerRow(1, "pA", "mA")], cursor: 2 } })),
+		})
+		const pendingA = h.seam.currentModelSelection()
+		h.seam.resumeSession("sess-B")
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "pB", "mB")], cursor: 2 } })
+		gate.resolve(undefined)
+		expect(await pendingA).toEqual({ providerID: "p0", modelID: "m0" }) // A's fold never leaked
+		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "pB", modelID: "mB" })
+	})
+
+	test("a live route without reasoningEffort returns undefined, not the deployment default", async () => {
+		const h = stagedHarness()
+		h.replies.set("model.currentSelection", {
+			kind: "value",
+			value: { provider: "p0", model: "m0", reasoningEffort: "high" },
+		})
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [headerRow(1, "p1", "m1")], cursor: 2 } })
+		expect(await h.seam.thinking.currentEffort()).toBeUndefined()
+		expect(h.requests.some((r) => r.method === "model.currentSelection")).toBe(false)
 	})
 })

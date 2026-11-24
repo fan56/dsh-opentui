@@ -584,6 +584,16 @@ export interface ModelRouteFold {
 	lastUsed?: ModelRouteSelection
 }
 
+/**
+ * The session cache adds two facts the pure fold does not carry:
+ *  - `sessionId`: which session the fold belongs to (reply/drain races);
+ *  - `complete`: a FULL journal read (`from===1` or a clamped drain) has fed it.
+ *    An incremental drain (from>1, no clamp) may only UPDATE an existing cache;
+ *    creating one from a partial window would pin a permanently empty route
+ *    because #ensureModelRoute short-circuits on any existing cache.
+ */
+type ModelRouteCache = ModelRouteFold & { sessionId: string; complete: boolean }
+
 function routeFromSelection(value: unknown): ModelRouteSelection | undefined {
 	const row = asRecord(value)
 	const providerID = typeof row.providerID === "string" ? row.providerID : typeof row.provider === "string" ? row.provider : ""
@@ -620,9 +630,37 @@ function routeFromHeader(payload: unknown): ModelRouteSelection | undefined {
 	return undefined
 }
 
-/** Fold replay rows into a session's live route. Newest row wins; a
- *  `request/header` whose route matches the pending selection consumes it so a
- *  stale pending never overrides a newer lastUsed route. */
+/**
+ * `request/context` event data → the route the request actually ran under.
+ * The in-process host journals `request/context` (NOT `request/header`) for
+ * child/session requests; the shape is `{provider, model, contextWindow, ...}`
+ * at the top level (bridge-session-seam.ts:3161-3164 reads the SAME fields for
+ * the context-window guard, and bridgeChildJournalMeta reads data.model).
+ * No reasoningEffort rides this row, so the effort stays absent here.
+ */
+function routeFromContext(payload: unknown): ModelRouteSelection | undefined {
+	const data = asRecord(payload)
+	const providerID = optionalStringField(data, "provider")
+	const modelID = optionalStringField(data, "model")
+	if (providerID === undefined || modelID === undefined) return undefined
+	return { providerID, modelID }
+}
+
+/** An actually-used route becomes `lastUsed` and consumes a matching pending
+ *  selection so a stale staged route never overrides the newer one. */
+function applyUsedRoute(fold: ModelRouteFold, used: ModelRouteSelection): void {
+	fold.lastUsed = used
+	if (fold.pending !== undefined
+		&& fold.pending.providerID === used.providerID
+		&& fold.pending.modelID === used.modelID) {
+		fold.pending = undefined
+	}
+}
+
+/** Fold replay rows into a session's live route. Newest row wins; a request
+ *  row whose route matches the pending selection consumes it so a stale pending
+ *  never overrides a newer lastUsed route. Both wire shapes are accepted:
+ *  `request/header` (rc.2 header.config) and `request/context` (inproc host). */
 export function foldBridgeModelRoute(fold: ModelRouteFold, rows: readonly BridgeReplayRow[]): void {
 	for (const row of rows) {
 		if (row.type === "model/selection") {
@@ -630,13 +668,10 @@ export function foldBridgeModelRoute(fold: ModelRouteFold, rows: readonly Bridge
 			if (staged !== undefined) fold.pending = staged
 		} else if (row.type === "request/header") {
 			const used = routeFromHeader(row.payload)
-			if (used === undefined) continue
-			fold.lastUsed = used
-			if (fold.pending !== undefined
-				&& fold.pending.providerID === used.providerID
-				&& fold.pending.modelID === used.modelID) {
-				fold.pending = undefined
-			}
+			if (used !== undefined) applyUsedRoute(fold, used)
+		} else if (row.type === "request/context") {
+			const used = routeFromContext(row.payload)
+			if (used !== undefined) applyUsedRoute(fold, used)
 		}
 	}
 }
@@ -2058,8 +2093,11 @@ export class BridgeSessionSeam implements SessionSeam {
 				? await this.#ensureModelRoute(sessionId)
 				: undefined
 			const live = cache !== undefined ? liveModelRoute(cache) : undefined
-			if (live?.reasoningEffort !== undefined) return live.reasoningEffort
-			// Old session / journal silent: the deployment default still names an effort.
+			// A live route IS the session's truth: when it carries no effort, the
+			// answer is undefined (that model has no reasoning effort), NOT the
+			// deployment default's effort for a different route.
+			if (live !== undefined) return live.reasoningEffort
+			// No session / journal silent: the deployment default still names an effort.
 			const fallback = await this.#defaultModelRoute()
 			return fallback?.reasoningEffort
 		},
@@ -2080,8 +2118,9 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (r === undefined || r === null || r.selected === undefined) {
 				return unsupported("selectEffort")
 			}
-			// RESTORE: the host-resolved selection is the live route from now on.
-			this.#writeModelRouteReply(reply)
+			// RESTORE: the host-resolved selection is the live route from now on —
+			// only for the session captured before the request.
+			this.#writeModelRouteReply(reply, sessionId)
 		},
 	}
 
@@ -2352,10 +2391,10 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * (the deployment default). Established from ONE tail journal.replay, then
 	 * folded incrementally; cleared on session switch/dispose.
 	 */
-	#modelRoute: (ModelRouteFold & { sessionId: string }) | undefined
+	#modelRoute: ModelRouteCache | undefined
 	/** Single-flight for the first establishment replay, so the footer poll does
 	 *  not fire a fresh `journal.replay` on every refresh. */
-	#modelRouteReplayInFlight: Promise<ModelRouteFold & { sessionId: string }> | undefined
+	#modelRouteReplayInFlight: Promise<ModelRouteCache> | undefined
 	/**
 	 * ADR-0011 T8/Q4: a host→client ask frame is the bridge-side proof that the
 	 * host armed its ask answerers (`armAskAnswerers`, bridge/src/index.ts). We
@@ -2711,8 +2750,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		// (spawn/settle from the durable journal; running = start w/o terminal).
 		this.#foldAgentReplayRows(drained.rows, boundId)
 		// RESTORE: the recovery replay is the first authoritative read of the
-		// resumed session's live route — establish the cache from it (no extra RPC).
-		this.#foldModelRouteFromDrain(boundId, drained.rows)
+		// resumed session's live route — establish the cache from it (no extra RPC)
+		// ONLY when it was a full read; an incremental window only updates an
+		// already-complete cache (else #ensureModelRoute replays from 1).
+		this.#foldModelRouteFromDrain(boundId, drained.rows, from, drained.clamped)
 		// 0.23.0 T1 sweep hook ② (recover): the bridge has no `recover` event, so
 		// the client drives the same host-registry sweep here — after the roster
 		// is restored from the replay so a ghost child can be settled. Best-effort
@@ -3114,8 +3155,10 @@ export class BridgeSessionSeam implements SessionSeam {
 
 			// RESTORE: these SAME drained rows establish/update the live route
 			// cache, so the currentModelSelection() call below needs no second
-			// journal.replay (footer refresh stays at one drain per boundary).
-			this.#foldModelRouteFromDrain(sessionId, drained.rows)
+			// journal.replay — but ONLY for a full read. An incremental drain
+			// (from>1, no clamp) may update an existing cache, never create one;
+			// otherwise an empty window would pin an empty route forever.
+			this.#foldModelRouteFromDrain(sessionId, drained.rows, from, drained.clamped)
 
 			// P2-1 (inproc): fold the SAME drained rows through the subagent
 			// projector so an async child's terminal converges OUTSIDE a turn. The
@@ -4136,28 +4179,45 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#modelRouteReplayInFlight = undefined
 	}
 
+	/** Current cache for `sessionId`, or a fresh EMPTY fold when the session
+	 *  switched while a waiter was parked (never hand it another session's fold). */
+	#modelRouteFor(sessionId: string): ModelRouteCache {
+		const cache = this.#modelRoute
+		return cache !== undefined && cache.sessionId === sessionId ? cache : { sessionId, complete: false }
+	}
+
 	/** Establish the cache at most once per session. Single-flight: concurrent
 	 *  footer / /model / /think reads await the SAME tail replay. A replay
-	 *  failure keeps an empty cache so later refreshes never re-fire the RPC;
+	 *  failure CLEARS the cache (so a later read can retry) and degrades once;
 	 *  callers then fall back to the deployment default. */
-	async #ensureModelRoute(sessionId: string): Promise<ModelRouteFold & { sessionId: string }> {
+	async #ensureModelRoute(sessionId: string): Promise<ModelRouteCache> {
 		const inFlight = this.#modelRouteReplayInFlight
 		if (inFlight !== undefined) {
 			await inFlight
-			return this.#modelRoute ?? { sessionId }
+			return this.#modelRouteFor(sessionId)
 		}
 		const existing = this.#modelRoute
-		if (existing !== undefined && existing.sessionId === sessionId) return existing
-		const cache: ModelRouteFold & { sessionId: string } = { sessionId }
+		// Only a COMPLETE fold may short-circuit. An incremental drain or a
+		// reply-only cache has not read the whole journal; complete it here.
+		if (existing !== undefined && existing.sessionId === sessionId && existing.complete) return existing
+		const cache: ModelRouteCache = { sessionId, complete: false }
 		this.#modelRoute = cache
-		const run = (async (): Promise<ModelRouteFold & { sessionId: string }> => {
+		const run = (async (): Promise<ModelRouteCache> => {
 			try {
 				// Reuse the existing drain (dedup + paging + clamp) — no new wire.
 				const drained = await this.#drainJournal(sessionId, 1)
-				if (this.#modelRoute === cache) foldBridgeModelRoute(cache, drained.rows)
-			} catch {
-				// Old bridge / replay failure: keep the empty cache. Never throw —
-				// the caller's deployment-default fallback is the honest answer.
+				if (this.#modelRoute === cache) {
+					foldBridgeModelRoute(cache, drained.rows)
+					cache.complete = true
+				}
+			} catch (err) {
+				// A first-attempt timeout must NOT pin an empty fold for the whole
+				// session: drop it if it is still ours so a later read retries.
+				if (this.#modelRoute === cache) this.#modelRoute = undefined
+				this.#degradeOnce(
+					"modelRoute",
+					`journal.replay failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+				)
 			}
 			return cache
 		})()
@@ -4167,33 +4227,47 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		void run.then(release, release)
 		await run
-		return cache
+		// The session may have changed (/new, /resume) while we awaited. A stale
+		// replay only ever mutates its detached cache — never return that fold.
+		return this.#modelRouteFor(sessionId)
 	}
 
-	/** Establish/cache the fold from rows another drain ALREADY fetched (the
-	 *  sessionInfo tally), so the first footer read needs no extra RPC. */
-	#foldModelRouteFromDrain(sessionId: string, rows: readonly BridgeReplayRow[]): void {
+	/** Establish/update the fold from rows another drain ALREADY fetched (the
+	 *  sessionInfo tally or a recovery replay), so the first footer read needs
+	 *  no extra RPC. Creation is gated on a FULL read: `from===1 || clamped`.
+	 *  A partial window only updates a cache that already belongs to `sessionId`. */
+	#foldModelRouteFromDrain(
+		sessionId: string,
+		rows: readonly BridgeReplayRow[],
+		from: number,
+		clamped: boolean,
+	): void {
+		const full = from === 1 || clamped
 		const existing = this.#modelRoute
 		if (existing !== undefined && existing.sessionId === sessionId) {
 			foldBridgeModelRoute(existing, rows)
+			if (full) existing.complete = true
 			return
 		}
-		if (this.#modelRouteReplayInFlight !== undefined) return
-		const cache: ModelRouteFold & { sessionId: string } = { sessionId }
+		if (!full || this.#modelRouteReplayInFlight !== undefined) return
+		const cache: ModelRouteCache = { sessionId, complete: true }
 		this.#modelRoute = cache
 		foldBridgeModelRoute(cache, rows)
 	}
 
 	/** A host-accepted `selectModel` reply is the freshest route fact: write it
 	 *  into the cache so footer / picker / the NEXT /think see it immediately,
-	 *  without waiting for the next request's `request/header`. */
-	#writeModelRouteReply(reply: unknown): void {
+	 *  without waiting for the next request's `request/header`. `expectedSessionId`
+	 *  is the session captured BEFORE the request: if /new or /resume switched
+	 *  the session meanwhile, A's selection must not land in B's cache. */
+	#writeModelRouteReply(reply: unknown, expectedSessionId: string | undefined): void {
 		const route = routeFromSelection(asRecord(reply).selected)
+		if (route === undefined) return
 		const sessionId = this.#currentSessionId ?? this.stagedSessionId()
-		if (route === undefined || sessionId === undefined || sessionId === "") return
+		if (sessionId === undefined || sessionId === "" || sessionId !== expectedSessionId) return
 		let cache = this.#modelRoute
 		if (cache === undefined || cache.sessionId !== sessionId) {
-			cache = { sessionId }
+			cache = { sessionId, complete: false }
 			this.#modelRoute = cache
 		}
 		cache.pending = route
@@ -4577,7 +4651,9 @@ export class BridgeSessionSeam implements SessionSeam {
 				}
 				// RESTORE: previously discarded — the accepted route must be
 				// visible to the footer/picker before the next request lands.
-				this.#writeModelRouteReply(reply)
+				// `sessionId` was captured before the request: a /new or /resume
+				// during the round trip must not write A's route into B's cache.
+				this.#writeModelRouteReply(reply, sessionId)
 			})
 	}
 
