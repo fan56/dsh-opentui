@@ -24,6 +24,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
 
 const ROOT = process.cwd()
 const LAUNCHER = join(ROOT, 'dsh-opentui')
@@ -59,7 +60,7 @@ cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { 
 // The in-process bridge host boots the `opentui-inproc` profile; seed it too
 // when the real home has it, so the gate fails only on a genuinely missing
 // renderable host rather than an under-provisioned scratch home.
-for (const extra of ['opentui-inproc', 'headless']) {
+for (const extra of [DEFAULT_PROFILE, 'headless']) {
   const from = join(REAL_HOME, 'profiles', extra)
   if (existsSync(from)) cpSync(from, join(HOME, 'profiles', extra), { recursive: true })
 }

@@ -19,6 +19,7 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { DEFAULT_PROFILE } from '../../../packages/shell/scripts/lib/profile-name.mjs'
 
 const HOME = process.env.DSH_HOME
 if (!HOME) { console.error('bridge-families: DSH_HOME is required (a provisioned scratch home)'); process.exit(2) }
@@ -32,7 +33,7 @@ const POLL_MS = Number(process.env.E2E_POLL_MS || 100)              // poll cade
 const EXIT_WAIT_MS = Number(process.env.E2E_EXIT_WAIT_MS || 5000)   // child exit after SIGTERM
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const child = spawn('dsh', ['--profile', 'opentui-inproc'], {
+const child = spawn('dsh', ['--profile', DEFAULT_PROFILE], {
   env: { ...process.env, DSH_HOME: HOME, DSH_OPENTUI_BRIDGE_STDIO: '1' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })

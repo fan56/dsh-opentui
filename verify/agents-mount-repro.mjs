@@ -41,6 +41,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFi
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
@@ -701,7 +702,7 @@ try {
   // NOT the client's `opentui` profile. The old path read the wrong profile and
   // made patchEntry() always empty — the two red assertions' root cause.
   // Local-preference writes (motion) still use profileConfigPath above.
-  const HOST_PROFILE = 'opentui-inproc'
+  const HOST_PROFILE = DEFAULT_PROFILE
   const patchPath = join(HOME, 'profiles', HOST_PROFILE, 'cordis.patch.yml')
   const readPatch = () => {
     try { return readFileSync(patchPath, 'utf8') } catch { return '' }

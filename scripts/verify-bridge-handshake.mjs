@@ -13,6 +13,7 @@
  * comes with context instead of a bare exit code.
  */
 import { spawn } from 'node:child_process'
+import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
 
 const [dshBin, dshHome, deadlineRaw] = process.argv.slice(2)
 if (!dshBin || !dshHome) {
@@ -28,7 +29,7 @@ if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
 const PING = '{"id":1,"method":"bridge.ping"}'
 const REPLY_RE = /"protocolVersion"\s*:\s*1\b/
 
-const child = spawn(dshBin, ['--profile', 'opentui-inproc'], {
+const child = spawn(dshBin, ['--profile', DEFAULT_PROFILE], {
   env: { ...process.env, DSH_HOME: dshHome, DSH_OPENTUI_BRIDGE_STDIO: '1' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })

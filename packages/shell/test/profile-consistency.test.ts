@@ -22,6 +22,17 @@ import { DEFAULT_PROFILE as MJS_DEFAULT_PROFILE } from "../scripts/lib/profile-n
 
 const PROFILE_CONSTANTS = fileURLToPath(new URL("../src/client/profile-constants.ts", import.meta.url))
 const PROVISIONER = fileURLToPath(new URL("../scripts/provision-inproc-profile.mjs", import.meta.url))
+const PROFILE_LITERAL_GUARD_SCRIPTS = [
+	"../../../scripts/verify-bridge-handshake.mjs",
+	"../../../scripts/verify-capcontract-roundtrip.mjs",
+	"../../../scripts/verify-s1-model.mjs",
+	"../../../scripts/verify-s2-credentials.mjs",
+	"../../../scripts/verify-s3-push.mjs",
+	"../../../scripts/verify-sk-keymap-ans.mjs",
+	"../../../e2e/families/lib/bridge-families.mjs",
+	"../../../verify/agents-mount-repro.mjs",
+	"../../../scripts/test-tier.mjs",
+].map((path) => fileURLToPath(new URL(path, import.meta.url)))
 
 describe("profile name single source (P0-3 / T11 pin)", () => {
 	test("client DEFAULT_PROFILE === shared .mjs DEFAULT_PROFILE", () => {
@@ -38,6 +49,21 @@ describe("profile name single source (P0-3 / T11 pin)", () => {
 		const source = readFileSync(PROFILE_CONSTANTS, "utf8")
 		expect(source).toMatch(/export\s*\{\s*DEFAULT_PROFILE\s*\}\s*from\s*['"]\.\.\/\.\.\/scripts\/lib\/profile-name\.mjs['"]/)
 		expect(source).not.toMatch(/\b(?:const|let|var)\s+DEFAULT_PROFILE\s*=/)
+	})
+
+	test("root verify/e2e scripts do not hard-code the active host profile", () => {
+		const forbiddenProfiles = new Set([MJS_DEFAULT_PROFILE, "opentui-inproc"])
+		const violations = PROFILE_LITERAL_GUARD_SCRIPTS.flatMap((file) => {
+			const code = readFileSync(file, "utf8")
+				.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "))
+				.split(/\r?\n/)
+				.map((line) => line.replace(/\/\/.*$/, ""))
+				.join("\n")
+			return [...forbiddenProfiles]
+				.filter((profile) => code.includes(profile))
+				.map((profile) => `${file}: hard-coded ${profile}`)
+		})
+		expect(violations).toEqual([])
 	})
 })
 

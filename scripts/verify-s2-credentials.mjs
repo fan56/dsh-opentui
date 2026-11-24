@@ -25,6 +25,7 @@ import { spawn } from "node:child_process"
 import { readlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
+import { DEFAULT_PROFILE } from "../packages/shell/scripts/lib/profile-name.mjs"
 
 const ROOT = process.cwd()
 const DSH_BIN = process.env.DSH_BIN || "/opt/homebrew/bin/dsh"
@@ -32,7 +33,7 @@ const DSH_HOME = process.env.DSH_PROBE_HOME || "/private/tmp/dsh-probe-home-024"
 const BUNDLE_DIR = process.env.CAP_SMOKE_BUNDLE || `${ROOT}/packages/shell/dist/bridge`
 const HOLD_MS = Number(process.env.CAP_SMOKE_HOLD_MS || 11000)
 const OUT = process.env.S2_SMOKE_OUT || `${ROOT}/.proof/024-s2-credentials`
-const BRIDGE_LINK = `${DSH_HOME}/profiles/opentui-inproc/node_modules/@aiwayds/dsh-opentui-bridge`
+const BRIDGE_LINK = `${DSH_HOME}/profiles/${DEFAULT_PROFILE}/node_modules/@aiwayds/dsh-opentui-bridge`
 
 const fail = (msg) => { console.error(`FAIL  ${msg}`); process.exitCode = 1 }
 
@@ -51,7 +52,7 @@ catch (e) { fail(`cannot read scratch bridge symlink ${BRIDGE_LINK}: ${e.message
 try { execFileSync("ln", ["-sfn", BUNDLE_DIR, BRIDGE_LINK]) }
 catch (e) { fail(`cannot repoint scratch bridge symlink: ${e.message}`); process.exit(1) }
 
-const child = spawn(DSH_BIN, ["--profile", "opentui-inproc"], {
+const child = spawn(DSH_BIN, ["--profile", DEFAULT_PROFILE], {
   env: { ...process.env, DSH_HOME, DSH_OPENTUI_BRIDGE_STDIO: "1", DSH_OPENTUI_CAP_SMOKE: "1" },
   stdio: ["pipe", "pipe", "pipe"],
 })

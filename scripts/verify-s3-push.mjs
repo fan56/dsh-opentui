@@ -12,12 +12,13 @@
  */
 import { spawn, execFileSync } from "node:child_process"
 import { readlinkSync, readFileSync } from "node:fs"
+import { DEFAULT_PROFILE } from "../packages/shell/scripts/lib/profile-name.mjs"
 
 const ROOT = process.cwd()
 const DSH_BIN = process.env.DSH_BIN || "/opt/homebrew/bin/dsh"
 const DSH_HOME = process.env.DSH_PROBE_HOME || "/private/tmp/dsh-probe-home-024"
 const BUNDLE_DIR = process.env.CAP_SMOKE_BUNDLE || `${ROOT}/packages/shell/dist/bridge`
-const BRIDGE_LINK = `${DSH_HOME}/profiles/opentui-inproc/node_modules/@aiwayds/dsh-opentui-bridge`
+const BRIDGE_LINK = `${DSH_HOME}/profiles/${DEFAULT_PROFILE}/node_modules/@aiwayds/dsh-opentui-bridge`
 const HOLD_MS = Number(process.argv[2] || 6000)
 
 const fail = (message) => { console.error(`FAIL  ${message}`); process.exitCode = 1 }
@@ -39,7 +40,7 @@ try { originalLink = readlinkSync(BRIDGE_LINK) } catch (e) {
 }
 execFileSync("ln", ["-sfn", BUNDLE_DIR, BRIDGE_LINK])
 
-const child = spawn(DSH_BIN, ["--profile", "opentui-inproc"], {
+const child = spawn(DSH_BIN, ["--profile", DEFAULT_PROFILE], {
   env: { ...process.env, DSH_HOME, DSH_OPENTUI_BRIDGE_STDIO: "1" },
   stdio: ["pipe", "pipe", "pipe"],
 })
