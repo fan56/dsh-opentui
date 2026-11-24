@@ -46,13 +46,15 @@
  *   6. Exec `bun <package root>/dist/client/index.js` with the user's
  *      arguments forwarded verbatim, then exits with the client's status.
  *      There is no HTTP-host pre-launch: the launcher only provisions and
- *      spawns the bun client; the client owns its in-process stdio bridge.
+ *      spawns the bun client; the client owns its in-process stdio bridge and
+ *      the bridge host child lifecycle. The bridge ships in `dist/bridge/`;
+ *      no separate lifecycle-helper artifact is required.
  *
  * Path contract for B3 (package.json wiring): the bin resolves everything
  * relative to ITS OWN LOCATION (bin/..), i.e. the package root. The
  * published package must therefore ship `dist/client/index.js` at the
- * package root (plus `dist/scripts/idle-reaper.mjs`, which the bundle
- * spawns) alongside `bin/` and `scripts/`.
+ * package root alongside `bin/`, `scripts/`, `dist/bridge/`, and
+ * `dist/locales/`.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -78,8 +80,8 @@ function capture(cmd, args) {
 
 // --- 0. Bin-level flags: --version short-circuits; --force/--yes parsed -----
 // --force / --yes remain reserved and consumed in this in-process-only build.
-// They currently have no kill/reset side effect; T12 will replace the retired
-// host-launch behavior. Parsing stays so the flags remain user-visible.
+// They currently have no kill/reset side effect. Parsing stays so the flags
+// remain user-visible.
 const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
