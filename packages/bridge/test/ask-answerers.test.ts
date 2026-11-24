@@ -55,6 +55,12 @@ interface Harness {
   waitFor(id: number | string): Promise<Frame>
   emitSessionEvent(session: unknown, event: unknown): void
   emitHost(name: string, request: unknown): Promise<any>[]
+  /** Faithful cordis waterfall dispatch: hooks run in registration order and
+   *  only advance when the current listener calls next(). Used by the ask-slot
+   *  arbitration regression tests; `emitHost` above is deliberately left as the
+   *  legacy "call every listener independently + throwing next" helper so its
+   *  existing assertions stay byte-for-byte valid. */
+  emitHostWaterfall(name: string, request: unknown): Promise<any>
   askFrames(type: string): Frame[]
   dispose(): void
 }
@@ -72,6 +78,9 @@ function makeHarness(overrides: {
    *  re-pin guard early-returns). Used by the F1 policy-inheritance tests to
    *  actually reach `ctx.get('sessions'/'approval')`. */
   repinGet?: (name: string) => unknown
+  /** Register listeners BEFORE `apply()` arms the bridge answerers, to exercise
+   *  router-first waterfall ordering (companion mounted ahead of bridge). */
+  preRegister?: (ctx: any) => void
 } = {}): Harness {
   const previousSwitch = process.env[STDIO_SWITCH]
   process.env[STDIO_SWITCH] = '1'
@@ -156,6 +165,9 @@ function makeHarness(overrides: {
   }
   if (overrides.repinGet !== undefined) ctx.get = overrides.repinGet
   if (overrides.noOn) delete ctx.on
+  // Router-first ordering: register the companion listener before apply() arms
+  // the bridge answerers, so the waterfall hook order is [router, bridge].
+  overrides.preRegister?.(ctx)
   // F1-A2: the construction point reads askDeadlineMs from the plugin config.
   const config = overrides.askDeadlineMs !== undefined ? { askDeadlineMs: overrides.askDeadlineMs } : {}
   // apply() must never throw even when ctx.on is missing or throws.
@@ -212,6 +224,28 @@ function makeHarness(overrides: {
       return (listeners.get(name) || []).map((fn) =>
         Promise.resolve(fn(request, async () => { throw new Error('next() must not be reached when the bridge claims the ask') })),
       )
+    },
+    emitHostWaterfall(name: string, request: unknown): Promise<any> {
+      // Faithful port of cordis `waterfall()` (events.ts:237-260): hooks run in
+      // registration order; a listener that never calls next() vetoes the rest
+      // of the chain; next() advances exactly one listener and throws on a
+      // second call. The innermost `next` is the built-in behavior — here a
+      // hard reject so "nobody claimed the ask" can never read as a green.
+      const hooks = [...(listeners.get(name) || [])]
+      const dispatch = (): Promise<any> => {
+        const fn = hooks.shift()
+        if (fn === undefined) {
+          return Promise.reject(new Error(`waterfall exhausted: no answerer claimed ${name}`))
+        }
+        let nextCalled = false
+        const next = (): Promise<any> => {
+          if (nextCalled) throw new Error('next() called multiple times')
+          nextCalled = true
+          return dispatch()
+        }
+        return Promise.resolve(fn(request, next))
+      }
+      return dispatch()
     },
     askFrames(type: string) {
       const out: Frame[] = []
@@ -1183,5 +1217,80 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
     // (Stop action) can seed it from session.list.
     expect(r.indexChildIds()).toEqual([])
     expect(r.child.appended).toHaveLength(0)
+  })
+})
+
+describe('ask-slot arbitration — real waterfall next() chain (oldfox NO CHANGE)', () => {
+  /** Minimal fake of `@aiwayds/dsh-ask-router@0.7.0`'s answerer — NO dependency
+   *  on the real package and NO `askSurfaces` registry. Its exact 0.7.0 contract
+   *  (installed lib/index.js:117-120) is:
+   *    on('user-questions/request', (request, next) =>
+   *      registry.list().length === 0 ? next() : routeAsk(surfaces, request))
+   *  Zero surface ⇒ delegate once via next(), push no ask of its own. */
+  function makeZeroSurfaceRouter() {
+    const state = { nextCalls: 0 }
+    const listener = (_request: unknown, next: () => Promise<any>) => {
+      state.nextCalls++
+      return next()
+    }
+    return { listener, state }
+  }
+
+  const questionRequest = (sessionId: string, callId: string) => ({
+    agent: { session: { id: sessionId } },
+    questions: [{
+      id: 'q1', question: 'Which DB?', header: 'Storage',
+      options: [{ label: 'Postgres' }], multiSelect: false,
+    }],
+    wait: { callId },
+  })
+  const answerQuestions = (eventId: string, id: number) => ({
+    id, method: 'ask.response',
+    params: { eventId, kind: 'questions', answers: [{ id: 'q1', selected: ['Postgres'] }] },
+  })
+
+  test('bridge-first + zero-surface router-after: exactly one ask.request, bridge claims, router never re-asks', async () => {
+    const router = makeZeroSurfaceRouter()
+    const h = makeHarness()
+    // apply() armed the bridge answerers first; append the router AFTER them.
+    h.ctx.on('user-questions/request', router.listener)
+    const { sessionId } = await startTurn(h, 1)
+
+    const claim = h.emitHostWaterfall('user-questions/request', questionRequest(sessionId, 'call-wf1'))
+    await sleep(0)
+    const asks = h.askFrames('ask.request')
+    expect(asks).toHaveLength(1)
+    // Bridge vetoed the chain by never calling next(): the downstream router
+    // listener never ran, so it could not push a second card.
+    expect(router.state.nextCalls).toBe(0)
+
+    h.send(answerQuestions(asks[0].payload.eventId, 40))
+    expect((await h.waitFor(40)).ok).toBe(true)
+    expect(await mustSettle(claim, 'bridge-first waterfall')).toEqual({
+      answers: [{ id: 'q1', selected: ['Postgres'] }],
+    })
+    expect(h.askFrames('ask.request')).toHaveLength(1) // still exactly one
+  })
+
+  test('zero-surface router-first + bridge-after: router next() then bridge claims, exactly one ask.request', async () => {
+    const router = makeZeroSurfaceRouter()
+    // Register the companion listener BEFORE apply() arms the bridge answerers.
+    const h = makeHarness({ preRegister: (ctx) => ctx.on('user-questions/request', router.listener) })
+    const { sessionId } = await startTurn(h, 1)
+
+    const claim = h.emitHostWaterfall('user-questions/request', questionRequest(sessionId, 'call-wf2'))
+    await sleep(0)
+    const asks = h.askFrames('ask.request')
+    expect(asks).toHaveLength(1)
+    // Router stepped aside exactly once; bridge then claimed and vetoed any
+    // further hook, so the chain terminated on the first (and only) card.
+    expect(router.state.nextCalls).toBe(1)
+
+    h.send(answerQuestions(asks[0].payload.eventId, 41))
+    expect((await h.waitFor(41)).ok).toBe(true)
+    expect(await mustSettle(claim, 'router-first waterfall')).toEqual({
+      answers: [{ id: 'q1', selected: ['Postgres'] }],
+    })
+    expect(h.askFrames('ask.request')).toHaveLength(1)
   })
 })

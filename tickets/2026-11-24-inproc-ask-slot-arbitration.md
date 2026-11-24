@@ -35,3 +35,41 @@
 - 未真实启动“bridge+router”宿主，实际监听器注册顺序、日志与 surface 失败回退均为**未证实**。
 - 只核到已装 0.7.0；未验证未来版本，但 catalog 的 `^0.7.0` 守卫会拒绝 0.8+。
 - 未评估新增 surface 后的 UI 体验、性能与宿主启动时序。
+
+## oldfox 裁定（2026-11-24）
+
+- **GO**：按 D2 决议默认装 `ask-router`（catalog `defaultOn:true`，`declaredRange:^0.7.0`）。
+- **运行时 NO CHANGE**：不改 bridge answerer、不新增让位 / 仲裁逻辑（无 `ctx.get('askSurfaces')` 检测、无 surface 注册）。理由：当前默认 roster 零 surface，bridge-first 与 router-first 两种监听顺序今天都安全（见下矩阵），没有可落地的运行时缺陷。
+- **门禁换成真 waterfall**：`'user-questions/request'` 的两条顺序用例必须跑在真 `next()` 串联 harness（`packages/bridge/test/ask-answerers.test.ts` 的 `emitHostWaterfall()`）上；旧的 `emitHost()` 是「逐个 listener 独立调用 + 抛错 next」，用它写「bridge 仍应答」是**假门禁**。
+
+## 顺序 / 失败模式矩阵（源码推定，未真机启动）
+
+| 监听顺序 | surface 状态 | 结果 | 风险 |
+|---|---|---|---|
+| bridge-first（当前 provision：base→bridge→companions） | 0 | bridge 先占槽（从不调 `next()`），router 根本不执行 → 恰好 1 个 `ask.request`，bridge 应答 | 无 |
+| bridge-first | ≥1 | bridge 先占槽并否决链，router 的 surface 静默饥饿 | **中**：surface 永远收不到 ask |
+| router-first | 0 | router 调 `next()` 让位 → bridge 占槽 → 恰好 1 个 `ask.request` | 无 |
+| router-first | ≥1 且至少一个成功 | router 先答先得，否决 bridge，bridge 不发 `ask.request` | 低：设计如此，但 bridge UI 不参与 |
+| router-first | ≥1 且全部失败 | router reject 且**不**调 `next()` → bridge 无兜底机会 | **中**：失去 bridge 兜底 |
+| 任意顺序 | `approval/request` | 只有 bridge 注册该事件，router 不参与 | 无 |
+
+> 表中「零 surface + 两种顺序」两行已由下面的真 waterfall 回归用例在测试内证实；含 surface 的两行只来自源码链推定，**未真机启动 bridge+router 宿主**，实际监听器先后与 surface 全失败回退仍属未证实（与「未覆盖项」一致）。引入 surface 前需按这两行做仲裁。
+
+## research/05 旧判断勘误
+
+- `research/2026-11-24-inproc-only/05-companion-parity.md` 与 D2 票旧文所称「重复占槽」已被 0.7.0 源码推翻：本票「结论先行」与「两侧注册 / 消费链」已列证据（router 只依赖 `userQuestions`、提供 `askSurfaces`；bridge 的 `ask.request` 是输出帧；waterfall 只让第一个不调 `next()` 的应答者处理请求）。
+- **不改 research 历史调研原文**；勘误只落在本票与 `2026-11-24-inproc-D2-companion-parity.md`。
+
+## 验收测试（回归用例名）
+
+`packages/bridge/test/ask-answerers.test.ts` 新增 `describe('ask-slot arbitration — real waterfall next() chain (oldfox NO CHANGE)')`：
+
+- `bridge-first + zero-surface router-after: exactly one ask.request, bridge claims, router never re-asks`
+- `zero-surface router-first + bridge-after: router next() then bridge claims, exactly one ask.request`
+
+两条均断言：恰好 1 个 `ask.request`、bridge 应答、`next()` 调用计数符合预期（bridge-first=0 / router-first=1）、链正确终止。fake router 只复刻 0.7.0 的「零 surface → `next()`」契约，**不引入真实 ask-router 包依赖**。
+
+## 运维逃生口
+
+- `DSH_OPENTUI_COMPANION_LATEST=off`（简写 `COMPANION_LATEST=off`）**只能阻止尚未安装时新增** companion。`managedBundles()`（`packages/shell/scripts/provision-inproc-profile.mjs:810-818`）会把 manifest 里已声明的 catalog dependency / bundle 保留下来，因此该开关**无法停用或卸载已经装上的 router**。
+- 要真正下线 router：必须同时在 profile manifest 删掉 `dependencies['@aiwayds/dsh-ask-router']` 与 `dsh.profile.bundles` 中的该 bundle（并移除对应的 `node_modules` 包），否则下次 provision 会再次保留 / 重装。`DSH_OPENTUI_COMPANIONS` 只替换选择集，同样不卸载已装项。

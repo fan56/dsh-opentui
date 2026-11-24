@@ -42,7 +42,7 @@ A。理由：`05 §2` 已证明老 recommended 层多数组件在 inproc 下「�
 ## 由此产生的实现项与风险
 
 1. **catalog 变更**：现有 8 个 opt-in 全部改为默认装（或让 provision 默认传 `all`）；新增 `topics-memory`、`cron` 两条。
-2. **ask 槽仲裁（必须解决）**：`ask-router` 与 bridge 的 `ask.request` 帧会重复占槽（`05 §1 #2`、catalog 的 reason 明确写了）。装上就必须定「谁应答、谁回退」。
+2. **ask 槽仲裁（引入 surface 前必须解决；当前默认 roster 无需）**：源码核对推翻了「重复占槽」的旧判断（`05 §1 #2` 与 catalog reason 沿用旧说法）——0.7.0 的 `ask-router` 不提供也不抢占 `userQuestions` 服务槽，只提供 `askSurfaces` 并注册 `user-questions/request` waterfall 应答者；bridge 的 `ask.request` 是宿主→stdio 客户端的输出帧，不是 router 消费的共享槽，两者不会重复应答 / 重复弹 UI / 占槽失败。零 surface 时 router 调 `next()` 让位，approval 始终由 bridge 独占。**当前默认 roster 无 surface，运行时可共存；引入 surface 前必须做仲裁**（详见 `2026-11-24-inproc-ask-slot-arbitration.md`）。
 3. **审批双层（评审已定性，不是「叠加」而是行为变更）**：`approval-policy` 以 `prepend` 进 `approval/request`，对 `origins:['subagent','scheduled']` 用 `windowSeconds / defaultOutcome:'rejected'` 去 race 下游；bridge 的 answerer 是「return 占住 waterfall」。**决议（2026-11-24）：保留该行为**，并把窗口调到 **300 秒（5 分钟）**。
    - 可配置性已核：`windowSeconds` 是 `z.number().min(0).max(86400).default(60).volatile()`（`@aiwayds/dsh-approval-policy/lib/index.js:54-60`），出现在 `/settings`，值持久化在 profile patch 的 `dsh-approval-policy` 条目 → **必须进「用户段必须保留」的键清单**，否则下次 provision 冲掉。
    - 动作：新 profile 模板里 `dsh-approval-policy` 条目 `config: { windowSeconds: 300 }`；`origins` 保持默认 `['subagent','scheduled']`。
