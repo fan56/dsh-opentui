@@ -791,12 +791,64 @@ export interface SessionPrunePlan {
 	retentionDays: number
 	entries: readonly SessionPrunePlanEntry[]
 	counts: { prune: number; skip: number; byReason: Record<string, number> }
+	/**
+	 * retention P2 — opaque host-issued plan receipts. The client echoes ONLY
+	 * these three values back to `applyPrune`; it never sends entries, paths,
+	 * roots or policy. Optional so older / fake projects still typecheck.
+	 */
+	fingerprint?: string
+	configFingerprint?: string
 }
 export interface SessionPrunePlanParams {
 	retentionDays?: number
 	stagedIds?: string[]
 	blankGraceDays?: number
 	lockGraceMs?: number
+}
+
+/** retention P2 — the ONLY three values a prune apply may carry back. */
+export interface SessionPruneApplyParams {
+	fingerprint: string
+	configFingerprint: string
+	generatedAt: number
+}
+/** Apply outcome, hand-projected: no absolute paths cross the seam. */
+export interface SessionPruneApplyResult {
+	opId: string
+	applied: readonly { id: string }[]
+	failed: readonly { id: string; code: string; message: string }[]
+	/** Count only — the backend's orphan markers are absolute paths. */
+	markedOrphans: number
+}
+
+/**
+ * retention P3 — prepare result. `token` is an opaque server-issued string;
+ * only session ids + residence age cross (no path / manifest / root).
+ */
+export interface SessionPurgeCandidate {
+	id: string
+	ageDays: number
+	appliedAt: number
+}
+export interface SessionPurgeRejection {
+	id?: string
+	code: string
+	message: string
+}
+export interface SessionPurgePrepareResult {
+	opId: string
+	token: string
+	candidates: readonly SessionPurgeCandidate[]
+	rejected: readonly SessionPurgeRejection[]
+}
+export interface SessionPurgeCommitParams {
+	token: string
+}
+/** Commit outcome, hand-projected: no absolute paths cross the seam. */
+export interface SessionPurgeCommitResult {
+	opId: string
+	purged: readonly { id: string }[]
+	failed: readonly SessionPurgeRejection[]
 }
 
 /** What the vendored view needs from a session backend, no more. */
@@ -813,6 +865,22 @@ export interface SessionSeam {
 	 * NO path input: the root is host-derived, never a wire/seam parameter.
 	 */
 	planPrune?(params?: SessionPrunePlanParams): Promise<SessionPrunePlan>
+	/**
+	 * retention P2 — move the host-RECOMPUTED prune candidates into trash.
+	 * Takes ONLY the opaque plan receipts; entries / paths / policy never
+	 * cross back. Optional — a seam without the frame degrades to a notice.
+	 */
+	applyPrune?(params: SessionPruneApplyParams): Promise<SessionPruneApplyResult>
+	/**
+	 * retention P3 — read-only purge prepare: enumerate eligible trash
+	 * sessions and issue a server-signed confirmation token. Deletes nothing.
+	 */
+	preparePurge?(): Promise<SessionPurgePrepareResult>
+	/**
+	 * retention P3 — commit a PREPARED purge by echoing its opaque token.
+	 * The host re-derives and re-gates the entire set before any delete.
+	 */
+	commitPurge?(params: SessionPurgeCommitParams): Promise<SessionPurgeCommitResult>
 	searchSessions(query: string): Promise<{ id: string; snippet: string }[]>
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined

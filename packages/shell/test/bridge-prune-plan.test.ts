@@ -7,6 +7,9 @@ import {
   BridgeProtocolError,
   BridgeSessionSeam,
   projectBridgePrunePlan,
+  projectBridgePruneApply,
+  projectBridgePurgeCommit,
+  projectBridgePurgePrepare,
   type BridgeEventFrame,
   type BridgeTransport,
 } from "../src/client/bridge-session-seam.ts"
@@ -86,5 +89,93 @@ describe("session.prune.plan seam face", () => {
     await seam.planPrune({ stagedIds: ["caller-extra"] })
     expect(calls[0].params.stagedIds).toEqual(["caller-extra", "s-staged-before-turn"])
     expect(Object.keys(calls[0].params)).not.toContain("sessionsRoot")
+  })
+
+  test("plan receipts are whitelisted through to applyPrune", async () => {
+    const calls: Array<{ method: string; params: unknown }> = []
+    const seam = makeSeam({ kind: "value", value: {
+      ...PLAN_REPLY, fingerprint: "fp", configFingerprint: "cfp", secret: "leak",
+    } }, calls)
+    const plan = await seam.planPrune()
+    expect(plan.fingerprint).toBe("fp")
+    expect(plan.configFingerprint).toBe("cfp")
+    expect(Object.keys(plan)).not.toContain("secret")
+  })
+})
+
+describe("retention P2/P3 — write-side seam faces", () => {
+  const APPLY_REPLY = {
+    opId: "op-1",
+    runDir: "/home/user/.dsh/trash/sessions/2026-01-01T00-00-00-000Z",
+    applied: [{ id: "a", from: "/sessions/a", to: "/trash/a" }],
+    failed: [{ id: "b", code: "LOCKED", message: "lock held" }],
+    markedOrphans: ["/trash/orphan"],
+  }
+  const PREPARE_REPLY = {
+    opId: "op-2",
+    token: "signed-token",
+    candidates: [{
+      id: "trashed", encoded: "trashed", run: "2026-01-01T00-00-00-000Z",
+      path: "/home/user/.dsh/trash/sessions/2026-01-01T00-00-00-000Z/trashed",
+      ageDays: 9, appliedAt: 1, manifest: { id: "trashed", to: "/trash/trashed", opId: "op-1", appliedAt: 1 },
+    }],
+    rejected: [{ path: "/trash/fresh", code: "FRESH", message: "too fresh" }],
+  }
+  const COMMIT_REPLY = {
+    opId: "op-2",
+    purged: [{ id: "trashed", path: "/trash/trashed" }],
+    failed: [{ code: "LOCKED", message: "lock held" }],
+    manifestPath: "/home/user/.dsh/trash/journal/purge-op-2.jsonl",
+  }
+
+  test("applyPrune sends ONLY the three opaque receipts and projects no paths", async () => {
+    const calls: Array<{ method: string; params: unknown }> = []
+    const seam = makeSeam({ kind: "value", value: APPLY_REPLY }, calls)
+    const result = await seam.applyPrune({ fingerprint: "fp", configFingerprint: "cfp", generatedAt: 7 })
+    expect(calls).toEqual([{
+      method: "session.prune.apply",
+      params: { fingerprint: "fp", configFingerprint: "cfp", generatedAt: 7 },
+    }])
+    expect(result).toEqual({
+      opId: "op-1", applied: [{ id: "a" }],
+      failed: [{ id: "b", code: "LOCKED", message: "lock held" }], markedOrphans: 1,
+    })
+    expect(JSON.stringify(result)).not.toContain("/home/")
+  })
+
+  test("preparePurge sends phase=prepare and drops paths/manifests", async () => {
+    const calls: Array<{ method: string; params: unknown }> = []
+    const seam = makeSeam({ kind: "value", value: PREPARE_REPLY }, calls)
+    const result = await seam.preparePurge()
+    expect(calls).toEqual([{ method: "session.prune.purge", params: { phase: "prepare" } }])
+    expect(result).toEqual({
+      opId: "op-2", token: "signed-token",
+      candidates: [{ id: "trashed", ageDays: 9, appliedAt: 1 }],
+      rejected: [{ code: "FRESH", message: "too fresh" }],
+    })
+    expect(JSON.stringify(result)).not.toContain("/trash/")
+  })
+
+  test("commitPurge sends phase=commit + token only; a host error propagates unchanged", async () => {
+    const calls: Array<{ method: string; params: unknown }> = []
+    const seam = makeSeam({ kind: "value", value: COMMIT_REPLY }, calls)
+    const result = await seam.commitPurge({ token: "signed-token" })
+    expect(calls).toEqual([{
+      method: "session.prune.purge", params: { phase: "commit", token: "signed-token" },
+    }])
+    expect(result).toEqual({
+      opId: "op-2", purged: [{ id: "trashed" }],
+      failed: [{ code: "LOCKED", message: "lock held" }],
+    })
+
+    const refusal = new BridgeProtocolError("STALE_TOKEN", "expired")
+    const failing = makeSeam({ kind: "error", error: refusal }, [])
+    await expect(failing.commitPurge({ token: "signed-token" })).rejects.toBe(refusal)
+  })
+
+  test("malformed write replies throw a protocol error (never a fake OK)", () => {
+    expect(() => projectBridgePruneApply({ opId: "x", applied: null, failed: [] })).toThrow(/no applied\/failed/)
+    expect(() => projectBridgePurgePrepare({ opId: "x" })).toThrow(/no opId\/token/)
+    expect(() => projectBridgePurgeCommit({ opId: "x", purged: [], failed: null })).toThrow(/no purged\/failed/)
   })
 })
