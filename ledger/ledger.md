@@ -55,18 +55,18 @@ Corrections applied in provenance mapping data:
 
 | method | kind | source line | protocol nature |
 |---|---|---:|---|
-| bridge.ping | meta | 5167 | protocol version negotiation (no host call) |
-| bridge.hello | meta | 5176 | protocol version negotiation (no host call) |
-| session.prune.plan | business | 5210 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
-| session.prune.apply | business | 5216 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
-| subagents.interrupt | business | 5283 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| subagents.stopChildren | business | 5287 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| session.open | business | 5291 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
-| session.send | business | 5295 | single in-flight turn state machine + streaming turn |
-| session.close | business | 5299 | binding dispose |
-| turn.abort | business | 5303 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
-| ask.response | business | 5307 | bridge-internal AskRegistry settlement (no host call) |
-| journal.replay | business | 5311 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
+| bridge.ping | meta | 5501 | protocol version negotiation (no host call) |
+| bridge.hello | meta | 5510 | protocol version negotiation (no host call) |
+| session.prune.plan | business | 5544 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
+| session.prune.apply | business | 5550 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
+| subagents.interrupt | business | 5617 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| subagents.stopChildren | business | 5621 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| session.open | business | 5625 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
+| session.send | business | 5629 | single in-flight turn state machine + streaming turn |
+| session.close | business | 5633 | binding dispose |
+| turn.abort | business | 5637 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
+| ask.response | business | 5641 | bridge-internal AskRegistry settlement (no host call) |
+| journal.replay | business | 5645 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
 
 ## Wired manual host-copy (@manual count source — must be 0)
 

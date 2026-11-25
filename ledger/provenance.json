@@ -195,84 +195,84 @@
       {
         "method": "bridge.ping",
         "kind": "meta",
-        "source_line": 5167,
+        "source_line": 5501,
         "capir_id": null,
         "note": "protocol version negotiation (no host call)"
       },
       {
         "method": "bridge.hello",
         "kind": "meta",
-        "source_line": 5176,
+        "source_line": 5510,
         "capir_id": null,
         "note": "protocol version negotiation (no host call)"
       },
       {
         "method": "session.prune.plan",
         "kind": "business",
-        "source_line": 5210,
+        "source_line": 5544,
         "capir_id": null,
         "note": "retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion"
       },
       {
         "method": "session.prune.apply",
         "kind": "business",
-        "source_line": 5216,
+        "source_line": 5550,
         "capir_id": null,
         "note": "retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id"
       },
       {
         "method": "subagents.interrupt",
         "kind": "business",
-        "source_line": 5283,
+        "source_line": 5617,
         "capir_id": null,
         "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
       },
       {
         "method": "subagents.stopChildren",
         "kind": "business",
-        "source_line": 5287,
+        "source_line": 5621,
         "capir_id": null,
         "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
       },
       {
         "method": "session.open",
         "kind": "business",
-        "source_line": 5291,
+        "source_line": 5625,
         "capir_id": null,
         "note": "binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful"
       },
       {
         "method": "session.send",
         "kind": "business",
-        "source_line": 5295,
+        "source_line": 5629,
         "capir_id": null,
         "note": "single in-flight turn state machine + streaming turn"
       },
       {
         "method": "session.close",
         "kind": "business",
-        "source_line": 5299,
+        "source_line": 5633,
         "capir_id": null,
         "note": "binding dispose"
       },
       {
         "method": "turn.abort",
         "kind": "business",
-        "source_line": 5303,
+        "source_line": 5637,
         "capir_id": null,
         "note": "turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel"
       },
       {
         "method": "ask.response",
         "kind": "business",
-        "source_line": 5307,
+        "source_line": 5641,
         "capir_id": null,
         "note": "bridge-internal AskRegistry settlement (no host call)"
       },
       {
         "method": "journal.replay",
         "kind": "business",
-        "source_line": 5311,
+        "source_line": 5645,
         "capir_id": null,
         "note": "I-class persistence read (persistence.open(id,'read')); no same-name CapIR id"
       }
