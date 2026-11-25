@@ -67,6 +67,7 @@ import type {
 	SeamSettingsSource,
 	SeamStatus,
 	SeamSubagentView,
+	SubagentTranscriptStatus,
 	SeamTranscriptRow,
 	SeamTurnCallbacks,
 	SessionSeam,
@@ -1509,6 +1510,77 @@ export function bridgeReplayRowsToChildLog(rows: readonly BridgeReplayRow[]): st
 	}).filter((line) => line !== "")
 }
 
+// ---- LIVE TRANSCRIPT — additive `agent.transcript` row projection + cap ----
+
+/** 500 rows / 64 KiB (UTF-8) per child transcript. Both limits are hard. */
+export const CHILD_TRANSCRIPT_MAX_LINES = 500
+export const CHILD_TRANSCRIPT_MAX_BYTES = 64 * 1024
+
+const childTextEncoder = new TextEncoder()
+// fatal:true makes decode throw on a partial trailing glyph, so the cut can be
+// walked back to a clean UTF-8 boundary instead of emitting a replacement char.
+const childStrictTextDecoder = new TextDecoder("utf-8", { fatal: true })
+
+function childTranscriptBytes(line: string): number {
+	return childTextEncoder.encode(line).length
+}
+
+/** A single line may use the whole byte budget minus the +1 separator counted by capChildLog. */
+const CHILD_TRANSCRIPT_LINE_BUDGET = CHILD_TRANSCRIPT_MAX_BYTES - 1
+/** Visible marker so a truncated line is distinguishable from a naturally short one. */
+const CHILD_TRANSCRIPT_TRUNCATION_MARKER = "…"
+const CHILD_TRANSCRIPT_TRUNCATION_MARKER_BYTES = childTextEncoder.encode(CHILD_TRANSCRIPT_TRUNCATION_MARKER).length
+
+/**
+ * Truncate an over-budget single line on a UTF-8 boundary, keeping a marker.
+ * A line that fits is returned verbatim; otherwise cut to LINE_BUDGET minus the
+ * marker, decode strictly (no split multibyte glyph), append the marker. This
+ * keeps the line instead of letting capChildLog's head-drop discard it whole.
+ */
+function childTranscriptTruncate(line: string): string {
+	const bytes = childTextEncoder.encode(line)
+	if (bytes.length <= CHILD_TRANSCRIPT_LINE_BUDGET) return line
+	const cutBudget = CHILD_TRANSCRIPT_LINE_BUDGET - CHILD_TRANSCRIPT_TRUNCATION_MARKER_BYTES
+	for (let end = cutBudget; end > 0; end -= 1) {
+		try {
+			return childStrictTextDecoder.decode(bytes.slice(0, end)) + CHILD_TRANSCRIPT_TRUNCATION_MARKER
+		} catch {
+			// partial multibyte glyph at the cut — try one byte earlier
+		}
+	}
+	return CHILD_TRANSCRIPT_TRUNCATION_MARKER
+}
+
+/**
+ * Cap the per-child log: drop the OLDEST rows until both the row count and the
+ * byte budget fit, and truncate any single row that alone exceeds the budget.
+ * Pure and shared by the journal-baseline and live-append paths.
+ */
+export function capChildLog(lines: readonly string[]): string[] {
+	const out = lines.map((line) => childTranscriptTruncate(line))
+	let bytes = out.reduce((total, line) => total + childTranscriptBytes(line) + 1, 0)
+	while (out.length > CHILD_TRANSCRIPT_MAX_LINES || (out.length > 0 && bytes > CHILD_TRANSCRIPT_MAX_BYTES)) {
+		const dropped = out.shift()!
+		bytes -= childTranscriptBytes(dropped) + 1
+	}
+	return out
+}
+
+/**
+ * One whitelisted wire row → one viewer line. Only finalized assistant/tool
+ * kinds survive; `notice` / token / delta rows are filtered (notice filtering:
+ * the child log is a raw log view, never a notice consumer). Tool rendering
+ * mirrors `bridgeReplayRowsToChildLog` (▶ call / ⎿ result).
+ */
+export function childTranscriptRowToLine(row: unknown): string {
+	const r = asRecord(row)
+	if (r.kind !== "assistant" && r.kind !== "tool") return ""
+	const text = typeof r.text === "string" ? r.text : ""
+	const output = typeof r.output === "string" ? r.output : ""
+	if (r.kind === "tool") return output !== "" ? `▶ ${text}\n⎿ ${output}` : `▶ ${text}`
+	return text
+}
+
 /** L2b C3: first confirm poll delay, the doubling ceiling, and the total cap
  *  (45s, inside the plan's 30–60s band). A child that is still host-running at
  *  the cap is NOT force-settled — the marker is dropped so the turn-boundary
@@ -2502,6 +2574,16 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * a snapshot copy. Keyed by childId (not run key): a re-run overwrites lines.
 	 */
 	readonly #subagentTranscripts = new Map<string, string[]>()
+	/**
+	 * LIVE TRANSCRIPT — per-child dedupe/order of `agent.transcript` frames.
+	 * The dedupe identity is (childId, turnId RUN, seq): a new turnId is a new
+	 * child run and starts a fresh seen-set while the journal baseline lines stay.
+	 */
+	readonly #subagentTranscriptRuns = new Map<string, { turnId: string; seen: Set<number> }>()
+	/** LIVE TRANSCRIPT — a settled child is journal-authoritative; no live append. */
+	readonly #subagentTranscriptSettled = new Set<string>()
+	/** LIVE TRANSCRIPT — a child whose journal read was attempted and failed. */
+	readonly #subagentTranscriptReadFailed = new Set<string>()
 	/**
 	 * 0.23.0 T1: run keys settled by the registry SWEEP, keyed by childId → the
 	 * run key (`id@<startedAt>`) observed at settle time. A sweep settle has NO
@@ -3647,6 +3729,21 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * LIVE TRANSCRIPT — why a child's transcript is EMPTY. The viewer uses this
+	 * to distinguish "not produced yet" (running, no rows), "read failed"
+	 * (journal read attempted and failed), and "not running" (settled/unknown).
+	 * `ready` means real rows exist (live and/or journal baseline). Never a mock.
+	 */
+	subagentTranscriptStatus(id: string): SubagentTranscriptStatus {
+		const lines = this.#subagentTranscripts.get(id)
+		if (lines !== undefined && lines.length > 0) return "ready"
+		if (this.#subagentTranscriptReadFailed.has(id)) return "read-failed"
+		const view = this.#subagentViews.get(id)
+		if (view === undefined || view.status !== "running") return "not-running"
+		return "pending"
+	}
+
+	/**
 	 * 025-w1b D — steer a RUNNING child via the generated `subagents.prompt` frame
 	 * (host SubagentRuntime.prompt, delivery 'steer'). The seam contract is a
 	 * SYNC boolean: true when the child is known+running (reachable), false when
@@ -3996,7 +4093,12 @@ export class BridgeSessionSeam implements SessionSeam {
 		try {
 			const value = asRecord(await this.#transport.request("journal.replay", { sessionId: childId }))
 			const rows = value.rows
-			if (!Array.isArray(rows)) return // malformed read ≠ empty journal
+			if (!Array.isArray(rows)) {
+				// LIVE TRANSCRIPT: an attempted-but-unreadable journal is a distinct
+				// empty state; never pretend it is "no activity yet".
+				this.#subagentTranscriptReadFailed.add(childId)
+				return // malformed read ≠ empty journal
+			}
 			// P2-3d: a defensive read may carry null / non-object entries; drop them
 			// before bridgeChildJournalMeta reads `.payload` off each row (a null row
 			// would otherwise throw and silently degrade the whole child's meta).
@@ -4008,7 +4110,12 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (this.#subagentSessionId !== sessionAtStart || this.#disposed) return
 			// 025-w1b D — fold the same real rows into the viewer's transcript
 			// lines (sync face reads this cache; never a fabricated log).
-			this.#subagentTranscripts.set(childId, bridgeReplayRowsToChildLog(cleanRows))
+			// LIVE TRANSCRIPT: FIRST journal replay is the baseline; a later
+			// terminal re-read OVERWRITES it (never appends) because the journal
+			// is authoritative after settle. A new baseline starts a fresh seen-set.
+			this.#subagentTranscripts.set(childId, capChildLog(bridgeReplayRowsToChildLog(cleanRows)))
+			this.#subagentTranscriptReadFailed.delete(childId)
+			this.#subagentTranscriptRuns.delete(childId)
 			// Cache by run key even if the view changed in flight: a replay re-fold
 			// can revisit this run later and needs the meta to restore rounds.
 			this.#subagentJournalMeta.set(key, meta)
@@ -4023,6 +4130,10 @@ export class BridgeSessionSeam implements SessionSeam {
 			})
 			this.#emitSubagentViews()
 		} catch {
+			// LIVE TRANSCRIPT: record the failed read so the viewer can say
+			// "read failed" instead of "no activity yet". Existing lines (if any)
+			// are kept — a failed read never wipes a real baseline.
+			this.#subagentTranscriptReadFailed.add(childId)
 			/* best-effort: keep rounds=0 / no model / no lastLine degradation */
 		}
 	}
@@ -4190,6 +4301,19 @@ export class BridgeSessionSeam implements SessionSeam {
 			// synthesized start with viaCatalog and inserts the running row.
 			const runId = typeof payload.runId === "string" ? payload.runId : ""
 			const childId = typeof payload.childId === "string" ? payload.childId : ""
+			// LIVE TRANSCRIPT: a spawn of this child is a NEW run — revoke the
+			// settle lock so live rows can land again (the journal baseline for
+			// the new run is re-read by #ensureChildJournal via the new run key).
+			if (childId !== "") {
+				this.#subagentTranscriptSettled.delete(childId)
+				this.#subagentTranscriptReadFailed.delete(childId)
+			}
+			// Bind the roster to the parent session on the first live spawn so a
+			// foreign transcript frame cannot claim the binding before any valid
+			// live/replay frame establishes it (same rule as the settle path).
+			if (this.#subagentSessionId === undefined && frameSession !== "") {
+				this.#subagentSessionId = frameSession
+			}
 			changed = runId === `${BRIDGE_CATALOG_RUN_PREFIX}${childId}`
 				? this.#foldWithFrozenSettle(BRIDGE_SUBAGENT_CATALOG, payload, now, true)
 				: this.#foldWithFrozenSettle(BRIDGE_AGENT_START, payload, now, true)
@@ -4207,6 +4331,16 @@ export class BridgeSessionSeam implements SessionSeam {
 			// register a mismatching `id@` key.
 			const childId = typeof payload.childId === "string" ? payload.childId : ""
 			const existing = childId !== "" ? this.#subagentViews.get(childId) : undefined
+			// LIVE TRANSCRIPT: freeze live appends from this terminal on. A parent
+			// `tool-workflow/agent-end` may omit childId — pair it through the same
+			// runSeq key the lifecycle fold uses, so both settle paths agree.
+			const lockedChild = childId !== ""
+				? childId
+				: this.#subagentRunSeq.get(bridgeAgentRunKey(
+					typeof payload.runId === "string" ? payload.runId : "",
+					typeof payload.seq === "number" ? payload.seq : -1,
+				))
+			if (lockedChild !== undefined) this.#subagentTranscriptSettled.add(lockedChild)
 			if (existing !== undefined && existing.status === "running") {
 				// A live settle can arrive BEFORE any journal fold has established
 				// #subagentSessionId (turn-external child terminal). Bind it from the
@@ -4266,6 +4400,51 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * LIVE TRANSCRIPT — append one additive `agent.transcript` frame to the
+	 * child's viewer log. Dedupe identity is (childId, turnId, seq): duplicate
+	 * frames (e.g. a replayed stdio frame) never double-paint, and a new turnId
+	 * opens a fresh run. A settled/unknown child is refused — after settle the
+	 * journal read is the only authority. Both caps are enforced on every append.
+	 */
+	#foldAgentTranscript(frame: BridgeEventFrame): void {
+		const payload = asRecord(frame.payload)
+		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
+		const childId = typeof payload.childId === "string" ? payload.childId : ""
+		const turnId = typeof payload.turnId === "string" ? payload.turnId : ""
+		const seq = typeof payload.seq === "number" && Number.isFinite(payload.seq) ? payload.seq : -1
+		const rows = payload.rows
+		if (childId === "" || turnId === "" || seq < 0 || !Array.isArray(rows)) return
+		if (this.#subagentTranscriptSettled.has(childId)) return
+		const view = this.#subagentViews.get(childId)
+		// No ghost rows: only a currently RUNNING child of this binding accepts
+		// live transcript rows (receiver law — this is a class method).
+		if (view === undefined || view.status !== "running") return
+		// Parent-session isolation: this roster is bound to one parent session.
+		// A live transcript frame for a RUNNING child must carry that sessionId.
+		// When no replay/spawn has established the binding yet, bind from this
+		// first valid live frame; any later foreign sessionId is refused so a
+		// different session's child cannot leak rows into this child's log.
+		if (this.#subagentSessionId === undefined) {
+			if (frameSession !== "") this.#subagentSessionId = frameSession
+		} else if (frameSession !== "" && frameSession !== this.#subagentSessionId) return
+		let run = this.#subagentTranscriptRuns.get(childId)
+		if (run === undefined || run.turnId !== turnId) {
+			run = { turnId, seen: new Set<number>() }
+			this.#subagentTranscriptRuns.set(childId, run)
+		}
+		if (run.seen.has(seq)) return
+		run.seen.add(seq)
+		const lines = [...(this.#subagentTranscripts.get(childId) ?? [])]
+		for (const row of rows) {
+			const line = childTranscriptRowToLine(row)
+			if (line !== "") lines.push(line)
+		}
+		this.#subagentTranscripts.set(childId, capChildLog(lines))
+		this.#subagentTranscriptReadFailed.delete(childId)
+		this.#emitSubagentViews()
+	}
+
+	/**
 	 * Derive subagent rows from durable journal rows (replay / recovery / the
 	 * sessionInfo incremental drain), for the SAME session only. A binding change
 	 * clears the old session's map so a /new or a different replay target cannot
@@ -4285,6 +4464,9 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentJournalLoaded.clear()
 			this.#subagentJournalMeta.clear()
 			this.#subagentTranscripts.clear() // 025-w1b D: transcripts belong to the old binding
+			this.#subagentTranscriptRuns.clear() // LIVE TRANSCRIPT: dedupe/order belong to the old binding
+			this.#subagentTranscriptSettled.clear()
+			this.#subagentTranscriptReadFailed.clear()
 			this.#sweepSettledRuns.clear()
 			this.#subagentSettleSnapshots.clear()
 			this.#interruptInFlight.clear() // L2a: in-flight interrupts belong to the old binding
@@ -4829,6 +5011,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#subagentProgress.clear()
 		this.#subagentJournalLoaded.clear()
 		this.#subagentJournalMeta.clear()
+		this.#subagentTranscripts.clear()
+		this.#subagentTranscriptRuns.clear()
+		this.#subagentTranscriptSettled.clear()
+		this.#subagentTranscriptReadFailed.clear()
 		this.#sweepSettledRuns.clear()
 		this.#subagentSettleSnapshots.clear()
 		this.#interruptInFlight.clear()
@@ -5420,6 +5606,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		if (frame.type === "agent.progress") {
 			this.#foldAgentProgress(frame)
+			return
+		}
+		if (frame.type === "agent.transcript") {
+			this.#foldAgentTranscript(frame)
 			return
 		}
 
