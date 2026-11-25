@@ -839,6 +839,35 @@ const desiredManifest = (existing) => ({
   },
 })
 
+/**
+ * A real `dsh plugin add` lets pnpm write `dependencies` in sorted key order
+ * and dsh appends the newly installed companions to `dsh.profile.bundles` in
+ * that same order (see dsh-plugin-manager `reconcile()`), which differs from
+ * `managedBundles()`' catalog order. Bundle order is not semantic — dsh reads
+ * the array as a set — so a replay after a successful install must not rewrite
+ * (and back up) an otherwise-converged manifest. Compare bundle membership
+ * order-insensitively; keep every other field byte-exact so genuine drift
+ * (missing/extra bundle, malformed array, or any other content change) still
+ * goes through the backup + rewrite fail-fast path.
+ */
+function manifestAlreadyConverged(existing, desired) {
+  if (existing === undefined || desired === undefined) return false
+  const current = existing?.dsh?.profile?.bundles
+  const wanted = desired?.dsh?.profile?.bundles
+  if (!Array.isArray(current) || !Array.isArray(wanted) || current.length !== wanted.length) return false
+  const currentSet = new Set(current)
+  if (currentSet.size !== wanted.length || !wanted.every((name) => currentSet.has(name))) return false
+  // desiredManifest() copies every non-bundle field verbatim. Assert that
+  // explicitly so a future widening of desiredManifest cannot silently disable
+  // convergence of those fields.
+  const stripBundles = (manifest) => {
+    const profile = { ...(manifest?.dsh?.profile ?? {}) }
+    delete profile.bundles
+    return JSON.stringify({ ...manifest, dsh: { ...(manifest?.dsh ?? {}), profile } })
+  }
+  return stripBundles(existing) === stripBundles(desired)
+}
+
 /** Version actually mounted in the profile node_modules, or undefined. */
 function installedCompanionVersion(name) {
   try {
@@ -1519,7 +1548,11 @@ function provisionProfileFiles({ externalCarry, repair } = {}) {
       fail(`${manifestPath} is not a valid JSON object manifest — leaving it untouched`)
     }
     const desired = desiredManifest(existing ?? { name: `dsh-profile-${activeProfile()}`, private: true })
-    if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(desired)) {
+    // A real dsh plugin add writes bundles in pnpm's sorted key order, not the
+    // catalog order managedBundles() produces. Treat a converged set in any
+    // order as already correct; every other difference still takes the
+    // backup + rewrite path (see manifestAlreadyConverged).
+    if (manifestAlreadyConverged(existing, desired)) {
       say(2, 'manifest', 'already correct, skipping')
     } else {
       mkdirSync(profileDir, { recursive: true })

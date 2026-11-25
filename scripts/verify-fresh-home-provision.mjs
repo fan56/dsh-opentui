@@ -34,6 +34,10 @@ const PACKAGE_SCOPE = join('@aiwayds', 'dsh-opentui')
 const BRIDGE_NAME = '@aiwayds/dsh-opentui-bridge'
 // The shim is generated alongside the bridge, not a companion bundle.
 const SHIM_NAME = '@aiwayds/dsh-opentui-session-shim'
+// The registry companion installs dsh-jev-core as a transitive dependency for
+// spin-attention; it is never a policy companion bundle. Exclude this one name
+// only — every other @aiwayds directory still counts as an on-disk extra.
+const JEV_CORE_NAME = '@aiwayds/dsh-jev-core'
 const COMPANION_POLICY = join('scripts', 'lib', 'companion-policy.mjs')
 const MANAGED_PATCH_LINES = ['subagent', 'permission', 'llm-pi-ai', 'dsh-approval-policy']
 const LEGACY_PROFILES = ['opentui', 'opentui-inproc']
@@ -231,7 +235,7 @@ function onDiskCompanionIds(profileDir) {
   return entries
     .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
     .map((entry) => `@aiwayds/${entry.name}`)
-    .filter((id) => id !== BRIDGE_NAME && id !== SHIM_NAME)
+    .filter((id) => id !== BRIDGE_NAME && id !== SHIM_NAME && id !== JEV_CORE_NAME)
     .sort()
 }
 

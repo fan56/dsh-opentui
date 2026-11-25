@@ -15,6 +15,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -62,6 +63,17 @@ if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === ${JSON.string
     const pkgDir = path.join(dir, 'node_modules', ...name.split('/'))
     fs.mkdirSync(pkgDir, { recursive: true })
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, version }))
+  }
+  if (process.env.DSH_STUB_SORT_MANIFEST === '1') {
+    // Real dsh plugin add + pnpm write dependencies in sorted key order and
+    // append bundles in that order — not the provisioner's catalog order.
+    // Opt-in so the default fixture stays stable for unrelated tests.
+    const deps = manifest.dependencies
+    manifest.dependencies = Object.fromEntries(Object.keys(deps).sort().map(function (k) { return [k, deps[k]] }))
+    const bundles = manifest.dsh.profile.bundles
+    // dsh-base + the bridge stay first; only the appended companion rows are
+    // written in pnpm's sorted order.
+    manifest.dsh.profile.bundles = bundles.slice(0, 2).concat(bundles.slice(2).sort())
   }
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\\n')
   if (halfFail) { console.error('ERR_PNPM_META_FETCH_FAIL stub (half-write)'); process.exit(1) }
@@ -157,6 +169,45 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(text(second.stdout)).toContain('already satisfied (11/11)')
     expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
     expect(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8')).toBe(manifestBefore)
+  })
+
+  test('replay after a pnpm/dsh sorted manifest write-back creates no .bak', () => {
+    const fx = fixture()
+    // The CI shape: pnpm sorted the dependency keys and dsh appended the
+    // companion bundles in that order, which differs from catalog order.
+    expect(provision(fx, { DSH_STUB_SORT_MANIFEST: '1' }).exitCode).toBe(0)
+    const profile = join(fx.home, 'profiles', DEFAULT_PROFILE)
+    const manifestBefore = readFileSync(join(profile, 'package.json'), 'utf8')
+    const appended = JSON.parse(manifestBefore).dsh.profile.bundles.slice(2)
+    expect(appended).toEqual([...appended].sort())
+
+    const replay = provision(fx, { DSH_STUB_SORT_MANIFEST: '1' })
+    expect(replay.exitCode).toBe(0)
+    expect(text(replay.stdout)).toContain('already correct, skipping')
+    expect(text(replay.stdout)).not.toContain('backed up')
+    expect(readdirSync(profile).filter((name) => name.includes('.bak-'))).toEqual([])
+    expect(readFileSync(join(profile, 'package.json'), 'utf8')).toBe(manifestBefore)
+  })
+
+  test('genuine desired drift is still backed up and rewritten', () => {
+    const fx = fixture()
+    expect(provision(fx, { DSH_STUB_SORT_MANIFEST: '1' }).exitCode).toBe(0)
+    const profile = join(fx.home, 'profiles', DEFAULT_PROFILE)
+    const manifestPath = join(profile, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    // Drop one companion bundle row while leaving its dependency installed:
+    // real desired drift, not merely a reorder of the array.
+    const dropped = manifest.dsh.profile.bundles.pop()
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+
+    const repair = provision(fx, { DSH_STUB_SORT_MANIFEST: '1' })
+    expect(repair.exitCode).toBe(0)
+    const backups = readdirSync(profile).filter((name) => name.startsWith('package.json.bak-'))
+    expect(backups).toHaveLength(1)
+    expect(text(repair.stdout)).toContain('backed up')
+    const backedUp = JSON.parse(readFileSync(join(profile, backups[0]), 'utf8'))
+    expect(backedUp.dsh.profile.bundles).not.toContain(dropped)
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).dsh.profile.bundles).toContain(dropped)
   })
 
   test('DSH_OPENTUI_COMPANION_LATEST=off skips the install but leaves an existing install alone', () => {

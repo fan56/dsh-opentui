@@ -188,6 +188,10 @@ for (const entry of COMPANIONS) {
   if (fs.existsSync(new URL('./missing-companion.flag', import.meta.url)) && name === COMPANIONS[0].name) continue
   fs.mkdirSync(path.join(profileDir, 'node_modules', ...name.split('/')), { recursive: true })
 }
+// The registry companion pulls in dsh-jev-core transitively (spin-attention).
+// It lands in node_modules but is not a policy bundle, so on-disk exactness must
+// ignore it while still rejecting any other extra @aiwayds directory.
+fs.mkdirSync(path.join(profileDir, 'node_modules', '@aiwayds', 'dsh-jev-core'), { recursive: true })
 if (fs.existsSync(new URL('./extra-companion.flag', import.meta.url))) {
   fs.mkdirSync(path.join(profileDir, 'node_modules', '@aiwayds', 'dsh-decoy-extra'), { recursive: true })
 }
@@ -314,6 +318,18 @@ describe('verifier against a fake provisioner', () => {
     expect(statusOf(report, 'workspace:no-deepseek-copy')).toBe('PASS')
     expect(statusOf(report, 'workspace:idempotent')).toBe('PASS')
     expect(existsSync(report.scratchHome)).toBe(false)
+  })
+
+  test('registry transitive dsh-jev-core is on disk but is not an extra companion', async () => {
+    const report: any = await runVerification({ prefix: PREFIX, dshBin, keep: true })
+    try {
+      // The fake provisioner writes it like the real registry install does.
+      expect(existsSync(join(report.profile, 'node_modules', '@aiwayds', 'dsh-jev-core'))).toBe(true)
+      expect(statusOf(report, 'companions:ondisk-exact')).toBe('PASS')
+      expect(String(report.checks.find((c: any) => c.name === 'companions:ondisk-exact').detail)).toBe('onDisk=11 policy=11')
+    } finally {
+      rmSync(report.scratchHome, { recursive: true, force: true })
+    }
   })
 
   test('positive workspace assertions reject a bad contract, a @deepseek-ai copy and a drifting replay', async () => {
@@ -556,7 +572,9 @@ describe('verifier against a fake provisioner', () => {
       writeFileSync(extraFlag, '1')
       let report: any = await runVerification({ prefix: PREFIX, dshBin, keep: false })
       expect(statusOf(report, 'companions:ondisk-exact')).toBe('FAIL')
-      expect(String(report.checks.find((c: any) => c.name === 'companions:ondisk-exact').detail)).toContain('dsh-decoy-extra')
+      const extraDetail = String(report.checks.find((c: any) => c.name === 'companions:ondisk-exact').detail)
+      expect(extraDetail).toContain('extra: @aiwayds/dsh-decoy-extra')
+      expect(extraDetail).not.toContain('dsh-jev-core')
 
       rmSync(extraFlag, { force: true })
       writeFileSync(missingFlag, '1')
