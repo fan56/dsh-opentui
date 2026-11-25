@@ -775,6 +775,33 @@ export interface SeamAccountState {
 	linksPresent: boolean
 }
 
+/**
+ * retention P1 — READ-ONLY prune plan (dry run). Structural mirror of the
+ * shell bridge seam's plan (tui-base must not import from shell, ADR-0006).
+ * `location` is a backend-resolved artifact path in the RESULT; there is NO
+ * client-supplied path input — the bridge derives the sessions root from host
+ * config / DSH_HOME.
+ */
+export interface SessionPrunePlanEntry {
+	sessionId: string
+	decision: "prune" | "skip"
+	reason?: string
+	location?: string
+	ageDays?: number
+}
+export interface SessionPrunePlan {
+	generatedAt: number
+	retentionDays: number
+	entries: readonly SessionPrunePlanEntry[]
+	counts: { prune: number; skip: number; byReason: Record<string, number> }
+}
+export interface SessionPrunePlanParams {
+	retentionDays?: number
+	stagedIds?: string[]
+	blankGraceDays?: number
+	lockGraceMs?: number
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -782,6 +809,13 @@ export interface SessionSeam {
 
 	/** Session data reads (dialog-session-list, session-tabs, app routes). */
 	listSessions(limit?: number): Promise<SeamSessionSummary[]>
+	/**
+	 * retention P1 — READ-ONLY prune plan (dry run). The real client
+	 * (BridgeSessionSeam) implements this face and stays callable through it;
+	 * other seams may lack the frame, so it is optional and callers use `?.()`.
+	 * NO path input: the root is host-derived, never a wire/seam parameter.
+	 */
+	planPrune?(params?: SessionPrunePlanParams): Promise<SessionPrunePlan>
 	searchSessions(query: string): Promise<{ id: string; snippet: string }[]>
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined
