@@ -2060,6 +2060,14 @@ export function probeAgentProgressResidue(ctx: BridgeContext): AgentProgressResi
   return agentProgressResidues.get(ctx)?.()
 }
 
+// LIVE TRANSCRIPT: wire-neutral residue probe (same pattern as progress) so a
+// test can prove a settled child leaves no transcript run state behind.
+export type AgentTranscriptResidue = { childTranscripts: number }
+const agentTranscriptResidues = new WeakMap<BridgeContext, () => AgentTranscriptResidue>()
+export function probeAgentTranscriptResidue(ctx: BridgeContext): AgentTranscriptResidue | undefined {
+  return agentTranscriptResidues.get(ctx)?.()
+}
+
 export function apply(ctx: BridgeContext, config: unknown): unknown {
   const logger = ctx.logger
 
@@ -2622,6 +2630,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     childProgress: childProgress.size,
     progressSentFp: progressSentFp.size,
   }))
+  agentTranscriptResidues.set(ctx, () => ({ childTranscripts: childTranscripts.size }))
 
   /** Stdout write for one throttled progress snapshot, de-duped by fingerprint. */
   function flushProgress(childId: string): void {
@@ -2674,6 +2683,109 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     progressPending.clear()
     progressSentFp.clear()
     childProgress.clear()
+    clearTranscriptState()
+  }
+
+  // ---- LIVE TRANSCRIPT — additive `agent.transcript` frames -----------------
+  //
+  // `agent.progress` carries only rounds/lastLine/elapsedSec (a hot coalesced
+  // snapshot) and MUST NOT be widened. This is a SEPARATE additive frame for the
+  // /subagents transcript: only FINALIZED rows travel — a completed
+  // `assistant/message` (full text, never a streamed delta) and a `tool/call`
+  // paired with its `tool/result`. `agent/assistant-stream` chunks stay in the
+  // progress path; they never produce a transcript row. Rows are whitelisted to
+  // kind 'assistant' | 'tool' (never 'notice' / 'token' / 'delta'), so the shell
+  // can append them through the child-log projection without a second renderer.
+  //
+  // Per child run, `seq` starts at 0 and is strictly monotonic. A pending row is
+  // flushed immediately on the frame boundary and ALWAYS flushed before any
+  // settle terminal, so no transcript frame can land after the child ended.
+  interface AgentTranscriptRow {
+    kind: 'assistant' | 'tool'
+    text: string
+    output?: string
+  }
+  interface ChildTranscriptState {
+    turnId: string
+    seq: number
+    pending: AgentTranscriptRow[]
+    /** finalized call side of a tool pair, keyed by callId (bounded, settle-cleared). */
+    toolCalls: Map<string, string>
+  }
+  const childTranscripts = new Map<string, ChildTranscriptState>()
+  const MAX_PENDING_TOOL_CALLS = 64
+
+  /** Run identity for a child frame = the in-flight turn (same key as progress). */
+  function transcriptTurnId(): string {
+    return inFlightTurnId ?? ''
+  }
+
+  function childTranscriptState(childId: string): ChildTranscriptState {
+    let st = childTranscripts.get(childId)
+    const turnId = transcriptTurnId()
+    if (st === undefined || st.turnId !== turnId) {
+      st = { turnId, seq: 0, pending: [], toolCalls: new Map() }
+      childTranscripts.set(childId, st)
+    }
+    return st
+  }
+
+  /** Stdout write of one finalized-row batch. Empty pending never emits. */
+  function flushTranscript(childId: string): void {
+    const st = childTranscripts.get(childId)
+    if (st === undefined || st.pending.length === 0 || binding === undefined) return
+    const rows = st.pending.splice(0)
+    emitEvent('agent.transcript', {
+      turnId: st.turnId,
+      sessionId: binding.sessionId,
+      childId,
+      seq: st.seq,
+      rows,
+    })
+    st.seq += 1
+  }
+
+  /** Flush pending transcript rows immediately and drop this run's pair map. */
+  function flushTranscriptNow(childId: string): void {
+    flushTranscript(childId)
+    const st = childTranscripts.get(childId)
+    if (st !== undefined) st.toolCalls.clear()
+  }
+
+  /** Settle terminal — flush ALL children before the terminal frame. */
+  function flushAllTranscript(): void {
+    for (const childId of [...childTranscripts.keys()]) flushTranscriptNow(childId)
+  }
+
+  /** Binding teardown / roster reset — no live row may survive into a new session. */
+  function clearTranscriptState(): void {
+    childTranscripts.clear()
+  }
+
+  /** Settle cleanup for one child: drop its run state entirely. */
+  function clearChildTranscript(childId: string): void {
+    childTranscripts.delete(childId)
+  }
+
+  /** Guard shared by all child transcript observations (same scope as progress). */
+  function noteChildTranscriptRow(childId: string, row: AgentTranscriptRow): void {
+    if (binding === undefined || childId === '' || childId === binding.sessionId) return
+    const indexed = getSubagentIndex(ctx).get(childId)
+    if (indexed === undefined || indexed.parentSessionId !== binding.sessionId || indexed.status === 'settled') return
+    const st = childTranscriptState(childId)
+    st.pending.push(row)
+    flushTranscript(childId)
+  }
+
+  /** Full finalized text of a child `assistant/message` (string or content blocks). */
+  function assistantMessageText(data: Record<string, unknown>): string {
+    const message = data.message !== null && typeof data.message === 'object'
+      ? (data.message as Record<string, unknown>)
+      : undefined
+    const content = (message?.content ?? data.content ?? message?.text ?? data.text)
+    if (typeof content === 'string') return content
+    if (Array.isArray(content)) return contentText(content)
+    return ''
   }
 
   /** Observe one host live fact for a running child of the bound session and
@@ -3404,6 +3516,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // B3: settle is the authoritative terminal — flush any pending progress
         // FIRST so no throttled progress frame can land after the terminal.
         flushAllProgress()
+        // LIVE TRANSCRIPT: same terminal ordering — no finalized row may land
+        // after the settle terminal.
+        flushAllTranscript()
         emitEvent('agent.settle', {
           turnId,
           sessionId: boundId,
@@ -3423,6 +3538,50 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // for unknown / foreign / settled children.
     if (type === 'assistant/message' && binding !== undefined && sessionId !== binding.sessionId) {
       noteChildProgress(sessionId, 1, '', assistantMessageLastLine(data))
+      // LIVE TRANSCRIPT: the finalized message (full text), NOT a streamed delta.
+      const text = assistantMessageText(data)
+      if (text !== '') noteChildTranscriptRow(sessionId, { kind: 'assistant', text })
+    }
+
+    // LIVE TRANSCRIPT: a child's tool pair rides the same root-scope firehose but
+    // is dropped by the turn gate below (child != bound session). Stash the call
+    // side and emit ONE finalized tool row when its result arrives — same
+    // call→result pairing rule the journal projector uses. Streaming deltas are
+    // never transcribed here (they only feed agent.progress).
+    if (binding !== undefined && sessionId !== binding.sessionId) {
+      if (type === 'tool/call') {
+        const callId = idString(data.callId)
+        if (callId !== 'undefined' && callId !== '') {
+          const indexed = getSubagentIndex(ctx).get(sessionId)
+          if (indexed !== undefined && indexed.parentSessionId === binding.sessionId && indexed.status !== 'settled') {
+            const st = childTranscriptState(sessionId)
+            const name = typeof data.name === 'string' ? data.name : ''
+            if (!st.toolCalls.has(callId) && st.toolCalls.size >= MAX_PENDING_TOOL_CALLS) {
+              const oldest = st.toolCalls.keys().next().value
+              if (oldest !== undefined) st.toolCalls.delete(oldest)
+            }
+            st.toolCalls.set(callId, name)
+          }
+        }
+      } else if (type === 'tool/result') {
+        const message = data.message !== null && typeof data.message === 'object'
+          ? (data.message as Record<string, unknown>)
+          : undefined
+        const callId = idString(message?.toolCallId)
+        if (callId !== 'undefined' && callId !== '') {
+          const indexed = getSubagentIndex(ctx).get(sessionId)
+          if (indexed !== undefined && indexed.parentSessionId === binding.sessionId && indexed.status !== 'settled') {
+            const state = childTranscripts.get(sessionId)
+            const name = state?.toolCalls.get(callId) ?? ''
+            state?.toolCalls.delete(callId)
+            if (name !== '') noteChildTranscriptRow(sessionId, {
+              kind: 'tool',
+              text: name,
+              ...(contentText(message?.content) !== '' ? { output: contentText(message?.content) } : {}),
+            })
+          }
+        }
+      }
     }
 
     // L1 incremental settle: a child's OWN `turn/end` rides the same root-scope
@@ -3447,8 +3606,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // B3: flush this child's pending progress before its terminal so the
         // final live tail is delivered, then stop folding it (noteSettled below).
         flushProgressNow(sessionId)
+        // LIVE TRANSCRIPT: flush finalized rows BEFORE the settle terminal, then
+        // drop the run state — no transcript frame may land after this point.
+        flushTranscriptNow(sessionId)
         index.noteSettled(sessionId, typeof data.seq === 'number' ? data.seq : undefined)
         clearChildProgress(sessionId)
+        clearChildTranscript(sessionId)
         if (shouldSettle) {
           const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
           emitEvent('agent.settle', {

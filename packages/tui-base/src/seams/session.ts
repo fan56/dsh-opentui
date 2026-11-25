@@ -583,6 +583,9 @@ export interface SeamSubagentView {
 	lastLine?: string
 }
 
+/** LIVE TRANSCRIPT — the reason a child transcript is empty (or ready). */
+export type SubagentTranscriptStatus = "ready" | "pending" | "read-failed" | "not-running"
+
 /**
  * One agent-preset row (batch H2): the registry roster entry the /preset
  * picker renders. `isDefault` marks the registry-designated default row
@@ -1193,6 +1196,15 @@ export interface SessionSeam {
 	 * viewer's transcript as "unavailable".
 	 */
 	subagentTranscript?(id: string): string[]
+	/**
+	 * LIVE TRANSCRIPT — why a child's transcript is EMPTY. Optional: a seam
+	 * without it keeps the viewer's generic "no activity yet" empty state.
+	 * - `pending`     — running child, no finalized row produced yet;
+	 * - `read-failed` — journal read was attempted and failed;
+	 * - `not-running` — settled/unknown child, no journal rows;
+	 * - `ready`       — real rows exist (journal baseline and/or live frames).
+	 */
+	subagentTranscriptStatus?(id: string): SubagentTranscriptStatus
 	/**
 	 * Interrupt one child subagent (tui-pi `bridge.cancelChild` parity):
 	 * `subagents/interruptByParent` on the remote face. Optional — a seam

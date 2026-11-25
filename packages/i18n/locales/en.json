@@ -577,6 +577,8 @@
   "panel.subagents.empty.none": "no subagents in this session — spawn one and it shows up here",
   "panel.subagents.transcript.unavailable": "transcript unavailable in this session (no subagent transcript face)",
   "panel.subagents.transcript.empty": "no activity yet — the child's events land here live",
+  "panel.subagents.transcript.readFailed": "transcript could not be read — the child's journal read failed",
+  "panel.subagents.transcript.ended": "no transcript — this subagent is not running and has no saved rows",
   "panel.subagents.transcript.following": " (following)",
   "panel.subagents.transcript.detached": " (detached — scroll to the bottom to re-follow)",
   "panel.subagents.hint.listSorted": "↑↓ select · enter transcript · s start order · shift+k stop all · esc close",

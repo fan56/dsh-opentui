@@ -577,6 +577,8 @@
   "panel.subagents.empty.none": "本会话没有 subagent — 派生一个后会显示在这里",
   "panel.subagents.transcript.unavailable": "本会话中记录不可用（无 subagent transcript face）",
   "panel.subagents.transcript.empty": "还没有活动 — 子代理的事件会实时显示在这里",
+  "panel.subagents.transcript.readFailed": "记录读取失败 — 子代理 journal 读取未完成",
+  "panel.subagents.transcript.ended": "无记录 — 此 subagent 未在运行且没有已保存的行",
   "panel.subagents.transcript.following": "（跟随中）",
   "panel.subagents.transcript.detached": "（已脱离 — 滚动到底部可重新跟随）",
   "panel.subagents.hint.listSorted": "↑↓ 选择 · enter 记录 · s 启动顺序 · shift+k 全部停止 · esc 关闭",

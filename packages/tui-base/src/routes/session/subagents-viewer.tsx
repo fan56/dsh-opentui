@@ -321,6 +321,22 @@ export function SubagentsViewer(props: {
 		if (seam.subagentTranscript === undefined) return []
 		return seam.subagentTranscript(id)
 	})
+	/**
+	 * LIVE TRANSCRIPT — why the transcript is empty. Method call (not a bare
+	 * function reference) keeps the seam's `this` receiver (F2 law).
+	 */
+	const transcriptStatus = createMemo(() => {
+		void tick()
+		const id = browsingId()
+		if (id === undefined || props.seam.subagentTranscriptStatus === undefined) return undefined
+		return props.seam.subagentTranscriptStatus(id)
+	})
+	const emptyTranscriptKey = (): string => {
+		const state = transcriptStatus()
+		if (state === "read-failed") return "panel.subagents.transcript.readFailed"
+		if (state === "not-running") return "panel.subagents.transcript.ended"
+		return "panel.subagents.transcript.empty"
+	}
 	const window = createMemo(() => transcriptWindow(transcript().length, scrollOffset(), TRANSCRIPT_ROWS))
 
 	function startTicking() {
@@ -599,14 +615,14 @@ export function SubagentsViewer(props: {
 							</text>
 						}
 					>
-						<Show
-							when={lines.length > 0}
-							fallback={
-								<text fg={muted} wrapMode="none">
-									{t("panel.subagents.transcript.empty")}
-								</text>
-							}
-						>
+							<Show
+								when={lines.length > 0}
+								fallback={
+									<text fg={muted} wrapMode="none">
+										{t(emptyTranscriptKey())}
+									</text>
+								}
+							>
 							<For each={lines.slice(win.start, win.end)}>
 								{(line) => (
 									<box height={1} flexShrink={0}>
