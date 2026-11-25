@@ -71,7 +71,7 @@ export const COMPANIONS = Object.freeze([
   Object.freeze({
     name: '@aiwayds/dsh-model-sync',
     short: 'model-sync',
-    declaredRange: '^0.10.0',
+    declaredRange: '^0.11.0',
     defaultOn: true,
     reason: 'retained by the D2 user decision to keep the profile model list in sync with the provider catalog.',
   }),

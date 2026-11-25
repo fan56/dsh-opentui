@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read paths, so journals written before it existed still replay, and frames
   without the new reason field stay valid for consumers. New writes always
   carry a closed settle reason.
+- **The companion model-sync guard now tracks `^0.11.0`.** The in-process profile
+  previously declared `^0.10.0`, so npm `latest` = 0.11.0 was skipped as a 0.x
+  cross-minor break and the fresh-home verifier saw only 10 of 11 companions.
+  The guard now admits 0.11.0 while still rejecting 0.12.0. The 0.11.0 manifest
+  keeps the same peers, engine and entry points as 0.10.0. The interaction
+  between 0.11.0's migrate-go/one-shot paths and provision patch ownership is
+  **NOT VERIFIED** and is not claimed as validated by this change.
 
 ## [0.28.1] - 2026-11-25
 

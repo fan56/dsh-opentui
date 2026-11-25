@@ -61,7 +61,7 @@ describe('inproc companion catalog', () => {
 
   test('the two formerly stale 0.x minors now admit their verified npm latest', () => {
     expect(COMPANIONS.find((entry) => entry.short === 'ask-router')?.declaredRange).toBe('^0.8.0')
-    expect(COMPANIONS.find((entry) => entry.short === 'model-sync')?.declaredRange).toBe('^0.10.0')
+    expect(COMPANIONS.find((entry) => entry.short === 'model-sync')?.declaredRange).toBe('^0.11.0')
     // Guard semantics stay intact: the next 0.x minor is still rejected.
     for (const short of ['ask-router', 'model-sync']) {
       const entry = COMPANIONS.find((c) => c.short === short)!
@@ -156,6 +156,24 @@ describe('decideCompanionInstall', () => {
     expect(sameMinor).toEqual({
       action: 'install', spec: '@aiwayds/dsh-subagent-registry@0.21.9', reason: 'latest',
     })
+  })
+
+  test('model-sync guard admits 0.11.0 (fresh and 0.10.x upgrade) but stops 0.12.0', () => {
+    const modelSync = { packageName: '@aiwayds/dsh-model-sync', declaredRange: '^0.11.0' }
+    // Fresh home: nothing installed yet -> install the exact declared latest.
+    expect(decideCompanionInstall({ ...modelSync, resolved: '0.11.0' })).toEqual({
+      action: 'install', spec: '@aiwayds/dsh-model-sync@0.11.0', reason: 'latest',
+    })
+    // An existing 0.10.x pin upgrades to the admitted 0.11 minor.
+    expect(decideCompanionInstall({ ...modelSync, resolved: '0.11.0', currentPin: '0.10.0' })).toEqual({
+      action: 'install', spec: '@aiwayds/dsh-model-sync@0.11.0', reason: 'latest',
+    })
+    // Re-running on the admitted version is a no-op.
+    expect(decideCompanionInstall({ ...modelSync, resolved: '0.11.0', currentPin: '0.11.0' }).reason).toBe('idempotent')
+    // The next 0.x minor is still a breaking boundary and stays skipped.
+    const cross = decideCompanionInstall({ ...modelSync, resolved: '0.12.0' })
+    expect(cross.action).toBe('skip')
+    expect(cross.reason).toContain('cross_minor')
   })
 
   test('at 1.x the guard stays major-only (minor jumps are allowed)', () => {
