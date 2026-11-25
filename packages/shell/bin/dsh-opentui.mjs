@@ -14,6 +14,9 @@
  *      any bun/dsh check, TUI launch, or default-seam change; it always runs
  *      full in-process provisioning (bridge is the default since 0.23.0).
  *      All three are consumed by the bin and never forwarded to the client.
+ *      `upgrade [--tag <dist-tag>] [--dry-run]` is a terminal subcommand that
+ *      upgrades the launcher package itself and exits before any checks or
+ *      provisioning (see scripts/upgrade.mjs).
  *   1. bun check — the client bundle runs under bun (FFI, import attributes,
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
@@ -54,6 +57,7 @@ import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ancestorPids, formatUsage, killStaleProcesses, launcherFlagConflict, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
+import { runUpgrade } from '../scripts/upgrade.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -70,10 +74,22 @@ function capture(cmd, args) {
   return r.stdout ?? ''
 }
 
+// --- 0.5 upgrade: dispatch FIRST, on the raw argv --------------------------
+// Do this BEFORE parseLauncherArgs: that parser consumes --version/--force/
+// --yes/--repair-bridge wherever they appear, which would silently swallow
+// `upgrade --help` (showing the WRONG help) and `upgrade --version/--force/...`
+// (silently dropping a flag the user meant for the subcommand). With the early
+// dispatch the subcommand sees its argv verbatim and rejects unknown flags
+// with exit 2. No bun/dsh check, no provisioning, no TUI.
+const argv = process.argv.slice(2)
+if (argv[0] === 'upgrade') {
+  process.exit(await runUpgrade(argv.slice(1)))
+}
+
 // --- 0. Bin-level flags: --version short-circuits; --force/--yes parsed -----
 // --force / --yes remain parsed for compatibility as deprecated no-ops.
 // They are removed in the next minor release; use --repair-bridge for stale cleanup.
-const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(argv)
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -104,7 +120,7 @@ if (flagConflict === 'repair-force') {
   process.exit(2)
 }
 
-// --- 0.5 usage/help and argument validation --------------------------------
+// --- 0.6 usage/help and argument validation --------------------------------
 // Placed after --version (absolute short-circuit), but BEFORE provisioning or
 // any TUI work: a typo like `--verison` must fail here instead of running a
 // full provision pass first.

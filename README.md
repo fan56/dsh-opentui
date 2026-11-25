@@ -59,8 +59,33 @@ Run `dsh-opentui --help` for the full list of launcher options.
 
 ## Upgrading
 
-The `dsh-opentui upgrade` subcommand is retired; reinstall the package with the
-install command above to update the launcher.
+`dsh-opentui upgrade` upgrades the launcher package itself
+(`@aiwayds/dsh-opentui`) to a newer version from npm. It does not upgrade
+companions, touch `$DSH_HOME`, provision profiles or run migrations — those
+converge on the next launch.
+
+```bash
+dsh-opentui upgrade                 # resolve the `latest` dist-tag (default)
+dsh-opentui upgrade --tag beta      # resolve a specific dist-tag
+dsh-opentui upgrade --dry-run       # resolve and print the command, do not install
+```
+
+A dist-tag must start with a letter or digit and contain only letters, digits,
+`.`, `_` and `-`; specifying it twice is an error. The tag is only a key into
+the `npm view dist-tags --json` result — it is never passed to npm as an
+argument. `--dry-run` resolves the version but installs nothing; it prints the
+command only when the target is newer (when the target is equal or older no
+command is printed).
+
+The command only works when the running copy is an npm global install (checked
+against `npm prefix -g`); the exception is `--dry-run`, which also works from a
+source tree. Otherwise it exits 1 and asks you to run
+`npm i -g @aiwayds/dsh-opentui` manually. An `npm link` development install is
+rejected too. It refuses to downgrade, and reports already up to date when the
+resolved version matches the running one. Set `DSH_UPGRADE_REGISTRY` to an
+`http://` or `https://` URL to append `--registry <url>` to both `npm view` and
+`npm i -g`; without it npm uses its own registry configuration. Credentials in
+that URL are stripped from all printed output but still passed to npm.
 
 ## Session topology
 

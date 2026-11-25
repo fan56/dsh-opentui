@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`dsh-opentui upgrade` (minimal launcher self-upgrade).** Resolves an npm
+  dist-tag (`--tag`, default `latest`) and installs that exact version of
+  `@aiwayds/dsh-opentui` globally; `--dry-run` only resolves and prints the
+  command. It refuses to downgrade and requires an npm global install —
+  otherwise use `npm i -g @aiwayds/dsh-opentui` manually. Companions, profiles
+  and migrations are left to the next launch.
+
 ## [0.28.0] - 2026-11-25
 
 ### Changed
