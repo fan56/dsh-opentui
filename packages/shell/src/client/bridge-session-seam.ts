@@ -70,6 +70,11 @@ import type {
 	SubagentTranscriptStatus,
 	SeamTranscriptRow,
 	SeamTurnCallbacks,
+	SessionPruneApplyParams,
+	SessionPruneApplyResult,
+	SessionPurgeCommitParams,
+	SessionPurgeCommitResult,
+	SessionPurgePrepareResult,
 	SessionSeam,
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
@@ -517,6 +522,9 @@ export interface BridgePrunePlan {
 	retentionDays: number
 	entries: readonly BridgePrunePlanEntry[]
 	counts: { prune: number; skip: number; byReason: Record<string, number> }
+	/** Opaque host receipts echoed verbatim by applyPrune (never re-minted). */
+	fingerprint?: string
+	configFingerprint?: string
 }
 
 export function projectBridgePrunePlan(value: unknown): BridgePrunePlan {
@@ -574,7 +582,98 @@ export function projectBridgePrunePlan(value: unknown): BridgePrunePlan {
 		retentionDays: record.retentionDays,
 		entries,
 		counts: { prune, skip, byReason },
+		...(typeof record.fingerprint === "string" ? { fingerprint: record.fingerprint } : {}),
+		...(typeof record.configFingerprint === "string" ? { configFingerprint: record.configFingerprint } : {}),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// retention P2/P3 — SECOND whitelists for the write-side replies. Every host
+// path / journal / manifest field is DROPPED here: the TUI never displays an
+// absolute path, and a malformed reply is a protocol error (never a fake OK).
+// Transport errors are NOT caught by the seam faces — they propagate as-is.
+// ---------------------------------------------------------------------------
+
+export function projectBridgePruneApply(value: unknown): SessionPruneApplyResult {
+	const record = asRecord(value)
+	if (typeof record.opId !== "string" || record.opId === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.apply returned no valid opId")
+	}
+	if (!Array.isArray(record.applied) || !Array.isArray(record.failed)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.apply returned no applied/failed arrays")
+	}
+	const applied: { id: string }[] = []
+	for (const raw of record.applied) {
+		const row = asRecord(raw)
+		if (typeof row.id === "string" && row.id !== "") applied.push({ id: row.id })
+	}
+	const failed: { id: string; code: string; message: string }[] = []
+	for (const raw of record.failed) {
+		const row = asRecord(raw)
+		if (typeof row.id !== "string" || typeof row.code !== "string" || typeof row.message !== "string") continue
+		failed.push({ id: row.id, code: row.code, message: row.message.slice(0, 300) })
+	}
+	return {
+		opId: record.opId,
+		applied,
+		failed,
+		markedOrphans: Array.isArray(record.markedOrphans) ? record.markedOrphans.length : 0,
+	}
+}
+
+export function projectBridgePurgePrepare(value: unknown): SessionPurgePrepareResult {
+	const record = asRecord(value)
+	if (typeof record.opId !== "string" || typeof record.token !== "string" || record.token === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge prepare returned no opId/token")
+	}
+	if (!Array.isArray(record.candidates) || !Array.isArray(record.rejected)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge prepare returned no candidates/rejected arrays")
+	}
+	const candidates: Array<SessionPurgePrepareResult["candidates"][number]> = []
+	for (const raw of record.candidates) {
+		const row = asRecord(raw)
+		if (typeof row.id !== "string" || row.id === "") continue
+		if (typeof row.ageDays !== "number" || !Number.isFinite(row.ageDays)) continue
+		if (typeof row.appliedAt !== "number" || !Number.isFinite(row.appliedAt)) continue
+		candidates.push({ id: row.id, ageDays: row.ageDays, appliedAt: row.appliedAt })
+	}
+	const rejected: Array<SessionPurgePrepareResult["rejected"][number]> = []
+	for (const raw of record.rejected) {
+		const row = asRecord(raw)
+		if (typeof row.code !== "string" || typeof row.message !== "string") continue
+		rejected.push({
+			...(typeof row.id === "string" ? { id: row.id } : {}),
+			code: row.code,
+			message: row.message.slice(0, 300),
+		})
+	}
+	return { opId: record.opId, token: record.token, candidates, rejected }
+}
+
+export function projectBridgePurgeCommit(value: unknown): SessionPurgeCommitResult {
+	const record = asRecord(value)
+	if (typeof record.opId !== "string" || record.opId === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge commit returned no valid opId")
+	}
+	if (!Array.isArray(record.purged) || !Array.isArray(record.failed)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge commit returned no purged/failed arrays")
+	}
+	const purged: { id: string }[] = []
+	for (const raw of record.purged) {
+		const row = asRecord(raw)
+		if (typeof row.id === "string" && row.id !== "") purged.push({ id: row.id })
+	}
+	const failed: Array<SessionPurgeCommitResult["failed"][number]> = []
+	for (const raw of record.failed) {
+		const row = asRecord(raw)
+		if (typeof row.code !== "string" || typeof row.message !== "string") continue
+		failed.push({
+			...(typeof row.id === "string" ? { id: row.id } : {}),
+			code: row.code,
+			message: row.message.slice(0, 300),
+		})
+	}
+	return { opId: record.opId, purged, failed }
 }
 
 /** Build the honest UNSUPPORTED rejection for an absent async capability. */
@@ -4759,9 +4858,8 @@ export class BridgeSessionSeam implements SessionSeam {
 	/**
 	 * retention P1 — READ-ONLY prune plan (dry run). `retentionDays=0` means the
 	 * host skips every row; the default (90) stays host-side. This face NEVER
-	 * deletes: there is no `session.prune.apply` frame in this slice. A host
-	 * without the optional `sessionPersistence.stat` capability rejects with
-	 * UNSUPPORTED — that error propagates, never a fake empty plan.
+	 * deletes. A host without the optional `sessionPersistence.stat` capability
+	 * rejects with UNSUPPORTED — that error propagates, never a fake empty plan.
 	 */
 	async planPrune(params?: {
 		retentionDays?: number
@@ -4780,6 +4878,39 @@ export class BridgeSessionSeam implements SessionSeam {
 		const wireParams = ids.size > 0 ? { ...(params ?? {}), stagedIds: [...ids] } : { ...(params ?? {}) }
 		const value = await this.#transport.request("session.prune.plan", wireParams)
 		return projectBridgePrunePlan(value)
+	}
+
+	/**
+	 * retention P2 — trash-apply. The client echoes ONLY the three opaque
+	 * receipts from a fresh plan; entries / paths / roots / staged ids are NOT
+	 * sent (the host rejects any of them with BAD_PARAMS). Transport errors and
+	 * host refusals propagate UNCHANGED — no catch, no fake success.
+	 */
+	async applyPrune(params: SessionPruneApplyParams): Promise<SessionPruneApplyResult> {
+		const value = await this.#transport.request("session.prune.apply", {
+			fingerprint: params.fingerprint,
+			configFingerprint: params.configFingerprint,
+			generatedAt: params.generatedAt,
+		})
+		return projectBridgePruneApply(value)
+	}
+
+	/**
+	 * retention P3 phase 1 — read-only prepare. Issues a server-signed token
+	 * bound to the exact trash set; NO path / root / policy crosses the wire.
+	 */
+	async preparePurge(): Promise<SessionPurgePrepareResult> {
+		const value = await this.#transport.request("session.prune.purge", { phase: "prepare" })
+		return projectBridgePurgePrepare(value)
+	}
+
+	/**
+	 * retention P3 phase 2 — commit by echoing the prepare token. The host
+	 * re-derives and re-gates everything; no client path ever reaches a delete.
+	 */
+	async commitPurge(params: SessionPurgeCommitParams): Promise<SessionPurgeCommitResult> {
+		const value = await this.#transport.request("session.prune.purge", { phase: "commit", token: params.token })
+		return projectBridgePurgeCommit(value)
 	}
 
 	/**

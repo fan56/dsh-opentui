@@ -467,6 +467,19 @@ function V2SessionPageBody(props: {
 			showNotice(pendingAgentsHomeNotice)
 			pendingAgentsHomeNotice = undefined
 		}
+		// retention UI — FIRST FRAME IS ALREADY PAINTED here. The prune plan is
+		// a fire-and-forget READ: it never blocks boot, never auto-applies, and
+		// an absent face / failed capability simply produces no notice (the
+		// honest degrade — no fake "0 reclaimable"). Only a plan that actually
+		// found candidates gets a one-line pointer to /prune.
+		let pruneNoticeDisposed = false
+		onCleanup(() => { pruneNoticeDisposed = true })
+		if (seam.planPrune) {
+			void seam.planPrune().then((plan) => {
+				if (pruneNoticeDisposed || plan.counts.prune <= 0) return
+				void showNotice(t("notice.prune.available", { n: String(plan.counts.prune) }))
+			}).catch(() => { /* capability absent / plan failed: no notice */ })
+		}
 		const timer = setInterval(() => setNow(new Date()), 1000)
 		onCleanup(() => clearInterval(timer))
 	})
