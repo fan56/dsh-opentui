@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   otherwise use `npm i -g @aiwayds/dsh-opentui` manually. Companions, profiles
   and migrations are left to the next launch.
 
+### Changed
+
+- **The activity panel's tabs now use a right-aligned powerline strip.** The old `[1 main]  2 todo` labels no longer ride the top border: they are two solid segments (`🏠 1 main` / `📋 2 todo`) joined and closed by U+E0B0 arrows on the panel's last content row, with two blank columns before the right border. The selected segment uses the current-row colors and the other the raised surface; focus is not encoded again (the panel border already shows it). Narrow terminals shrink the right padding from 2 to 0 before dropping whole label parts — names are never cut in half. `alt+1` / `alt+2` and clicking the segment cells still switch tabs; arrows are not clickable.
+
 ## [0.28.0] - 2026-11-25
 
 ### Changed

@@ -166,12 +166,10 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 			// row per todo. OLD: `expect(frame).not.toContain("● Todos")`;
 			// NEW: assert the header and all three child rows are painted.
 			expect(frame).toContain("● Todos (1/3)")
-			// The activity TITLE never paints the Todos TREE header (that is a
-			// content row, not the title). R2 merges the tab bar into the title,
-			// so the tab label "2 todo" is legitimately present — narrow the
-			// guard to the tree header "Todos" (plural), mirroring the tui-base
-			// side fix in 9e3bab7. Assertion strength is not weakened: the tree
-			// header must still be absent from the title line.
+			// The activity TITLE carries only the activity title (plus any
+			// overflow suffix); the tab strip is a real content row below it.
+			// Neither the tab label "2 todo" nor the tree header belongs in the
+			// title, so keep this guard against title/content regression.
 			const topIdx = lines.findIndex((line) => line.includes("┏"))
 			expect(topIdx).toBeGreaterThanOrEqual(0)
 			expect(lines[topIdx]!.toLowerCase()).not.toContain("todos")
@@ -184,25 +182,36 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 			// Count content rows straight off the frame: every row between the
 			// two borders is a content row (frame height - 2), each with a ┃ wall.
 			// OLD: the active-only summary was ONE row (`inner.length === 1`).
-			// NEW: the tree draws the header + all 3 todos = FOUR rows.
+			// NEW: the tree draws the header + all 3 todos = FOUR rows, followed
+			// by the powerline tab strip = FIVE content rows.
 			const frameHeight = bottomIdx - topIdx + 1
 			const inner = lines.slice(topIdx + 1, bottomIdx)
 			expect(inner.length).toBe(frameHeight - 2)
-			expect(inner.length).toBe(4)
+			expect(inner.length).toBe(5)
 			for (const row of inner) expect(row).toContain("┃")
 
 			// Exact painted rows (D13): wall, body, stringWidth padding to the
 			// inner width, closing wall. OLD body: "todos [✓]1/3 · write the
 			// regression". NEW bodies: the header + one row per todo, glyphs
 			// ✓ completed / ● in_progress / ○ pending, branch ├─ except the
-			// final row's └─.
+			// final row's └─; the final content row is the right-aligned tab strip.
 			const bodies = [
 				"● Todos (1/3)",
 				"├─ ✓ map the incident",
 				"├─ ● write the regression",
 				"└─ ○ ship the gate",
 			]
-			expect(inner).toEqual(bodies.map((body) => `┃${body}${" ".repeat(width - 2 - stringWidth(body))}┃`))
+			const tabStrip = " 🏠 1 main \ue0b0 📋 2 todo \ue0b0"
+			const tabBody = `${" ".repeat(width - 4 - stringWidth(tabStrip))}${tabStrip}  `
+			expect(inner).toEqual([
+				...bodies.map((body) => `┃${body}${" ".repeat(width - 2 - stringWidth(body))}┃`),
+				`┃${tabBody}┃`,
+			])
+			const stripRow = inner[4]!
+			expect(stripRow).toContain("1 main")
+			expect(stripRow).toContain("2 todo")
+			expect(stripRow).toContain("\ue0b0")
+			expect(stringWidth(stripRow.slice(1, -1))).toBe(width - 2)
 
 			// THE render-layer regression assert (width=${width}): every content
 			// row's right wall (┃) must land in the SAME column as the top

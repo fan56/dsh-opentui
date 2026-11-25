@@ -64,6 +64,9 @@ Title text is composed from at most two items joined by ` · `, in priority orde
 ┏━ <item>[ · <item>] ━━━...━━━┓
 ```
 
+- The tab strip is **not** part of this border title (2026-11-25 powerline redesign). It is a real row inside the panel: the **last content row** in both layouts, right-aligned with two blank columns before the right border. The framed box spends one extra row on it (`frameHeight = 3 + content rows`); compact mode (≤ 30 rows) keeps its height by moving the existing tab row from the first to the last line. Only the composed activity item(s) and the ` · N/M` overflow suffix remain in the title above.
+- The strip uses two solid segments (`🏠 1 main` / `📋 2 todo`, bare emoji, no VS16) joined and closed by U+E0B0 arrows. Selection is encoded by segment background/text colors, never by ASCII brackets or focus state. Narrow terminals shrink the right padding (2 → 1 → 0) before dropping whole label parts; names are never cut in half.
+
 Selection table (exhaustive):
 
 | Current content | Title |
@@ -241,7 +244,7 @@ Known misalignment scenarios (the D7 "last `in_progress` todo" rule will be wron
 
 Each item names the file and the section to change. Anchors are `path:line`.
 
-- **Frame / title shell.** `packages/tui-base/src/routes/session/widgets-dock.tsx:1226-1236` — border heavy, `title`, `titleAlignment: left`. Produce the D4 composed title (with `N/M` from D8). Title string i18n base: `packages/i18n/locales/en.json:594` ("activity").
+- **Frame / title shell.** `packages/tui-base/src/routes/session/widgets-dock.tsx` (`mergedTitleText` / `frameHeight`) — border follows focus, `title`, `titleAlignment: left`. Produce the D4 composed title (with `N/M` from D8); tabs are no longer folded into it. The powerline strip is a separate last-row renderable (`DockTabStripView`), fed by `dockTabStripLayout`, and the framed box height is `3 + content rows`. Title string i18n base: `packages/i18n/locales/en.json:594` ("activity").
 - **Frame height.** `packages/tui-base/src/routes/session/widgets-dock.tsx:1180` — currently `2 + think.length + tool.length`. Replace with simultaneous-zone height: tool zone is exactly 1 line in coexistence mode (name + time only, latest tool row) and up to 3 lines in tool-only mode (D8); lower zone takes the remainder up to the 10-line total cap. There is no locked blank frame (D2 superseded).
 - **Line crop width / right alignment (hard requirement).** `packages/tui-base/src/routes/session/widgets-dock.tsx:1142` — `Math.max(16, dimensions().width - 4)`. Crop and pad with the runtime `stringWidth` only, never a character count or a fixed width minus a byte estimate (D13; `packages/tui-base/src/util/string-width.ts`). A **mandatory assertion test** must feed a row containing emoji, CJK, VS16, and ZWJ and assert the rendered visible width strictly equals the container inner width; "looks aligned" is not a pass. Border-width precedent: `todosTableWidth` at `packages/tui-base/src/routes/session/widgets-dock.tsx:419-431`.
 - **Think row rendering.** `packages/tui-base/src/routes/session/widgets-dock.tsx:546-566` (`thinkBlockLines`) — upper zone; keep D5 format `💭 thinking · <secs> · <snippet>`.

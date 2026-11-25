@@ -25,6 +25,7 @@
  */
 import { parseColor, type RGBA } from "@opentui/core"
 import type { ComponentTheme } from "../theme/component"
+import { contrastRatio } from "../theme/contrast"
 
 /** No-provider fallbacks (the pre-skin hardcoded hexes). */
 export const SKIN_FALLBACK = {
@@ -36,6 +37,12 @@ export const SKIN_FALLBACK = {
 	warning: "#e0af68",
 	/** Success tier — the plugins "on" column (was hardcoded #9ece6a). */
 	success: "#9ece6a",
+	/** Activity dock tab strip: selected segment (current-row semantics). */
+	tabSelectedBg: "#8599ff",
+	tabSelectedFg: "#1e1e22",
+	/** Activity dock tab strip: unselected segment (raised surface). */
+	tabUnselectedBg: "#141419",
+	tabUnselectedFg: "#8a8a8a",
 } as const
 
 export type SkinBorderColor = RGBA | string
@@ -131,6 +138,47 @@ export function currentRowColors(
 	return {
 		backgroundColor: theme?.background.action.primary.focused,
 		textColor: theme?.text.action.primary.focused ?? SKIN_FALLBACK.accent,
+	}
+}
+
+const SKIN_POLE_LIGHT = "#ffffff"
+const SKIN_POLE_DARK = "#000000"
+
+/** Walk a label color AWAY from its surface until it clears `min` (WCAG 4.5:1
+ * by default). Same 8%-step walk as the dock's `boostUntilContrast`, kept here
+ * so the tab strip's colors stay theme-token-driven (no hex at the call site). */
+function boostSkinContrast(color: SkinBorderColor, background: SkinBorderColor, min = 4.5): SkinBorderColor {
+	const bg = parseColor(background)
+	const pole =
+		contrastRatio(bg, parseColor(SKIN_POLE_LIGHT)) >= contrastRatio(bg, parseColor(SKIN_POLE_DARK))
+			? SKIN_POLE_LIGHT
+			: SKIN_POLE_DARK
+	let candidate = mixSkinColor(color, pole, 0)
+	for (let i = 0; i < 32 && contrastRatio(parseColor(candidate), bg) < min; i++) {
+		candidate = mixSkinColor(candidate, pole, 0.08)
+	}
+	return candidate
+}
+
+/**
+ * Activity dock powerline tab strip (solid-arrow segmented variant). The
+ * selected pair reuses the existing current-row semantic tokens; the
+ * unselected pair rides the raised surface with a contrast-guarded muted
+ * label. Focus is deliberately NOT encoded here — the panel frame owns focus,
+ * and a dimmed "unfocused" tab would read as disabled (the panel is unfocused
+ * by default). Colors switch instantly: no interpolation, like borders.
+ */
+export function dockTabStripColors(theme?: ComponentTheme): {
+	selected: { bg: SkinBorderColor; fg: SkinBorderColor }
+	unselected: { bg: SkinBorderColor; fg: SkinBorderColor }
+} {
+	const selectedBg = theme?.background.action.primary.focused ?? SKIN_FALLBACK.tabSelectedBg
+	const selectedFg = theme?.text.action.primary.focused ?? SKIN_FALLBACK.tabSelectedFg
+	const unselectedBg = theme?.background.raised.base ?? SKIN_FALLBACK.tabUnselectedBg
+	const unselectedFg = boostSkinContrast(theme?.text.muted ?? SKIN_FALLBACK.tabUnselectedFg, unselectedBg)
+	return {
+		selected: { bg: selectedBg, fg: selectedFg },
+		unselected: { bg: unselectedBg, fg: unselectedFg },
 	}
 }
 

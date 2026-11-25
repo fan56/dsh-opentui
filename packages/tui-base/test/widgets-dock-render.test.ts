@@ -307,9 +307,16 @@ describe("WidgetsDock on the real renderer", () => {
 
 	/** The dock frame's content rows: the heavy-border verticals (`┃`) delimit
 	 * the rows inside the box; the top/bottom borders use `┏┓┗┛`, so they are
-	 * excluded. Visible content = 2 border rows + this count. */
+	 * excluded. The powerline strip is now a REAL last content row, but it is
+	 * chrome, not dock content — exclude it so the tween counts below keep
+	 * meaning "activity content rows" (visible box = 3 border/chrome rows +
+	 * this count). */
 	const dockContentLines = (frame: CapturedFrame): number =>
-		frame.lines.filter((line) => line.spans.some((span) => span.text.includes("┃"))).length
+		frame.lines.filter(
+			(line) =>
+				line.spans.some((span) => span.text.includes("┃")) &&
+				!line.spans.some((span) => span.text.includes("🏠") || span.text.includes("\ue0b0")),
+		).length
 
 	const spansMatching = (frame: CapturedFrame, re: RegExp): CapturedSpan[] =>
 		frame.lines.flatMap((line) => line.spans).filter((span) => re.test(span.text))
@@ -660,16 +667,23 @@ describe("WidgetsDock on the real renderer", () => {
 			const base = "🔧 tool · 🤖 subagent"
 			const suffix = "1/14"
 			const slot = WIDTH - 4
-			// R2 + B2c-2: tab 条并入标题区，激活 tab 用 ASCII [] 标记 —
-			// the two tab labels lead the merged title; base title + N/M law
-			// unchanged. main is active at this point → `[1 main]`.
-			const tabHead = "[1 main]  2 todo "
-			const titleText = `${tabHead}${base}`
-			const expected = `┏━${titleText}${" ".repeat(slot - stringWidth(titleText) - stringWidth(suffix))}${suffix}━┓`
+			// Powerline: the top border now carries ONLY the activity title +
+			// ` · N/M`; the tab strip is a real row inside the box.
+			const expected = `┏━${base}${" ".repeat(slot - stringWidth(base) - stringWidth(suffix))}${suffix}━┓`
 			expect(title).toBe(expected)
-			expect(title).toContain("[1 main]")
-			expect(title).toContain("2 todo")
+			expect(title.includes("main")).toBe(false)
+			expect(title.includes("todo")).toBe(false)
 			expect(title.includes("todos [✓]")).toBe(false)
+			// The strip is the last content row (just above the bottom border),
+			// right-aligned with two blank columns before the right border.
+			const painted = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
+			const stripIndex = painted.findIndex((line) => line.includes("🏠"))
+			expect(stripIndex).toBeGreaterThan(0)
+			expect(painted[stripIndex + 1]).toContain("┗")
+			expect(stringWidth(painted[stripIndex]!)).toBe(WIDTH)
+			expect(painted[stripIndex]!.endsWith("\ue0b0  ┃")).toBe(true)
+			expect(painted[stripIndex]!).toContain("🏠 1 main")
+			expect(painted[stripIndex]!).toContain("📋 2 todo")
 
 			// 2 subagents fit → NO N/M anywhere in the title.
 			setRows([
@@ -680,6 +694,38 @@ describe("WidgetsDock on the real renderer", () => {
 			const fitTitle = (setup.captureSpans().lines[0]?.spans.map((s) => s.text).join("") ?? "")
 			expect(fitTitle).toContain("🔧 tool")
 			expect(/\d+\/\d+/.test(fitTitle)).toBe(false)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("80-column strip: every painted row is exactly 80 wide, right border on column 79", async () => {
+		const width = 80
+		const rows: SeamRow[] = [
+			{ key: "tool:width80", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: Date.now() },
+		]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+			{ width, height: 40, useMouse: false },
+		)
+		try {
+			markPanelActive("activity")
+			await sleep(300)
+			await setup.renderOnce()
+			const painted = setup
+				.captureSpans()
+				.lines.map((l) => l.spans.map((s) => s.text).join(""))
+				.filter((l) => l.trim() !== "")
+			expect(painted.length).toBeGreaterThan(1)
+			for (const line of painted) expect(stringWidth(line)).toBe(width)
+			// Top and bottom borders land on the last (79th, 0-based) column.
+			expect(painted[0]!.at(-1)).toBe("┓")
+			expect(painted.at(-1)!.at(-1)).toBe("┛")
+			// P=2 default: the strip ends with its arrow, two blank columns,
+			// then the right border. 🏠/📋 = 2 columns, U+E0B0 = 1 column.
+			const stripText = ` 🏠 1 main \ue0b0 📋 2 todo \ue0b0`
+			expect(stringWidth(stripText)).toBe(24)
+			expect(painted.find((l) => l.includes("🏠"))).toBe(`┃${" ".repeat(width - 4 - stringWidth(stripText))}${stripText}  ┃`)
 		} finally {
 			await setup.dispose()
 		}
@@ -746,20 +792,19 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			const occupied = lines.filter((l) => l.trim() !== "")
-			expect(occupied).toHaveLength(4) // top border + todo tree header + 1 child + bottom border
+			expect(occupied).toHaveLength(5) // top border + 2 tree rows + tab strip + bottom border
 			// Scene C: the todo tree — header + ├─/└─ child rows (single todo → └─).
 			const header = "● Todos (0/1)"
 			const child = "└─ ● task 1"
 			const inner = WIDTH - 2
-			// R2 + B2c-2: tab 条并入标题区，激活 tab 用 ASCII [] 标记 —
-			// the tab labels lead the title on the top border; the framed dock
-			// still has exactly 4 occupied rows. main active → `[1 main]`.
-			const tabHead = "[1 main]  2 todo "
-			const titleText = `${tabHead}🧩 activity`
+			// Powerline: the title carries no tabs; the strip is the last row.
+			const titleText = "🧩 activity"
 			expect(occupied[0]).toBe(`┏━${titleText}${"━".repeat(inner - 1 - stringWidth(titleText))}┓`)
 			expect(occupied[1]).toBe(`┃${header}${" ".repeat(inner - stringWidth(header))}┃`)
 			expect(occupied[2]).toBe(`┃${child}${" ".repeat(inner - stringWidth(child))}┃`)
-			expect(occupied[3]).toBe(`┗${"━".repeat(inner)}┛`)
+			const strip = ` 🏠 1 main \ue0b0 📋 2 todo \ue0b0`
+			expect(occupied[3]).toBe(`┃${" ".repeat(inner - 2 - stringWidth(strip))}${strip}  ┃`)
+			expect(occupied[4]).toBe(`┗${"━".repeat(inner)}┛`)
 		} finally {
 			await setup.dispose()
 		}
@@ -840,16 +885,17 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			const occupied = lines.filter((l) => l.trim() !== "")
-			// B2c: compact terminals now carry the tab bar as the first row.
-			// R8: with running subagents a combined brief row is pinned above the
-			// lower summary, so 4 → 5 occupied rows (asserted exactly, not relaxed).
-			expect(occupied).toHaveLength(5) // 1 tab bar + 2 upper rule lines + 1 R8 brief + 1 lower summary
-			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo") // compact tab bar (paddingLeft=3), main active marker
-			expect(occupied[1]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
-			expect(occupied[2]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
-			expect(occupied[2]!.includes("bash")).toBe(true)
-			expect(occupied[3]!).toContain("subagent *12") // R8 per-batch brief row
-			expect(occupied[4]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
+			// Powerline: the strip moved to the LAST row; the 2 rule lines,
+			// brief and summary keep their order above it.
+			expect(occupied).toHaveLength(5) // 2 rule lines + R8 brief + lower summary + tab strip
+			expect(occupied[0]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
+			expect(occupied[1]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
+			expect(occupied[1]!.includes("bash")).toBe(true)
+			expect(occupied[2]!).toContain("subagent *12") // R8 per-batch brief row
+			expect(occupied[3]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
+			const strip = ` 🏠 1 main \ue0b0 📋 2 todo \ue0b0`
+			expect(occupied[4]!.trimEnd()).toBe(`${" ".repeat(WIDTH - 2 - stringWidth(strip))}${strip}`)
+			expect(stringWidth(occupied[4]!)).toBe(WIDTH)
 			// No scroll indicators and no boxed title carrying N/M.
 			for (const line of occupied) {
 				expect(line.includes("▲")).toBe(false)
@@ -947,27 +993,40 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			const paint = () => setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			let occupied = paint().filter((l) => l.trim() !== "")
-			// The tab bar leads the compact dock, on EVERY row tier. The active
-			// tab carries the ASCII [] marker; main is active at first.
-			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo")
+			const stripLine = () => paint().find((l) => l.includes("🏠")) ?? ""
+			const strip = ` 🏠 1 main \ue0b0 📋 2 todo \ue0b0`
+			const bgOf = (needle: string) =>
+				setup.captureSpans().lines.flatMap((l) => l.spans).find((s) => s.text.includes(needle))!.bg
+			const isRgb = (color: { r: number; g: number; b: number }, rgb: [number, number, number]) =>
+				near(color.r, rgb[0] / 255, 0.01) && near(color.g, rgb[1] / 255, 0.01) && near(color.b, rgb[2] / 255, 0.01)
+
+			// The strip is the LAST row, right-aligned; selection swaps segment
+			// backgrounds (no ASCII brackets, no focus-dependent colors).
+			expect(occupied[0]!.trimEnd()).toBe("   ┃ activity")
+			expect(stripLine().trimEnd()).toBe(`${" ".repeat(WIDTH - 2 - stringWidth(strip))}${strip}`)
 			expect(activityDockTab()).toBe("main")
 			expect(occupied.some((l) => l.includes("bash"))).toBe(true) // main: rule form
+			expect(isRgb(bgOf("🏠"), [133, 153, 255])).toBe(true) // selected #8599ff
+			expect(isRgb(bgOf("📋"), [20, 20, 25])).toBe(true) // unselected #141419
 
 			// alt+2 path: the keymap command writes this same signal.
 			setActivityDockTab("todo")
 			await setup.renderOnce()
 			occupied = paint().filter((l) => l.trim() !== "")
 			expect(activityDockTab()).toBe("todo")
-			expect(occupied[0]!.trimEnd()).toBe("   1 main  [2 todo]") // marker MIGRATES to the active tab
+			expect(stripLine().trimEnd()).toBe(`${" ".repeat(WIDTH - 2 - stringWidth(strip))}${strip}`) // text does not move
 			expect(occupied.some((l) => l.includes("bash"))).toBe(false) // rule lines dropped
 			expect(occupied.some((l) => l.includes("├─ ● romeo"))).toBe(true) // todo tree shown
+			expect(isRgb(bgOf("🏠"), [20, 20, 25])).toBe(true)
+			expect(isRgb(bgOf("📋"), [133, 153, 255])).toBe(true)
 
 			// alt+1 path: switch back to main.
 			setActivityDockTab("main")
 			await setup.renderOnce()
 			occupied = paint().filter((l) => l.trim() !== "")
 			expect(activityDockTab()).toBe("main")
-			expect(occupied[0]!.trimEnd()).toBe("   [1 main]  2 todo") // marker migrates back
+			expect(stripLine().trimEnd()).toBe(`${" ".repeat(WIDTH - 2 - stringWidth(strip))}${strip}`)
+			expect(isRgb(bgOf("🏠"), [133, 153, 255])).toBe(true)
 			expect(occupied.some((l) => l.includes("bash"))).toBe(true)
 		} finally {
 			resetActivityDockTab()

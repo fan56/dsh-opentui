@@ -89,7 +89,7 @@ import { takeWidth } from "../../util/locale"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
-import { COMPOSER_COMPACT_TERMINAL_ROWS, panelFocusFrame } from "../../skin/semantic"
+import { COMPOSER_COMPACT_TERMINAL_ROWS, dockTabStripColors, panelFocusFrame } from "../../skin/semantic"
 import { activePanel, markPanelActive, resetActivePanel } from "./pane-focus"
 import {
 	DOCK_COMPACT_MAX_LINES,
@@ -100,7 +100,7 @@ import {
 } from "./dock-visibility"
 import type { ComponentTheme } from "../../theme/component"
 import type { HueScale } from "@opencode/theme/tui"
-import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
+import { POWERLINE_ARROW, colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
 import {
 	MERGED_DOCK_TOTAL_LINES,
 	combineBriefText,
@@ -702,63 +702,145 @@ export function mainTabLines(data: MergedDockData, options: MergedDockOptions): 
 	return mergedDockLines(data, options)
 }
 
-/** The tab bar is ONE display-column-exact header line. Every width comes
- * from `takeWidth`/`stringWidth` (grapheme-safe) — never `clipToWidth`, which
- * historically short-cropped the right border. The returned parts concatenate
- * to exactly `innerWidth` columns. */
-export interface DockTabBarLayout {
+/** Powerline tab strip (方案一「实心箭头分段」). One cell per segment, arrow
+ * between segments and one arrow closing the strip. The SAME cells drive paint
+ * and hit-testing, so a color/width change can never desync the click zone.
+ * Every width is measured with `stringWidth` — no 11/24 hard-coding, no
+ * `clipToWidth` (the width律 forbids clipping half a name). */
+export interface DockTabStripCell {
+	text: string
+	fg: string | RGBA
+	bg?: string | RGBA
+	/** Set ONLY on the two label cells; arrows are deliberately not clickable. */
+	tab?: ActivityDockTab
+}
+export interface DockTabStrip {
+	cells: DockTabStripCell[]
+	stripWidth: number
+	rightPadding: number
+}
+
+/** Naked emoji (no VS16 — VS16 sequences are blanked in wcwidth mode). */
+const DOCK_TAB_ICON = { main: "\u{1F3E0}", todo: "\u{1F4CB}" } as const // 🏠 / 📋
+/** Right padding ladder: the default 2 columns are sacrificed BEFORE any
+ * label content is dropped; P=2 aligns the strip's right edge with the content
+ * lines' right edge (`width() = W-4`). Change one and check the other. */
+const DOCK_TAB_PADDING_STEPS = [2, 1, 0] as const
+/** Leading digit of an i18n label (`1 main` → `1`); kept as the Alt hint when
+ * names/icons are degraded away. */
+const dockTabDigit = (label: string): string => label.match(/^\d+/)?.[0] ?? ""
+
+/** §C.2 degradation ladder, whole steps only (never a half-cut name). */
+function dockTabTextLevels(mainLabel: string, todoLabel: string): { main: string; todo: string }[] {
+	const m = dockTabDigit(mainLabel)
+	const t = dockTabDigit(todoLabel)
+	return [
+		{ main: ` ${DOCK_TAB_ICON.main} ${mainLabel} `, todo: ` ${DOCK_TAB_ICON.todo} ${todoLabel} ` }, // L0
+		{ main: `${DOCK_TAB_ICON.main} ${mainLabel}`, todo: `${DOCK_TAB_ICON.todo} ${todoLabel}` }, // L2
+		{ main: ` ${DOCK_TAB_ICON.main}${m} `, todo: ` ${DOCK_TAB_ICON.todo}${t} ` }, // L3
+		{ main: `${DOCK_TAB_ICON.main}${m}`, todo: `${DOCK_TAB_ICON.todo}${t}` }, // L4
+		{ main: m, todo: t }, // L5
+	]
+}
+
+/** The ONE label source for both dock modes. Icons live here, NOT in i18n
+ * (the locale value stays `1 main` / `2 todo`). No ASCII brackets: selection
+ * is carried by the segment background, text color and arrows. */
+export function activityDockTabLabels(_tab: ActivityDockTab, mainLabel: string, todoLabel: string): { main: string; todo: string } {
+	return { main: mainLabel, todo: todoLabel }
+}
+
+/** Build the strip for a chosen text level. Segments are `" text "` (the
+ * padding spaces are part of the colored cell); arrows are 1 column each. */
+function dockTabStripCells(
+	texts: { main: string; todo: string },
+	activeTab: ActivityDockTab,
+	colors: ReturnType<typeof dockTabStripColors>,
+): DockTabStripCell[] {
+	const mainColor = activeTab === "main" ? colors.selected : colors.unselected
+	const todoColor = activeTab === "main" ? colors.unselected : colors.selected
+	return [
+		{ text: texts.main, fg: mainColor.fg, bg: mainColor.bg, tab: "main" },
+		{ text: POWERLINE_ARROW, fg: mainColor.bg, bg: todoColor.bg },
+		{ text: texts.todo, fg: todoColor.fg, bg: todoColor.bg, tab: "todo" },
+		{ text: POWERLINE_ARROW, fg: todoColor.bg },
+	]
+}
+
+/** Strip width of a text level = seg(main) + arrow + seg(todo) + arrow. */
+function dockTabStripWidth(texts: { main: string; todo: string }): number {
+	return stringWidth(texts.main) + 1 + stringWidth(texts.todo) + 1
+}
+
+/** Pure layout used by BOTH the painted row and the mouse hit-test.
+ * `innerWidth` is the row's own content width (framed: box width minus the two
+ * borders; compact: box width minus its 3-column left padding). The default
+ * right padding P=2 is stepped down to 1 then 0 before any content degrades. */
+export function dockTabStripLayout(opts: {
 	mainLabel: string
 	todoLabel: string
-	between: string
-	tailGap: string
-	tail: string
-}
-export function dockTabBarLayout(innerWidth: number, mainLabel: string, todoLabel: string, tailText: string): DockTabBarLayout {
-	const width = Math.max(0, Math.floor(innerWidth))
-	const between = "  "
-	const main = takeWidth(mainLabel, Math.max(0, width - stringWidth(between)))
-	const todo = takeWidth(todoLabel, Math.max(0, width - stringWidth(main) - stringWidth(between)))
-	const tail = takeWidth(tailText, Math.max(0, width - stringWidth(main) - stringWidth(between) - stringWidth(todo)))
-	const tailGap = " ".repeat(Math.max(0, width - stringWidth(main) - stringWidth(between) - stringWidth(todo) - stringWidth(tail)))
-	return { mainLabel: main, todoLabel: todo, between, tailGap, tail }
-}
-
-/** B2c-2: the ONE label source for both dock modes. The active tab is wrapped
- * in ASCII `[` … `]` so the user can see which tab owns the content area.
- * ASCII only — the earlier `▸`/`●` and CJK glyph family is ambiguous-width and
- * gets swallowed behind modal dialogs (prior art in this file). Brackets are
- * grapheme-stable (width 1 each) and survive every terminal mode.
- * Both the framed title and the compact rule row call this helper, so the
- * marker can never diverge; `dockTabBarLayout` takes the returned strings and
- * `dockTabAtPosition` derives hit zones from that layout's widths — the
- * clickable region therefore tracks the brackets automatically. */
-export function activityDockTabLabels(tab: ActivityDockTab, mainLabel: string, todoLabel: string): { main: string; todo: string } {
-	return tab === "main"
-		? { main: `[${mainLabel}]`, todo: todoLabel }
-		: { main: mainLabel, todo: `[${todoLabel}]` }
+	activeTab: ActivityDockTab
+	theme?: ComponentTheme
+	innerWidth: number
+}): DockTabStrip {
+	const colors = dockTabStripColors(opts.theme)
+	const limit = Math.max(0, Math.floor(opts.innerWidth))
+	for (const texts of dockTabTextLevels(opts.mainLabel, opts.todoLabel)) {
+		const width = dockTabStripWidth(texts)
+		for (const p of DOCK_TAB_PADDING_STEPS) {
+			if (width <= limit - p) {
+				return { cells: dockTabStripCells(texts, opts.activeTab, colors), stripWidth: width, rightPadding: p }
+			}
+		}
+	}
+	// L6: nothing fits — keep the row (height law), but paint no cells and
+	// expose no mouse targets (Alt+1/2 still work).
+	return { cells: [], stripWidth: 0, rightPadding: DOCK_TAB_PADDING_STEPS[0] }
 }
 
-/** Which tab does a screen-cell click hit? `screenX/screenY` are the framed
- * box's absolute origin; the box title starts at +2 columns (┏ then the
- * mandatory ━). The hit zone is each tab LABEL's full display width and TWO
- * rows tall (top border + the first content row) so a click is forgiving.
- * Returns undefined outside the two label regions. Pure for unit tests. */
+/** Which tab does a screen-cell click hit? `box` is the dock box's absolute
+ * geometry; the strip is the LAST row (framed: last content row above the
+ * bottom border, plus a forgiving extra row on the border itself). The
+ * right-anchored origin is derived from the same cells that are painted. */
 export function dockTabAtPosition(
 	x: number,
 	y: number,
-	screenX: number,
-	screenY: number,
-	layout: DockTabBarLayout,
+	box: { screenX: number; screenY: number; width: number; height: number },
+	framed: boolean,
+	strip: DockTabStrip,
 ): ActivityDockTab | undefined {
-	const relX = x - screenX - 2
-	const relY = y - screenY
-	if (relY < 0 || relY > 1) return undefined
-	const mainEnd = stringWidth(layout.mainLabel)
-	const todoStart = mainEnd + stringWidth(layout.between)
-	const todoEnd = todoStart + stringWidth(layout.todoLabel)
-	if (relX >= 0 && relX < mainEnd) return "main"
-	if (relX >= todoStart && relX < todoEnd) return "todo"
+	if (strip.cells.length === 0) return undefined
+	const innerWidth = box.width - (framed ? 2 : 0)
+	const stripLeft = box.screenX + (framed ? 1 : 0) + innerWidth - strip.rightPadding - strip.stripWidth
+	const row = framed ? box.screenY + box.height - 2 : box.screenY + box.height - 1
+	if (y !== row && !(framed && y === row + 1)) return undefined
+	let cursor = stripLeft
+	for (const cell of strip.cells) {
+		const cellWidth = stringWidth(cell.text)
+		if (x >= cursor && x < cursor + cellWidth) return cell.tab
+		cursor += cellWidth
+	}
 	return undefined
+}
+
+/** The strip row itself: one `<text>` per cell so segments and arrows can
+ * carry different fg/bg. `flex-end` + `paddingRight` are the two independent
+ * guards for the right margin — no space fill that could reach the border.
+ * Mouse-up is owned by the enclosing framed/compact box; a handler here would
+ * run again when OpenTUI bubbles the same event to the parent. */
+export function DockTabStripView(props: { strip: DockTabStrip }): JSX.Element {
+	return (
+		<box
+			flexShrink={0}
+			flexDirection="row"
+			width="100%"
+			height={1}
+			justifyContent="flex-end"
+			paddingRight={props.strip.rightPadding}
+		>
+			<For each={props.strip.cells}>{(cell) => <text wrapMode="none" style={{ fg: cell.fg, bg: cell.bg }}>{cell.text}</text>}</For>
+		</box>
+	)
 }
 
 // ------------------------------------------- scene-A todo brief timing (指令4)
@@ -1919,18 +2001,21 @@ export function WidgetsDock(props: {
 	// ━ it always draws after the title (col W-2), and ┓ (col W-1). The title
 	// SLOT is therefore exactly W-4 columns (render-capture verified).
 	const titleSlotWidth = () => dimensions().width - 4
-	// R2: the tab bar is MERGED into the title string (no extra frame row —
-	// the framed dock's height/content law stays byte-identical). The bar is
-	// width-fitted with takeWidth/stringWidth; the box title slot is W-4 wide,
-	// exactly `width()`. Click handling is on the box below (the box title
-	// itself is not a renderable, so autoFocus:false requires an explicit
-	// onMouseUp with a coordinate hit test).
-	// B2c-2: both modes share ONE label source so the active-tab marker can't
-	// diverge between the framed title and the compact rule row.
+	// Powerline tab strip: a REAL last content row inside the box (the border
+	// title now carries only the activity title + ` · N/M`). The strip row is
+	// flex-end + paddingRight aligned, so it can never be space-filled onto the
+	// border. Both paint and hit-test read this same cell data.
 	const tabLabels = () => activityDockTabLabels(activityDockTab(), t("overlay.widgets.tab.main"), t("overlay.widgets.tab.todo"))
-	const tabBar = () => {
+	const framedStrip = () => {
 		const labels = tabLabels()
-		return dockTabBarLayout(titleSlotWidth(), labels.main, labels.todo, "")
+		// The framed row's content width = box width - two border columns.
+		return dockTabStripLayout({
+			mainLabel: labels.main,
+			todoLabel: labels.todo,
+			activeTab: activityDockTab(),
+			theme: theme ?? undefined,
+			innerWidth: dimensions().width - 2,
+		})
 	}
 	const mergedTitleText = () => {
 		const { lines, info } = mergedFrame()
@@ -1940,9 +2025,7 @@ export function WidgetsDock(props: {
 			subagent: mergedRunningAgents(props.rows).length > 0,
 		})
 		const suffix = mergedPositionSuffix(info)
-		const bar = tabBar()
-		const head = `${bar.mainLabel}${bar.between}${bar.todoLabel} `
-		const title = takeWidth(head + base, titleSlotWidth())
+		const title = takeWidth(base, titleSlotWidth())
 		if (suffix === null) return title
 		const gap = titleSlotWidth() - stringWidth(title) - stringWidth(suffix)
 		if (gap < 1) return `${title} · ${suffix}`
@@ -1952,7 +2035,7 @@ export function WidgetsDock(props: {
 	const onDockTitleMouseUp = (event: MouseEvent) => {
 		onActivityPanelMouseUp(event)
 		if (dockBox === undefined) return
-		const tab = dockTabAtPosition(event.x, event.y, dockBox.screenX, dockBox.screenY, tabBar())
+		const tab = dockTabAtPosition(event.x, event.y, dockBox, true, framedStrip())
 		if (tab !== undefined) onDockTabMouseUp(tab, event)
 	}
 	// D9 wheel — the PRIMARY scroll channel. Step the module cursor only while
@@ -2055,27 +2138,23 @@ export function WidgetsDock(props: {
 		const count = !animating || tweened >= target ? target : Math.min(target, tweened)
 		return lines.slice(0, count)
 	}
-	// 2 border rows + the active tab's tweened content rows (the tab bar rides
-	// the top border as the title, so it costs no extra frame row).
-	const frameHeight = () => 2 + tabContentLines().length
+	// 2 border rows + the active tab's tweened content rows + ONE real tab-strip
+	// row (now the last content row, not the border title).
+	const frameHeight = () => 3 + tabContentLines().length
 	// Compact lower zone: the same todo tree as the framed dock (with a narrow
 	// fallback for an over-budget tree). No scroll zone in the compact form.
-	// B2c followup: the R2 tab bar was wired ONLY into the framed (>= 31 rows)
-	// box title. On compact terminals (<= COMPOSER_COMPACT_TERMINAL_ROWS, i.e.
-	// the shipped 80x24 / 120x24 pane) the rule branch below had neither the
-	// tab labels nor any reaction to `activityDockTab`, so the user never saw
-	// "1 主面板 / 2 待办". Mirror the framed affordance here: the same layout,
-	// the same signal, the same keymap commands (already global-mode).
-	const compactTabBar = () => {
+	// The strip uses the same cells/colors as the framed dock; only its place
+	// (last row) and its row width (box width minus the 3-column left padding)
+	// differ. Same signal, same global keymap commands.
+	const compactStrip = () => {
 		const labels = tabLabels()
-		return dockTabBarLayout(width(), labels.main, labels.todo, "")
-	}
-	// A MergedDockLine (not a raw <text> child): the renderer blanks CJK
-	// graphemes in a bare text node but paints them through mergedLineView's
-	// span styling (the same path `┃ 活动` and the todo tree use).
-	const compactTabBarLine = (): MergedDockLine => {
-		const bar = compactTabBar()
-		return { kind: "tool", segments: [{ text: `${bar.mainLabel}${bar.between}${bar.todoLabel}`, tone: "muted" }] }
+		return dockTabStripLayout({
+			mainLabel: labels.main,
+			todoLabel: labels.todo,
+			activeTab: activityDockTab(),
+			theme: theme ?? undefined,
+			innerWidth: dimensions().width - 3,
+		})
 	}
 	const compactLower = () => mergedCompactLowerLines(props.rows)
 	// R8: the brief row heads the main tab's lower zone (above the todo tree),
@@ -2097,9 +2176,7 @@ export function WidgetsDock(props: {
 	const onCompactTitleMouseUp = (event: MouseEvent) => {
 		onActivityPanelMouseUp(event)
 		if (compactDockBox === undefined) return
-		// The compact box has paddingLeft=3 (vs the framed box's ┏ + ━ = 2),
-		// so shift the hit-test origin one cell right.
-		const tab = dockTabAtPosition(event.x, event.y, compactDockBox.screenX + 1, compactDockBox.screenY, compactTabBar())
+		const tab = dockTabAtPosition(event.x, event.y, compactDockBox, false, compactStrip())
 		if (tab !== undefined) onDockTabMouseUp(tab, event)
 	}
 
@@ -2164,25 +2241,22 @@ export function WidgetsDock(props: {
 							paddingLeft={3}
 							onMouseUp={onCompactTitleMouseUp}
 						>
-							{/* B2c: the tab bar rides the first row on compact
-							 * terminals too — the same affordance the framed
-							 * dock paints in its box title. */}
-						<For each={[compactTabBarLine()]}>{mergedLineView}</For>
-						{/* Compact terminals keep the 2-line rule form for
-							 * think/tool on the main tab. The lower zone renders
-							 * the SAME todo tree as the framed dock (no scroll
-							 * zone); only an over-budget tree degrades to one
-							 * summary line. The todo tab drops the rule lines and
-							 * paints only the tree. */}
+							{/* Compact terminals keep the 2-line rule form for
+								 * think/tool on the main tab. The lower zone renders
+								 * the SAME todo tree as the framed dock (no scroll
+								 * zone); only an over-budget tree degrades to one
+								 * summary line. The todo tab drops the rule lines and
+								 * paints only the tree. */}
 							<For each={activityDockTab() === "main" ? activityRuleLines(props.rows) : []}>{lineView}</For>
 							<For each={compactContent()}>{mergedLineView}</For>
+							{/* The powerline tab strip is the LAST row, right-aligned. */}
+							<DockTabStripView strip={compactStrip()} />
 						</box>
 					}
 				>
 					{/* Explicit border (the borderColor-only trap opens four sides
 					 * implicitly — contract §2.4). Height = 2 border rows + the
-					 * active tab's content rows; the tab bar rides the top border
-					 * as the box title (no extra frame row). */}
+					 * active tab's content rows + the last-row tab strip. */}
 					<box
 						ref={(el) => {
 							dockBox = el
@@ -2201,6 +2275,8 @@ export function WidgetsDock(props: {
 						onMouseUp={onDockTitleMouseUp}
 					>
 						<For each={tabContentLines()}>{mergedLineView}</For>
+						{/* Powerline tab strip: box-internal LAST content row. */}
+						<DockTabStripView strip={framedStrip()} />
 					</box>
 				</Show>
 			</Show>
