@@ -215,6 +215,57 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 
+	// -----------------------------------------------------------------------
+	// ask-outcome hydrate notice (v4 §8.3 / A12 / A21 / A28)
+	// -----------------------------------------------------------------------
+
+	test("A21: a stored notice maps to the fixed notice:<id> view key, never stored:notice:", () => {
+		expect(toStoredRow({ kind: "notice", id: "ask-outcome:E21", text: "已收到该请求的回答", final: true }, 3)).toEqual({
+			key: "notice:ask-outcome:E21",
+			kind: "assistant",
+			text: "已收到该请求的回答",
+			final: true,
+		})
+	})
+
+	test("A12: notice is visible after a STAGED /resume load (no live session yet)", async () => {
+		const seam = new FakeSeam()
+		seam.byId["s-old"] = [
+			{ kind: "user", text: "older question", final: true },
+			{ kind: "notice", id: "ask-outcome:E12", text: "已收到该请求的回答", final: true },
+		]
+		const { projection, dispose } = setup(seam, { liveId: "" })
+		await projection.load("s-old")
+		const notice = projection.rows.find((r) => r.key === "notice:ask-outcome:E12")
+		expect(notice).toMatchObject({ kind: "assistant", text: "已收到该请求的回答", final: true })
+		expect(seam.reads.at(-1)).toBe("s-old")
+		dispose()
+	})
+
+	test("A12: startup load (live id present) also paints the hydrate notice", async () => {
+		const seam = new FakeSeam()
+		seam.stored = [{ kind: "notice", id: "ask-outcome:E12", text: "该请求已被拒绝", final: true }]
+		const { projection, dispose } = setup(seam)
+		await projection.load()
+		expect(projection.rows).toHaveLength(1)
+		expect(projection.rows[0]!.key).toBe("notice:ask-outcome:E12")
+		expect(projection.rows[0]!.text).toBe("该请求已被拒绝")
+		dispose()
+	})
+
+	test("A28: hydrate + DEAD event of the same id upserts ONE row with identical text", async () => {
+		const seam = new FakeSeam()
+		seam.stored = [{ kind: "notice", id: "ask-outcome:E28", text: "等待该请求的回答超时", final: true }]
+		const { projection, dispose } = setup(seam)
+		await projection.load()
+		projection.apply({
+			type: "message.updated",
+			details: { id: "ask-outcome:E28", role: "notice", text: "等待该请求的回答超时", sessionID: "s1" },
+		})
+		expect(projection.rows.filter((r) => r.key === "notice:ask-outcome:E28")).toHaveLength(1)
+		dispose()
+	})
+
 	test("a FAILED transcript read keeps the rows already on screen", async () => {
 		const seam = new FakeSeam()
 		seam.stored = [

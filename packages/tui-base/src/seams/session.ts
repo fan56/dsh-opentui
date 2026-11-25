@@ -116,6 +116,14 @@ export interface SeamTranscriptRow {
 	 * absent on every other kind — and on older projections, which degrade
 	 * to the assistant text row they used to be. */
 	entries?: SeamAskEntry[]
+	/**
+	 * ask-outcome hydrate rows only. A stored notice has its OWN kind
+	 * (`"notice"`, never `"assistant"`); this fixed id is the shared
+	 * `ask-outcome:<eventId>` (A11 conflicts add `:seq-N`). `toStoredRow`
+	 * renders it as a view assistant row under key `notice:<id>` — not
+	 * `stored:notice:<index>`, and with no cross-path replay dedup key.
+	 */
+	id?: string
 }
 
 /**

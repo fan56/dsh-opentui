@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.2] - 2026-11-25
+
+### Added
+
+- **Ask outcomes now enter the session transcript.** When an `ask` settles
+  (answered, rejected, unavailable, cancelled or timed out), the bridge writes
+  a terminal journal row and emits a frame carrying a closed settle reason. The
+  shell projects that outcome into a single `ask-outcome:<eventId>` notice row,
+  so live frames, bridge reconnect and `/resume` of a stored transcript all
+  show the same result in the transcript.
+
+### Changed
+
+- **Expired approval windows no longer leave zombie cards.** The bridge arms a
+  gate for each pending ask: when the approval window expires without a verdict
+  the ask is settled with reason `timeout` and the default outcome, even if the
+  provider never answers.
+- **Older ask frames and journals still read.** The settle reason is optional on
+  read paths, so journals written before it existed still replay, and frames
+  without the new reason field stay valid for consumers. New writes always
+  carry a closed settle reason.
+- **The companion model-sync guard now tracks `^0.11.0`.** The in-process profile
+  previously declared `^0.10.0`, so npm `latest` = 0.11.0 was skipped as a 0.x
+  cross-minor break and the fresh-home verifier saw only 10 of 11 companions.
+  The guard now admits 0.11.0 while still rejecting 0.12.0. The 0.11.0 manifest
+  keeps the same peers, engine and entry points as 0.10.0. The interaction
+  between 0.11.0's migrate-go/one-shot paths and provision patch ownership is
+  **NOT VERIFIED** and is not claimed as validated by this change.
+
 ## [0.28.1] - 2026-11-25
 
 ### Added

@@ -24,6 +24,7 @@ import type {
   AskErrorCode,
   AskKind,
   AskOutcome,
+  AskSettleReason,
   AskVerdict,
 } from './ask-frames'
 
@@ -64,9 +65,10 @@ export interface AskJournalAnswers {
 }
 
 /**
- * One redacted journal event. Every field is an enum, a bounded identifier, a
- * number, or a numeric summary. There is intentionally no `args`, `reason`,
- * `prompt`, `custom`, or `message` field — those are the sensitive surfaces.
+ * One redacted journal event (the READ shape, also used for legacy rows).
+ * Every field is an enum, a bounded identifier, a number, or a numeric summary.
+ * There is intentionally no `args`, free-text `reason`, `prompt`, `custom`, or
+ * `message` field — those are the sensitive surfaces.
  */
 export interface AskJournalEvent {
   /** `${turnId}:ask-${seq}` — the ADR-0011 §3.1 lifecycle key. */
@@ -91,17 +93,43 @@ export interface AskJournalEvent {
   answers?: AskJournalAnswers
   /** Protocol code on fail-closed / timeout / teardown paths. */
   code?: AskErrorCode
-  /** Cancellation reason (closed vocabulary), never a free-text reason. */
+  /** Cancellation reason (closed ask.cancel vocabulary), never free text. */
   reason?: AskCancelReason
+  /** Closed terminal reason written by new production rows. Optional here so
+   *  journal rows written before `settleReason` existed still read/replay. */
+  settleReason?: AskSettleReason
+  /** Requesting child session id (subagent asks), redacted like `sessionId`. */
+  childSessionId?: string
   /** How the decision was produced (audit only). */
   source: AskJournalSource
   /** Unix epoch milliseconds from the registry's injected clock. */
   at: number
 }
 
-/** Injected writer. The real host writer is fire-and-forget with containment;
- *  a failed append must never change the ask verdict. */
-export type AskJournalSink = (event: AskJournalEvent) => void
+/** Terminal journal kinds — the only rows that carry `settleReason`. */
+export type AskJournalTerminalKind =
+  | typeof ASK_JOURNAL_KINDS.RESPONDED
+  | typeof ASK_JOURNAL_KINDS.CANCELLED
+
+/** Production WRITE shape for a terminal row: `settleReason` is mandatory.
+ *  Kept separate from `AskJournalEvent` so old rows remain readable. */
+export type AskJournalTerminalEvent = Omit<AskJournalEvent, 'kind' | 'settleReason'> & {
+  kind: AskJournalTerminalKind
+  settleReason: AskSettleReason
+}
+
+/** Production WRITE union: `requested` has no settlement reason; every terminal
+ *  row must carry one from the closed `AskSettleReason` set. */
+export type AskJournalWriteEvent =
+  | (Omit<AskJournalEvent, 'kind'> & { kind: typeof ASK_JOURNAL_KINDS.REQUESTED })
+  | AskJournalTerminalEvent
+
+/** Injected writer used by production. `AskJournalWriteEvent` requires
+ *  `settleReason` on terminal rows, so a terminal write cannot omit it.
+ *  Legacy rows are still readable through `AskJournalEvent` above. The real
+ *  host writer is fire-and-forget with containment: a failed append must never
+ *  change the ask verdict. */
+export type AskJournalSink = (event: AskJournalWriteEvent) => void
 
 // ---------------------------------------------------------------------------
 // Redaction helpers — the ONLY way free-form input becomes a journal field.

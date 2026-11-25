@@ -9,14 +9,24 @@ import { describe, expect, test } from 'bun:test'
 import {
   ASK_ERROR_CODES,
   ASK_FRAME_TYPES,
+  SETTLE_REASONS,
   isAskErrorCode,
+  isAskSettleReason,
   validateAskCancel,
   validateAskEvent,
   validateAskPending,
   validateAskRequest,
   validateAskResponse,
   validateAskSettled,
+  type AskSettleReason,
+  type AskSettledPayload,
+  type AskSettledPayloadRead,
 } from '../src/ask-frames'
+
+/** Compile-time check: `value` must satisfy T; returns it unchanged. */
+function accepts<T>(value: T): T {
+  return value
+}
 
 const ADR_ERROR_CODES = [
   'ASK_UNKNOWN_REQUEST',
@@ -129,6 +139,84 @@ describe('validateAskCancel / AskSettled / AskPending', () => {
     })
     expect(result.ok).toBe(true)
     expect(validateAskPending({ sessionId: 's1', asks: 'nope' }).ok).toBe(false)
+  })
+})
+
+describe('ask.settled reason — closed set, legacy tolerance, field pass-through', () => {
+  const EXPECTED_REASONS = [
+    'answered', 'rejected', 'unavailable', 'timeout', 'aborted',
+    'turn-ended', 'session-closed', 'detached', 'connection-closed',
+    'no-channel', 'auto-approved',
+  ]
+
+  test('exact closed set of eleven settle reasons', () => {
+    expect([...SETTLE_REASONS].sort()).toEqual([...EXPECTED_REASONS].sort())
+    for (const reason of EXPECTED_REASONS) expect(isAskSettleReason(reason)).toBe(true)
+    // Legacy fallback / ask.cancel vocabulary values must not leak into the set.
+    for (const reason of ['ended', 'unrecorded', 'host-abort', 'superseded', 'approved']) {
+      expect(isAskSettleReason(reason)).toBe(false)
+    }
+  })
+
+  test('legacy frame without reason is NOT rejected (no BAD_PARAMS, no dropped frame)', () => {
+    const result = validateAskSettled({ eventId: 't:ask-1', outcome: 'approved' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.reason).toBeUndefined()
+
+    // Same through the generic event dispatcher.
+    const dispatched = validateAskEvent('ask.settled', { eventId: 't:ask-1', outcome: 'denied' })
+    expect(dispatched.ok).toBe(true)
+  })
+
+  test('all new fields are validated and passed through; no code field is invented', () => {
+    const raw = {
+      eventId: 't:ask-2', outcome: 'cancelled', reason: 'timeout',
+      sessionId: 'parent', kind: 'questions', toolName: 'AskUserQuestion',
+      callId: 'call-9', childSessionId: 'child-1', code: 'ASK_DEADLINE_EXCEEDED',
+    }
+    const result = validateAskSettled(raw)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value).toEqual({
+      eventId: 't:ask-2', outcome: 'cancelled', reason: 'timeout',
+      sessionId: 'parent', kind: 'questions', toolName: 'AskUserQuestion',
+      callId: 'call-9', childSessionId: 'child-1',
+    })
+    expect('code' in result.value).toBe(false)
+  })
+
+  test('illegal reason is rejected with BAD_PARAMS; malformed optional fields too', () => {
+    for (const reason of ['ended', 'unrecorded', 'host-abort', 'approved', '']) {
+      const bad = validateAskSettled({ eventId: 't:ask-1', outcome: 'approved', reason })
+      expect(bad.ok).toBe(false)
+      if (!bad.ok) expect(bad.code).toBe('BAD_PARAMS')
+    }
+    expect(validateAskSettled({ eventId: 't:ask-1', outcome: 'approved', kind: 'nope' }).ok).toBe(false)
+    expect(validateAskSettled({ eventId: 't:ask-1', outcome: 'approved', childSessionId: 42 }).ok).toBe(false)
+  })
+
+  test('TYPE: production payload requires reason; consumed payload does not', () => {
+    accepts<AskSettledPayload>({
+      eventId: 't:ask-1', outcome: 'approved', reason: 'answered',
+      sessionId: 's1', kind: 'approval', childSessionId: 'child-1',
+    })
+    accepts<AskSettledPayloadRead>({ eventId: 't:ask-1', outcome: 'approved' })
+
+    // @ts-expect-error production outbound settled payload requires reason
+    const missingReason: AskSettledPayload = { eventId: 't:ask-1', outcome: 'approved' }
+    expect(missingReason.eventId).toBe('t:ask-1')
+
+    // @ts-expect-error 'ended' is a coarse legacy fallback, not a closed reason
+    const badReason: AskSettleReason = 'ended'
+    expect(badReason).toBe('ended')
+
+    // @ts-expect-error AskSettledPayload has no code? field
+    const withCode: AskSettledPayload = {
+      eventId: 't:ask-1', outcome: 'cancelled', reason: 'timeout',
+      code: 'ASK_DEADLINE_EXCEEDED',
+    }
+    expect(withCode.eventId).toBe('t:ask-1')
   })
 })
 

@@ -171,6 +171,19 @@ export type SeamRow =
 	  }
 
 export function toStoredRow(stored: SeamTranscriptRow, index: number): SeamRow {
+	// ask-outcome hydrate notice: the STORED kind stays `"notice"` (it is never
+	// carried by an assistant row), while the view renders it as a final
+	// assistant text row under the fixed `notice:<id>` key. The id is the shared
+	// `ask-outcome:<eventId>` from the single derivation function, so a hydrate
+	// and a DEAD replay of the same event upsert ONE row (A21/A28).
+	if (stored.kind === "notice") {
+		return {
+			key: `notice:${stored.id ?? "ask-outcome:unknown"}`,
+			kind: "assistant",
+			text: stored.text,
+			final: true,
+		}
+	}
 	const kind = stored.kind === "user" || stored.kind === "tool" || stored.kind === "ask" ? stored.kind : "assistant"
 	const key = `stored:${kind}:${index}`
 	if (kind === "tool") {

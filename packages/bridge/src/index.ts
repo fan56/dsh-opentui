@@ -532,12 +532,23 @@ type HostApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavaila
 interface ApprovalAgentLike {
   session?: { id?: unknown }
 }
+/** approval-policy attaches this to the SAME `approval/request` object before
+ *  `decision()` (cross-repo contract). `windowMs` is informational only: the
+ *  bridge never builds a timer/deadline from it — the `signal` is the single
+ *  clock, and it is independent of the host `req.signal`. */
+interface ApprovalGateExpiryLike {
+  windowMs?: unknown
+  defaultOutcome?: unknown
+  signal?: AbortSignal
+}
+
 interface ApprovalRequestLike {
   agent?: ApprovalAgentLike
   toolName?: unknown
   callId?: unknown
   reason?: unknown
   signal?: AbortSignal
+  approvalGateExpiry?: ApprovalGateExpiryLike
 }
 
 interface HostQuestionOptionLike {
@@ -2749,6 +2760,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     /** `ask.response` params, stashed by handleAskResponse before answer(). */
     params?: AskResponseParams
   }>()
+  /** Independent approval-policy gate listeners, keyed by eventId. Released when
+   *  the answer settles (answer / host abort / teardown) or at connection
+   *  teardown. Never composed with the host `req.signal`. */
+  const approvalGateListeners = new Map<string, () => void>()
+
+  function clearApprovalGate(eventId: string): void {
+    const dispose = approvalGateListeners.get(eventId)
+    if (dispose === undefined) return
+    approvalGateListeners.delete(eventId)
+    try { dispose() } catch { /* listener already removed */ }
+  }
 
   /** Settle (and forget) one answerer. Idempotent: the first settle deletes the
    *  entry, so a later `ask.settled` / signal abort / teardown is a no-op. */
@@ -2761,23 +2783,34 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
 
   /** One promise per pushed ask. The host `signal` settling as 'cancelled'
    *  mirrors dsh-user-approval's abort race (src/index.ts:320-332): a late
-   *  answer after abort is discarded by the first-wins delete above. */
+   *  answer after abort is discarded by the first-wins delete above. The
+   *  registry terminal is written FIRST (filenames reasons 'aborted'); the
+   *  answerer settle stays as the await fallback only. */
   function waitForAnswerer(eventId: string, signal?: AbortSignal): Promise<AnswererSettlement> {
     return new Promise<AnswererSettlement>((resolve) => {
       const pending: { resolve: (s: AnswererSettlement) => void; params?: AskResponseParams } = { resolve }
       pendingAnswerers.set(eventId, pending)
-      if (signal !== undefined) {
-        if (signal.aborted) {
-          settleAnswerer(eventId, { outcome: 'cancelled' })
-        } else {
-          const original = pending.resolve
-          const onAbort = () => settleAnswerer(eventId, { outcome: 'cancelled' })
-          pending.resolve = (settlement) => {
-            signal.removeEventListener('abort', onAbort)
-            original(settlement)
-          }
-          signal.addEventListener('abort', onAbort, { once: true })
+      // Every settle path (registry ask.settled, host abort, gate timeout,
+      // teardown) funnels through this wrapper so both listeners are released
+      // exactly once when the answer lands.
+      const original = pending.resolve
+      let onAbort: (() => void) | undefined
+      pending.resolve = (settlement) => {
+        if (signal !== undefined && onAbort !== undefined) {
+          signal.removeEventListener('abort', onAbort)
         }
+        clearApprovalGate(eventId)
+        original(settlement)
+      }
+      if (signal !== undefined) {
+        onAbort = () => {
+          // First-wins in the registry AND in the answerer map: a later gate
+          // timeout / answer / teardown writes no second terminal.
+          ask.settleExternal(eventId, { settleReason: 'aborted' })
+          settleAnswerer(eventId, { outcome: 'cancelled' })
+        }
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
       }
     })
   }
@@ -2825,14 +2858,21 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     logger,
     journal: writeAskJournal,
     sink: (frame) => {
-      emitEvent(frame.type, frame.payload as unknown as Record<string, unknown>)
-      if (frame.type === ASK_FRAME_TYPES.SETTLED) {
-        const settled = frame.payload as AskSettledPayload
-        const pending = pendingAnswerers.get(settled.eventId)
-        settleAnswerer(settled.eventId, {
-          outcome: settled.outcome,
-          ...(pending?.params !== undefined ? { params: pending.params } : {}),
-        })
+      // Wake the answerer even if emitEvent throws: otherwise a gate timeout
+      // (which relies solely on this SETTLED callback) leaves its promise
+      // hanging. The non-throwing path keeps the original emit-then-settle
+      // order; the registry's #emitTerminal contains the rethrown error.
+      try {
+        emitEvent(frame.type, frame.payload as unknown as Record<string, unknown>)
+      } finally {
+        if (frame.type === ASK_FRAME_TYPES.SETTLED) {
+          const settled = frame.payload as AskSettledPayload
+          const pending = pendingAnswerers.get(settled.eventId)
+          settleAnswerer(settled.eventId, {
+            outcome: settled.outcome,
+            ...(pending?.params !== undefined ? { params: pending.params } : {}),
+          })
+        }
       }
     },
   })
@@ -3589,13 +3629,47 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
 
   /** D6: no deliverable provider → settle `unavailable` + ASK_CHANNEL_UNAVAILABLE
    *  through the registry (emits ask.settled), then fail the host waterfall
-   *  closed. NO ask.request frame is pushed and nothing is silently denied. */
-  function failClosedAsk(kind: 'approval' | 'questions', turnId: string, sessionId: string, reason: string): void {
-    const result = ask.failClosed({ turnId, sessionId, kind, reason })
+   *  closed. NO ask.request frame is pushed and nothing is silently denied.
+   *  Correlation metadata is forwarded when the caller has it; an unknown
+   *  session stays the literal 'unknown' so a client can filter the row. */
+  function failClosedAsk(
+    kind: 'approval' | 'questions',
+    turnId: string,
+    sessionId: string,
+    reason: string,
+    meta: { toolName?: string; callId?: string; childSessionId?: string } = {},
+  ): void {
+    const result = ask.failClosed({
+      turnId, sessionId, kind, reason,
+      ...(meta.toolName !== undefined ? { toolName: meta.toolName } : {}),
+      ...(meta.callId !== undefined ? { callId: meta.callId } : {}),
+      ...(meta.childSessionId !== undefined ? { childSessionId: meta.childSessionId } : {}),
+    })
     logger.warn(
       '[dsh-opentui-bridge] ask fail-closed kind=%s session=%s eventId=%s code=%s reason=%s',
       kind, sessionId, result.settlement.eventId, result.code, reason,
     )
+  }
+
+  /** Independent approval-policy gate: only `approvalGateExpiry.signal` settles
+   *  it, and it lands `settleReason:'timeout'` with the policy defaultOutcome.
+   *  Never composed with the host `req.signal` (that would land 'aborted'), and
+   *  `windowMs` never becomes a bridge timer/deadline. No-op when the answerer
+   *  already settled (e.g. a host abort that won the race). */
+  function armApprovalGate(eventId: string, expiry: ApprovalGateExpiryLike | undefined): void {
+    if (expiry === undefined || !pendingAnswerers.has(eventId)) return
+    const signal = expiry.signal
+    if (signal === undefined || typeof signal.addEventListener !== 'function') return
+    const defaultOutcome = expiry.defaultOutcome === 'unavailable' ? 'unavailable' : 'rejected'
+    const onGateAbort = () => {
+      ask.settleExternal(eventId, { settleReason: 'timeout', defaultOutcome })
+    }
+    if (signal.aborted) {
+      onGateAbort()
+      return
+    }
+    signal.addEventListener('abort', onGateAbort, { once: true })
+    approvalGateListeners.set(eventId, () => signal.removeEventListener('abort', onGateAbort))
   }
 
   /** `approval/request` answerer. The request fields are projected into an
@@ -3604,12 +3678,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  Returning (never calling `next`) claims the waterfall request. */
   async function onApprovalRequest(raw: unknown, _next: () => Promise<HostApprovalOutcome>): Promise<HostApprovalOutcome> {
     const req = (raw !== null && typeof raw === 'object' ? raw : {}) as ApprovalRequestLike
+    const toolName = typeof req.toolName === 'string' && req.toolName !== '' ? req.toolName : undefined
+    const callId = req.callId === undefined ? undefined : idString(req.callId)
     const target = askTarget(req.agent)
     if (target === undefined) {
-      failClosedAsk('approval', 'no-turn', binding?.sessionId ?? FAIL_CLOSED_UNKNOWN_SESSION, 'no open in-flight turn to deliver an approval ask')
+      failClosedAsk('approval', 'no-turn', binding?.sessionId ?? FAIL_CLOSED_UNKNOWN_SESSION, 'no open in-flight turn to deliver an approval ask', {
+        ...(toolName !== undefined ? { toolName } : {}),
+        ...(callId !== undefined ? { callId } : {}),
+      })
       return 'unavailable'
     }
-    const toolName = typeof req.toolName === 'string' && req.toolName !== '' ? req.toolName : undefined
     // ADR-0011 T7 (D7): a session-scoped 'always' grant short-circuits the card.
     // The grant can only have been created by an accepted `behavior:'always'`
     // answer (which itself requires a host-granted escalation, Q3), and it is
@@ -3620,6 +3698,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId: target.sessionId,
         askKind: 'approval',
         toolName,
+        // F1-A1 / ADR-0011 T7: keep the child attribution on the short-circuit
+        // row too. The registry redacts it before writing the journal.
+        ...(target.childSessionId !== undefined ? { childSessionId: target.childSessionId } : {}),
       })
       logger.info(
         '[dsh-opentui-bridge] ask always-grant from session summary: session=%s tool=%s eventId=%s (no card)',
@@ -3627,7 +3708,6 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       )
       return 'allowed-once'
     }
-    const callId = req.callId === undefined ? undefined : idString(req.callId)
     const reason = typeof req.reason === 'string' && req.reason !== '' ? req.reason : undefined
     // ADR-0011 Q3/D7: escalation is a BRIDGE-side grant on ask.request, not a
     // host field — dsh-user-approval's ApprovalRequestEvent has no escalation
@@ -3653,10 +3733,18 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(approval) failed: %s', err)
-      failClosedAsk('approval', target.turn.turnId, target.sessionId, 'ask.create(approval) threw')
+      failClosedAsk('approval', target.turn.turnId, target.sessionId, 'ask.create(approval) threw', {
+        ...(toolName !== undefined ? { toolName } : {}),
+        ...(callId !== undefined ? { callId } : {}),
+        ...(target.childSessionId !== undefined ? { childSessionId: target.childSessionId } : {}),
+      })
       return 'unavailable'
     }
-    const settled = await waitForAnswerer(request.eventId, req.signal)
+    // Register the await BEFORE arming the gate so a synchronously-aborted gate
+    // can always settle the answerer through the registry broadcast.
+    const answer = waitForAnswerer(request.eventId, req.signal)
+    armApprovalGate(request.eventId, req.approvalGateExpiry)
+    const settled = await answer
     switch (settled.outcome) {
       case 'approved': return 'allowed-once'
       case 'denied': return 'rejected'
@@ -3671,9 +3759,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  client's `answers` back to `AskUserQuestionAnswer` on settlement. */
   async function onUserQuestionsRequest(raw: unknown, _next: () => Promise<HostQuestionsAnswerLike>): Promise<HostQuestionsAnswerLike> {
     const req = (raw !== null && typeof raw === 'object' ? raw : {}) as UserQuestionsRequestLike
+    const callId = req.wait?.callId === undefined ? undefined : idString(req.wait.callId)
     const target = askTarget(req.agent)
     if (target === undefined) {
-      failClosedAsk('questions', 'no-turn', binding?.sessionId ?? FAIL_CLOSED_UNKNOWN_SESSION, 'no open in-flight turn to deliver a questions ask')
+      failClosedAsk('questions', 'no-turn', binding?.sessionId ?? FAIL_CLOSED_UNKNOWN_SESSION, 'no open in-flight turn to deliver a questions ask', {
+        ...(callId !== undefined ? { callId } : {}),
+      })
       throw new Error('ASK_CHANNEL_UNAVAILABLE: no in-flight turn to deliver user questions')
     }
     const questions = (req.questions ?? []).map((q) => {
@@ -3692,7 +3783,6 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         ...(q.multiSelect === true ? { multiSelect: true } : {}),
       }
     })
-    const callId = req.wait?.callId === undefined ? undefined : idString(req.wait.callId)
     let request: AskRequestPayload | undefined
     try {
       request = ask.create(target.turn.turnId, {
@@ -3706,7 +3796,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(questions) failed: %s', err)
-      failClosedAsk('questions', target.turn.turnId, target.sessionId, 'ask.create(questions) threw')
+      failClosedAsk('questions', target.turn.turnId, target.sessionId, 'ask.create(questions) threw', {
+        ...(callId !== undefined ? { callId } : {}),
+        ...(target.childSessionId !== undefined ? { childSessionId: target.childSessionId } : {}),
+      })
       throw new Error('ASK_CHANNEL_UNAVAILABLE: ask.create(questions) failed')
     }
     const settled = await waitForAnswerer(request.eventId, req.signal)
@@ -4932,6 +5025,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // S3: release ALL host push subscriptions on teardown (closed connection).
     pushRelay.stopAll()
     accountRelay.stopAll()
+    // External terminal path: every still-pending ask is settled BY eventId
+    // before the answerer loop and before `ask.dispose()` drops timers, so the
+    // redacted journal records `connection-closed`. `closing` is already true,
+    // so the registry's ask.settled frames are dropped by writeFrame — teardown
+    // itself emits nothing to the host. First-wins makes repeats a no-op.
+    for (const eventId of ask.pendingIds()) {
+      ask.settleExternal(eventId, { settleReason: 'connection-closed' })
+    }
     // T4 (D5): settle every host answerer await BEFORE disposing the registry.
     // `ask.dispose()` drops timers silently (no ask.settled), so teardown is the
     // only place left to guarantee no waterfall promise is left hanging on a
@@ -4939,6 +5040,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     for (const eventId of [...pendingAnswerers.keys()]) {
       settleAnswerer(eventId, { outcome: 'cancelled' })
     }
+    // Release any gate listener whose answerer had already settled before the
+    // listener was armed (e.g. a host abort that won the race).
+    for (const dispose of [...approvalGateListeners.values()]) {
+      try { dispose() } catch { /* already removed */ }
+    }
+    approvalGateListeners.clear()
     try { unsubApprovalAnswerer?.() } catch { /* already disposed */ }
     try { unsubQuestionsAnswerer?.() } catch { /* already disposed */ }
     unsubApprovalAnswerer = undefined

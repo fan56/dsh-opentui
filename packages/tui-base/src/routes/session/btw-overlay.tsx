@@ -285,6 +285,9 @@ export function createBtwSnapshotBuilder(seam: {
 		try {
 			const rows = await seam.storedTranscript(id)
 			return rows
+				// ask-outcome hydrate notices are transcript-only; they must not
+				// leak into the /btw side-question context (A26 — zero output).
+				.filter((row) => row.kind !== "notice")
 				.slice(-BTW_SNAPSHOT_ROWS)
 				.map((row) => `${row.kind}: ${row.text}`.slice(0, BTW_SNAPSHOT_ROW_CHARS))
 		} catch {

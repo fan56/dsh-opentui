@@ -15,6 +15,14 @@ export type TranscriptItem =
   | { kind: "ask"; entries: AskEntry[] }
   | { kind: "error"; text: string }
   | { kind: "system"; text: string }
+  /**
+   * ask-outcome notice derived by the hydrate (stored) path. Its kind is
+   * DISTINCT from `assistant` — the view renders it as an assistant row with
+   * key `notice:<id>`, but no stored notice is ever an assistant row. `id` is
+   * the fixed `ask-outcome:<eventId>` (plus a `:seq-N` suffix for an A11
+   * conflict row), shared byte-for-byte with the live/DEAD event paths.
+   */
+  | { kind: "notice"; id: string; text: string; final: true }
 
 /** One option of an ask transcript row: `label` is the answer value,
  * `description` the optional supporting line the tool call carried. */
@@ -46,4 +54,4 @@ export interface AskEntry {
 /** The transcript-row subset durable replays (resume/fork) may hand back.
  * Batch V1: settled `tool` rows join — the view's tool block replays the
  * call's name/args brief/result instead of degrading to a bare name. */
-export type StoredTranscriptRow = Extract<TranscriptItem, { kind: "user" | "assistant" | "ask" | "tool" }>
+export type StoredTranscriptRow = Extract<TranscriptItem, { kind: "user" | "assistant" | "ask" | "tool" | "notice" }>

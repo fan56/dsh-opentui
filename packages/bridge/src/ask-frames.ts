@@ -67,8 +67,45 @@ export type AskOutcome = 'approved' | 'denied' | 'cancelled' | 'unavailable'
 /** remote-waterfall.ts:42 `RemoteApprovalVerdict` — the real verdict words. */
 export type AskVerdict = 'allowed-once' | 'rejected' | 'unavailable'
 export type AskBehavior = 'once' | 'always' | 'session'
-/** ask.cancel reasons (ADR-0011 §3.2). */
+/** ask.cancel reasons (ADR-0011 §3.2). Separate vocabulary — never reuse as
+ *  the settled reason (research §7.1). */
 export type AskCancelReason = 'host-abort' | 'superseded' | 'deadline' | 'no-provider'
+
+/** Closed terminal-reason vocabulary shared by `ask.settled.reason` and the
+ *  terminal journal's `settleReason` (research §7.1 / §8.7). The coarse legacy
+ *  fallback values `ended` / `unrecorded` are deliberately NOT members.
+ *  `auto-approved` is exhaustively representable but invisible (A19). */
+export type AskSettleReason =
+  | 'answered'
+  | 'rejected'
+  | 'unavailable'
+  | 'timeout'
+  | 'aborted'
+  | 'turn-ended'
+  | 'session-closed'
+  | 'detached'
+  | 'connection-closed'
+  | 'no-channel'
+  | 'auto-approved'
+
+/** Runtime mirror of `AskSettleReason`, for validators that must reject values
+ *  outside the closed set. */
+export const SETTLE_REASONS: readonly AskSettleReason[] = [
+  'answered',
+  'rejected',
+  'unavailable',
+  'timeout',
+  'aborted',
+  'turn-ended',
+  'session-closed',
+  'detached',
+  'connection-closed',
+  'no-channel',
+  'auto-approved',
+]
+export function isAskSettleReason(value: unknown): value is AskSettleReason {
+  return typeof value === 'string' && (SETTLE_REASONS as readonly string[]).includes(value)
+}
 
 export interface AskOption {
   label: string
@@ -132,6 +169,22 @@ export interface AskPendingPayload {
 export interface AskSettledPayload {
   eventId: string
   outcome: AskOutcome
+  /** Mandatory on production outbound frames. Kept as a closed enum, never a
+   *  free-text field, and never populated from `ask.cancel.reason`. */
+  reason: AskSettleReason
+  /** Optional correlation fields carried through the frame/replay path. */
+  sessionId?: string
+  kind?: AskKind
+  toolName?: string
+  callId?: string
+  childSessionId?: string
+}
+
+/** Consumption shape. Frames written before `reason` existed must stay valid
+ *  (research §7.1: missing reason is not rejected, no BAD_PARAMS), so the read
+ *  side makes `reason` optional while the outbound type above stays strict. */
+export type AskSettledPayloadRead = Omit<AskSettledPayload, 'reason'> & {
+  reason?: AskSettleReason
 }
 
 /** `params` of the `ask.response` request frame (client → host). */
@@ -347,15 +400,55 @@ export function validateAskPending(value: unknown): ParseResult<AskPendingPayloa
   return { ok: true, value: { sessionId, asks } }
 }
 
-/** Validate an `ask.settled` broadcast payload. */
-export function validateAskSettled(value: unknown): ParseResult<AskSettledPayload> {
+/** Validate an `ask.settled` broadcast payload.
+ *
+ * Legacy frames without `reason` stay valid — the consumer handles them via
+ * the §7.3 fallback table. A `reason` that IS present must be in the closed
+ * set; unknown values are rejected rather than silently forwarded. New
+ * correlation fields are validated and passed through when present. No `code`
+ * field exists on this payload (protocol codes only live on the journal). */
+export function validateAskSettled(value: unknown): ParseResult<AskSettledPayloadRead> {
   const code = 'BAD_PARAMS'
   if (!isRecord(value)) return bad(code, 'ask.settled payload must be an object')
   const eventId = nonEmptyString(value.eventId, 'eventId', code)
   if (typeof eventId !== 'string') return eventId
   const outcome = oneOf(value.outcome, OUTCOMES, 'outcome', code)
   if (typeof outcome !== 'string') return outcome
-  return { ok: true, value: { eventId, outcome } }
+
+  let reason: AskSettleReason | undefined
+  if (value.reason !== undefined) {
+    const parsed = oneOf(value.reason, SETTLE_REASONS, 'reason', code)
+    if (typeof parsed !== 'string') return parsed
+    reason = parsed
+  }
+  const sessionId = optionalString(value.sessionId, 'sessionId', code)
+  if (typeof sessionId === 'object') return sessionId
+  let kind: AskKind | undefined
+  if (value.kind !== undefined) {
+    const parsed = oneOf(value.kind, KINDS, 'kind', code)
+    if (typeof parsed !== 'string') return parsed
+    kind = parsed
+  }
+  const toolName = optionalString(value.toolName, 'toolName', code)
+  if (typeof toolName === 'object') return toolName
+  const callId = optionalString(value.callId, 'callId', code)
+  if (typeof callId === 'object') return callId
+  const childSessionId = optionalString(value.childSessionId, 'childSessionId', code)
+  if (typeof childSessionId === 'object') return childSessionId
+
+  return {
+    ok: true,
+    value: {
+      eventId,
+      outcome,
+      ...(reason !== undefined ? { reason } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(kind !== undefined ? { kind } : {}),
+      ...(toolName !== undefined ? { toolName } : {}),
+      ...(callId !== undefined ? { callId } : {}),
+      ...(childSessionId !== undefined ? { childSessionId } : {}),
+    },
+  }
 }
 
 /**
@@ -425,7 +518,7 @@ export function validateAskResponse(value: unknown): ParseResult<AskResponsePara
 export function validateAskEvent(
   type: string,
   payload: unknown,
-): ParseResult<AskRequestPayload | AskCancelPayload | AskPendingPayload | AskSettledPayload> {
+): ParseResult<AskRequestPayload | AskCancelPayload | AskPendingPayload | AskSettledPayloadRead> {
   switch (type) {
     case ASK_FRAME_TYPES.REQUEST:
       return validateAskRequest(payload)
