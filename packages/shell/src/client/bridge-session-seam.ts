@@ -79,6 +79,8 @@ import type { HistoryJournalEntry } from "../../../tui-base/src/routes/session/h
 // S6: the shared journal projector moved to its permanent home so the bridge
 // path survives the legacy seam deletion (zero behavior change).
 import { projectJournalRecord } from "./journal-projection.ts"
+// ask-outcome notice — single shared derivation for live frames + DEAD replay.
+import { deriveAskOutcomeNotice, type AskOutcomeNotice } from "./ask-outcome.ts"
 // 025-w2-1 — /btw side session (create -> prompt -> wait) over the generic arm.
 import { runSideSession, SideSessionError } from "./bridge-side-session.ts"
 import { tokensPerSecond } from "../agent/loop.ts"
@@ -773,6 +775,11 @@ export interface BridgeRecoveryResult {
 export function bridgeReplayRowsToSeamTranscript(
 	rows: readonly BridgeReplayRow[],
 	skip = 0,
+	/** Bound/read session id. Only callers painting the session transcript
+	 *  (storedTranscript → hydrate, and #recover's result.rows) pass it; the
+	 *  child-log and sessionInfo callers omit it, so those paths stay at ZERO
+	 *  notice output. */
+	sessionId?: string,
 ): SeamTranscriptRow[] {
 	const entries: RemoteJournalEntry[] = rows.map((row) => ({
 		type: row.type,
@@ -781,7 +788,7 @@ export function bridgeReplayRowsToSeamTranscript(
 		data: asRecord(row.payload),
 	}))
 	const durable = journalToTranscriptRows(entries, skip)
-	return durable.map((row) => {
+	const stored: SeamTranscriptRow[] = durable.map((row) => {
 		if (row.kind === "ask") {
 			return { kind: "ask", text: "", final: true, entries: row.entries }
 		}
@@ -790,6 +797,42 @@ export function bridgeReplayRowsToSeamTranscript(
 		}
 		return { kind: row.kind, text: row.text, final: true }
 	})
+	if (sessionId === undefined || sessionId === "" || sessionId === "unknown") return stored
+
+	// Hydrate carrier (§8.3 / A21): derive NOTICES from the RAW journal via the
+	// same single derivation the DEAD events path uses, then merge by anchorSeq.
+	// The stored row keeps its own kind `"notice"` (never an assistant row) and
+	// carries the shared `ask-outcome:<eventId>` id; `toStoredRow` builds the
+	// fixed `notice:<id>` view key. No event is emitted on this path.
+	const notices = deriveAskOutcomeNoticeViews(rows, sessionId)
+	if (notices.length === 0) return stored
+
+	// `anchorSeq` is a journal SEQ (sparse: turn/start, tool/call, compaction
+	// markers occupy seqs that emit no stored row). Count how many stored rows
+	// the journal prefix up to the anchor produces, then subtract `skip` to get
+	// the insertion point in `stored` — the notice lands right after the row
+	// that carries the anchor (terminal ask row, or the turn/end's last line).
+	const prefixCounts = new Map<number, number>()
+	const byInsert = new Map<number, AskOutcomeNoticeView[]>()
+	for (const notice of notices) {
+		let count = prefixCounts.get(notice.anchorSeq)
+		if (count === undefined) {
+			count = journalToTranscriptRows(entries.filter((e) => e.seq <= notice.anchorSeq), 0).length
+			prefixCounts.set(notice.anchorSeq, count)
+		}
+		const insertAt = Math.max(0, Math.min(stored.length, count - skip))
+		const bucket = byInsert.get(insertAt)
+		if (bucket === undefined) byInsert.set(insertAt, [notice])
+		else bucket.push(notice)
+	}
+	const merged: SeamTranscriptRow[] = []
+	for (let i = 0; i <= stored.length; i++) {
+		for (const notice of byInsert.get(i) ?? []) {
+			merged.push({ kind: "notice", id: notice.id, text: notice.text, final: true })
+		}
+		if (i < stored.length) merged.push(stored[i]!)
+	}
+	return merged
 }
 
 /**
@@ -817,6 +860,172 @@ export function seamReplayEventKey(event: SeamSessionEvent): string {
 	return `${event.type}:${String(details.id ?? details.messageID ?? "")}:${String(asRecord(details.part).id ?? "")}`
 }
 
+/** Journal kind from either the payload's `kind` or the plugin record type on
+ *  the wire (`plugin:opentui/ask/responded` etc.). */
+function askJournalKind(row: BridgeReplayRow, data: Record<string, unknown>): string | undefined {
+	if (typeof data.kind === "string" && data.kind !== "") return data.kind
+	const prefix = "plugin:opentui/ask/"
+	if (row.type.startsWith(prefix)) return `ask.${row.type.slice(prefix.length)}`
+	return undefined
+}
+
+/**
+ * One fully-shaped ask-outcome notice view. Both consumers — the DEAD replay
+ * event path and the hydrate (stored) path — are built from these SAME objects,
+ * so id / text / anchorSeq are byte-identical (§8.4 / A18 / A28 / A29) and the
+ * stored path covers every notice category the events path can paint.
+ */
+interface AskOutcomeNoticeView {
+	/** `ask-outcome:<eventId>` (A11 conflicts append `:seq-N`). */
+	id: string
+	text: string
+	anchorSeq: number
+	sessionId: string
+	childSessionId?: string
+}
+
+/**
+ * The SINGLE journal→notice derivation, shared by the DEAD events path and the
+ * hydrate/stored path (research §8.4 / hydrate contract §3). It calls the one
+ * `deriveAskOutcomeNotice` for every terminal / orphan row, so text is fixed
+ * in one place only.
+ *
+ * - `ask.responded` / `ask.cancelled` → one notice per `eventId`, the MAX-seq
+ *   terminal; distinct real terminal reasons stay distinguishable (A11).
+ * - `source:'summary'`, missing/unknown/mismatched sessionId are dropped by
+ *   `deriveAskOutcomeNotice` and the session guard below (A19 / A17 / A27).
+ * - a `requested` row with NO terminal in this window AND a `turn/end` on the
+ *   same turnId yields an orphan anchored after that turn/end (A23 / A29).
+ */
+function deriveAskOutcomeNoticeViews(rows: readonly BridgeReplayRow[], sessionId: string): AskOutcomeNoticeView[] {
+	const out: AskOutcomeNoticeView[] = []
+
+	// 1. Terminal rows, grouped by eventId.
+	const terminals = new Map<string, BridgeReplayRow[]>()
+	for (const row of rows) {
+		const data = asRecord(row.payload)
+		const kind = askJournalKind(row, data)
+		if (kind !== "ask.responded" && kind !== "ask.cancelled") continue
+		const eventId = optionalStringField(data, "eventId")
+		if (eventId === undefined || optionalStringField(data, "sessionId") !== sessionId) continue
+		const group = terminals.get(eventId)
+		if (group === undefined) terminals.set(eventId, [row])
+		else group.push(row)
+	}
+
+	for (const [eventId, group] of terminals) {
+		// By seq: last row is the canonical terminal (A11 max-seq rule).
+		const ordered = [...group].sort((a, b) => a.seq - b.seq)
+		const canonical = ordered[ordered.length - 1]!
+		const noticeOf = (row: BridgeReplayRow): AskOutcomeNotice | undefined => {
+			const data = asRecord(row.payload)
+			return deriveAskOutcomeNotice({
+				eventId,
+				sessionId,
+				anchorSeq: row.seq,
+				settleReason: optionalStringField(data, "settleReason"),
+				journalKind: askJournalKind(row, data),
+				askKind: optionalStringField(data, "askKind"),
+				outcome: optionalStringField(data, "outcome"),
+				source: optionalStringField(data, "source"),
+				cancelReason: optionalStringField(data, "reason"),
+				childSessionId: optionalStringField(data, "childSessionId"),
+			})
+		}
+		const canonicalNotice = noticeOf(canonical)
+		if (canonicalNotice === undefined) continue
+		const canonicalChild = optionalStringField(asRecord(canonical.payload), "childSessionId")
+		out.push({
+			id: canonicalNotice.id,
+			text: canonicalNotice.text,
+			anchorSeq: canonicalNotice.anchorSeq,
+			sessionId,
+			...(canonicalChild !== undefined ? { childSessionId: canonicalChild } : {}),
+		})
+
+		// A11 conflict guard: a second DISTINCT real terminal reason must stay
+		// distinguishable instead of collapsing into one silent merged line.
+		const seenText = new Set([canonicalNotice.text])
+		for (const row of ordered) {
+			if (row === canonical) continue
+			const other = noticeOf(row)
+			if (other === undefined || seenText.has(other.text)) continue
+			seenText.add(other.text)
+			const childSessionId = optionalStringField(asRecord(row.payload), "childSessionId")
+			out.push({
+				id: `${other.id}:seq-${row.seq}`,
+				text: `【日志结局冲突】${other.text}`,
+				anchorSeq: other.anchorSeq,
+				sessionId,
+				...(childSessionId !== undefined ? { childSessionId } : {}),
+			})
+		}
+	}
+
+	// 2. Strong-kill orphans: a `requested` row with no terminal here, joined to
+	//    the same turnId's `turn/end` (never a client-invented terminal reason).
+	const terminalIds = new Set(terminals.keys())
+	const turnEnds = new Map<string, BridgeReplayRow>()
+	for (const row of rows) {
+		if (row.type !== "turn/end") continue
+		const data = asRecord(row.payload)
+		const keys = [optionalStringField(data, "turnId")]
+		if (typeof data.turn === "number" && Number.isFinite(data.turn)) keys.push(String(data.turn))
+		for (const key of keys) {
+			if (key === undefined) continue
+			const prior = turnEnds.get(key)
+			if (prior === undefined || row.seq > prior.seq) turnEnds.set(key, row)
+		}
+	}
+	for (const row of rows) {
+		const data = asRecord(row.payload)
+		if (askJournalKind(row, data) !== "ask.requested") continue
+		const eventId = optionalStringField(data, "eventId")
+		if (eventId === undefined || terminalIds.has(eventId)) continue
+		if (optionalStringField(data, "sessionId") !== sessionId) continue
+		const turnKey = optionalStringField(data, "turnId") ?? askTurnId(eventId)
+		if (turnKey === undefined || turnKey === "") continue
+		const turnEnd = turnEnds.get(turnKey)
+		if (turnEnd === undefined) continue
+		const notice = deriveAskOutcomeNotice({
+			eventId,
+			sessionId,
+			anchorSeq: turnEnd.seq,
+			orphan: true,
+			askKind: optionalStringField(data, "askKind"),
+			childSessionId: optionalStringField(data, "childSessionId"),
+		})
+		if (notice !== undefined) {
+			const childSessionId = optionalStringField(data, "childSessionId")
+			out.push({
+				id: notice.id,
+				text: notice.text,
+				anchorSeq: notice.anchorSeq,
+				sessionId,
+				...(childSessionId !== undefined ? { childSessionId } : {}),
+			})
+		}
+	}
+
+	return out
+}
+
+/** Project one shared notice view to the wire event seam-rows consumes.
+ *  `role:'notice'` makes seam-rows upsert it under `notice:<id>` (=
+ *  `notice:ask-outcome:<eventId>`); no `stored:` key and no cross-path dedup. */
+function askOutcomeEvent(view: AskOutcomeNoticeView): SeamSessionEvent {
+	return {
+		type: "message.updated",
+		details: {
+			id: view.id,
+			role: "notice",
+			text: view.text,
+			sessionID: view.sessionId,
+			...(view.childSessionId !== undefined ? { childSessionId: view.childSessionId } : {}),
+		},
+	}
+}
+
 export function bridgeReplayRowsToSeamEvents(
 	rows: readonly BridgeReplayRow[],
 	sessionId: string,
@@ -828,6 +1037,21 @@ export function bridgeReplayRowsToSeamEvents(
 		if (seen.has(key)) return
 		seen.add(key)
 		events.push(event)
+	}
+	// Ask-outcome notices are derived from the raw journal, NOT from
+	// projectJournalRecord (that stays unchanged). Flush each notice right
+	// after the row carrying its anchorSeq so this path keeps the same anchor
+	// ordering as hydrate/stored instead of appending all notices at the end.
+	// seamReplayEventKey dedups repeated ids here; hydrate uses a view key.
+	const noticeViews = [...deriveAskOutcomeNoticeViews(rows, sessionId)].sort(
+		(a, b) => a.anchorSeq - b.anchorSeq,
+	)
+	let nextNotice = 0
+	const flushNoticesThrough = (seq: number): void => {
+		while (nextNotice < noticeViews.length && noticeViews[nextNotice]!.anchorSeq <= seq) {
+			push(askOutcomeEvent(noticeViews[nextNotice]!))
+			nextNotice++
+		}
 	}
 	const toolCalls = new Map<string, { seq: number; name: string; args: string }>()
 	for (const row of rows) {
@@ -870,7 +1094,10 @@ export function bridgeReplayRowsToSeamEvents(
 				})
 			}
 		}
+		flushNoticesThrough(row.seq)
 	}
+	// Defensive: a notice anchored past the last row still has to land.
+	flushNoticesThrough(Number.POSITIVE_INFINITY)
 	return events
 }
 
@@ -1270,7 +1497,10 @@ export function bridgeChildJournalMeta(rows: readonly BridgeReplayRow[]): Bridge
  * No live/pushed text is fabricated — lines come from real replay rows.
  */
 export function bridgeReplayRowsToChildLog(rows: readonly BridgeReplayRow[]): string[] {
-	return bridgeReplayRowsToSeamTranscript(rows).map((row) => {
+	// No session id is passed, so the projection derives zero ask-outcome
+	// notices here. Filter explicitly too: a child log is a raw log view, not a
+	// notice consumer (A26 — zero `ask-outcome:` / `notice:ask-outcome:` lines).
+	return bridgeReplayRowsToSeamTranscript(rows).filter((row) => row.kind !== "notice").map((row) => {
 		if (row.kind === "tool") {
 			return row.output ? `▶ ${row.text}\n⎿ ${row.output}` : `▶ ${row.text}`
 		}
@@ -2483,6 +2713,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	 *  (ASK_UNKNOWN_REQUEST / ASK_TURN_ENDED), keyed by eventId → reason. Kept
 	 *  read-only for the view to paint a terminal "已失效" card (never vanish). */
 	readonly #invalidatedAsks = new Map<string, string>()
+	/** A10: live fixed-id upsert — emit a given ask-outcome frame at most once
+	 *  per seam instance (re-delivered `ask.settled` frames are no-ops here).
+	 *  Replay events are deduped separately by their own view key; no cross-path
+	 *  key is shared (hydrate contract §3). */
+	readonly #emittedAskOutcomes = new Set<string>()
 	#disposed = false
 
 	constructor(options: BridgeSessionSeamOptions) {
@@ -2814,7 +3049,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		// is restored from the replay so a ghost child can be settled. Best-effort
 		// (the helper never throws); a failed read leaves the roster unchanged.
 		await this.#sweepSubagents(boundId)
-		const rows = bridgeReplayRowsToSeamTranscript(drained.rows)
+		// Pass the bound id so DEAD result.rows MAY carry ask-outcome notices;
+		// they are not painted by any consumer (§8.5) and never appear in the
+		// sessionInfo count path, which omits the session id.
+		const rows = bridgeReplayRowsToSeamTranscript(drained.rows, 0, boundId)
 		if (drained.rows.length > 0) {
 			const maxSeq = drained.rows.reduce((m, row) => Math.max(m, row.seq), -Infinity)
 			this.#lastAppliedSeq = Math.max(this.#lastAppliedSeq ?? 0, maxSeq)
@@ -4178,7 +4416,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		// effort (a failed/malformed session.list leaves the roster unchanged), and
 		// it settles only children that are locally running AND host-stopped.
 		void this.#sweepSubagents(id)
-		return bridgeReplayRowsToSeamTranscript(rows, skip)
+		return bridgeReplayRowsToSeamTranscript(rows, skip, id)
 	}
 
 	/**
@@ -5007,7 +5245,45 @@ export class BridgeSessionSeam implements SessionSeam {
 			case "ask.settled": {
 				// Host broadcast: this eventId is closed — de-dup any local copy.
 				const eventId = optionalStringField(payload, "eventId")
+				// Settlement MUST come first (A10); no notice is ever emitted from
+				// #settlePendingAsk / ask.cancel / turn end (§7.10 item 1).
 				if (eventId !== undefined) this.#settlePendingAsk(eventId)
+				// A10: emit a fixed-id `message.updated` notice for the bound
+				// session only. A mismatched / unknown / missing sessionId yields
+				// no line (A17). Re-delivered frames upsert the same id (one line),
+				// and `questions`+`approved` without a child is suppressed (A13).
+				const bound = this.currentSessionId()
+				const sid = optionalStringField(payload, "sessionId")
+				const childSessionId = optionalStringField(payload, "childSessionId")
+				if (
+					eventId !== undefined &&
+					bound !== undefined &&
+					sid === bound &&
+					!this.#emittedAskOutcomes.has(eventId)
+				) {
+					const notice = deriveAskOutcomeNotice({
+						eventId,
+						sessionId: sid,
+						anchorSeq: 0, // live frames carry no journal seq
+						settleReason: optionalStringField(payload, "reason"),
+						askKind: optionalStringField(payload, "kind"),
+						outcome: optionalStringField(payload, "outcome"),
+						childSessionId,
+					})
+					if (notice !== undefined) {
+						this.#emittedAskOutcomes.add(eventId)
+						this.#emitEvent({
+							type: "message.updated",
+							details: {
+								id: notice.id,
+								role: "notice",
+								text: notice.text,
+								sessionID: notice.sessionId,
+								...(childSessionId !== undefined ? { childSessionId } : {}),
+							},
+						})
+					}
+				}
 				return true
 			}
 			case "ask.pending": {

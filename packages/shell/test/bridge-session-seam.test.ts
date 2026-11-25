@@ -1587,6 +1587,34 @@ describe("sessionInfo", () => {
 		expect(info.msgCount).toBe(rawAssistants) // msgCount = RAW assistant rows
 	})
 
+	test("A25: an ask-outcome terminal row adds ZERO to sessionInfo counts", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-notice", "t-n")
+		const rows = [
+			{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "q" }] } },
+			{ seq: 2, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "a" }] } } },
+			{
+				seq: 5,
+				type: "plugin:opentui/ask/responded",
+				payload: {
+					eventId: "A25", kind: "ask.responded", askKind: "approval",
+					sessionId: "sess-notice", turnId: "t-n", settleReason: "answered",
+				},
+			},
+		]
+		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 6 } })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-n", text: "" } })
+		await done
+
+		const info = (await h.seam.sessionInfo())!
+		// The ask row is not a user/assistant message, and sessionInfo omits the
+		// session id so the hydrate projection derives no notice rows here.
+		expect(info.turnCount).toBe(1)
+		expect(info.messageCount).toBe(2)
+		expect(info.msgCount).toBe(1)
+	})
+
 	test("P2-1: the incremental sessionInfo drain folds a subagent-settled row into the live roster (turn-external convergence)", async () => {
 		const h = makeHarness()
 		const done = bindHarness(h, "sess-fold", "t-fold")
