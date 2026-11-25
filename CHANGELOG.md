@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.2] - 2026-11-25
+
+### Added
+
+- **Ask outcomes now enter the session transcript.** When an `ask` settles
+  (answered, rejected, unavailable, cancelled or timed out), the bridge writes
+  a terminal journal row and emits a frame carrying a closed settle reason. The
+  shell projects that outcome into a single `ask-outcome:<eventId>` notice row,
+  so live frames, bridge reconnect and `/resume` of a stored transcript all
+  show the same result in the transcript.
+
+### Changed
+
+- **Expired approval windows no longer leave zombie cards.** The bridge arms a
+  gate for each pending ask: when the approval window expires without a verdict
+  the ask is settled with reason `timeout` and the default outcome, even if the
+  provider never answers.
+- **Older ask frames and journals still read.** The settle reason is optional on
+  read paths, so journals written before it existed still replay, and frames
+  without the new reason field stay valid for consumers. New writes always
+  carry a closed settle reason.
+
 ## [0.28.1] - 2026-11-25
 
 ### Added
