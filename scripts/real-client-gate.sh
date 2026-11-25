@@ -334,11 +334,14 @@ if [ "$ONLY" = all ] || [ "$ONLY" = frames ]; then
     log "  s1-model: picker=$(grep -qiE 'model|模型' "$OUT/s1-model.log" && echo yes || echo no) rows=$(grep -qiE 'deepseek|opencode|xiaomi|mimo|glm|provider' "$OUT/s1-model.log" && echo yes || echo no)"
     tmux send-keys -t "$SESS" Escape; sleep 0.5; clear_composer
 
-    # S2: /settings -> Account section (nav right 6x from General)
+    # S2: /settings -> Account section. The panel opens on the nav pane:
+    # Down walks General(0) -> Account(6); Right/Enter OPENS the highlighted
+    # section (it does not advance it). Right 6x used to reopen General each time.
     tmux send-keys -t "$SESS" '/settings'; sleep 0.5
     tmux send-keys -t "$SESS" Enter; sleep 2
-    for _ in 1 2 3 4 5 6; do tmux send-keys -t "$SESS" Right; sleep 0.4; done
-    sleep 1; snap 's2-account'
+    for _ in 1 2 3 4 5 6; do tmux send-keys -t "$SESS" Down; sleep 0.4; done
+    tmux send-keys -t "$SESS" Right; sleep 1
+    snap 's2-account'
     # locale-complete: S5 made the profile zh-CN by default, so the Account nav
     # label is `账号` (zh) rather than `Account` (en). The grep detects the Account
     # SECTION being visible in the /settings panel; both locale labels are the
