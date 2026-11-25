@@ -208,6 +208,12 @@ export const Definitions = {
   // "first" semantics (home/alt+home stay for the old muscle memory).
   "session.first": keybind("ctrl+home,home,alt+home", "Navigate to first message"),
   "session.last": keybind("ctrl+alt+g,end", "Navigate to last message"),
+  // Independent to-bottom leg for the away hint: alt+shift+end works while the
+  // composer holds focus (unlike session.last, which is editor-gated). This
+  // chord is deliberately distinct from `session.messages_last_user`'s
+  // alt+end: a shared chord lets the vendored command shadow this leg under
+  // page ownership. alt+shift+end is unclaimed anywhere else in the repo.
+  "session.scroll.to_bottom": keybind("alt+shift+end", "Scroll to the latest message"),
   "session.message.next": keybind("none", "Navigate to next message"),
   "session.message.previous": keybind("none", "Navigate to previous message"),
   "session.message.user.next": keybind("none", "Navigate to next user message"),

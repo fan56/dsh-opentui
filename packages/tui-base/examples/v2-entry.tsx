@@ -486,6 +486,13 @@ function V2SessionPageBody(props: {
 		turnAborted = false
 		setTurnBusy(true)
 		setLastRequest(text)
+		// Away-hint (transcript-scroll-hints): a USER submit always lands on
+		// the newest row. This is the composer's user-facing submit path only —
+		// passive streaming / row appends never scroll, so the away hint can
+		// still appear while the reader is browsing scrollback. The transcript
+		// owns `scrollRef`, so this is the same scrollbox whose `change` event
+		// drives `syncAway()`; returning to the bottom hides the hint.
+		transcriptScroll?.scrollTo(Infinity)
 		const done = projection.send(text)
 		void done.finally(() => setTurnBusy(false))
 		return done
@@ -1361,6 +1368,10 @@ function V2SessionPageBody(props: {
 				createComponent(Transcript, {
 					seam,
 					projection,
+					// Scrollbar (transcript-scroll-hints): opt in at the v2
+					// entry only. The component default stays off for other
+					// hosts, and the track keeps Transcript's themed colors.
+					scrollbar: true,
 					// Pane focus: heavy/accent frame while the transcript owns
 					// the renderer focus, single/border.base otherwise.
 					focused: paneFocus.transcriptFocused,
