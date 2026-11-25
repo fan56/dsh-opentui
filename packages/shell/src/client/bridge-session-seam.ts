@@ -496,6 +496,81 @@ function accountClientMeta(): { version: string; locale: string; timezoneOffsetS
 	}
 }
 
+/** retention P1 — read-only prune plan (dry run). The wire reply is projected
+ *  through a whitelist: no host path or extra field leaks past these shapes,
+ *  and a malformed reply is a protocol error (never a fake empty plan). */
+export interface BridgePrunePlanEntry {
+	sessionId: string
+	decision: "prune" | "skip"
+	reason?: string
+	location?: string
+	ageDays?: number
+}
+export interface BridgePrunePlan {
+	generatedAt: number
+	retentionDays: number
+	entries: readonly BridgePrunePlanEntry[]
+	counts: { prune: number; skip: number; byReason: Record<string, number> }
+}
+
+export function projectBridgePrunePlan(value: unknown): BridgePrunePlan {
+	const record = asRecord(value)
+	if (!Array.isArray(record.entries)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no entries array")
+	}
+	const entries: BridgePrunePlanEntry[] = []
+	for (const raw of record.entries) {
+		const row = asRecord(raw)
+		if (typeof row.sessionId !== "string" || (row.decision !== "prune" && row.decision !== "skip")) continue
+		const entry: BridgePrunePlanEntry = { sessionId: row.sessionId, decision: row.decision }
+		if (typeof row.reason === "string") entry.reason = row.reason
+		if (typeof row.location === "string") entry.location = row.location
+		if (typeof row.ageDays === "number" && Number.isFinite(row.ageDays)) entry.ageDays = row.ageDays
+		entries.push(entry)
+	}
+	// OLD CRITERION (SUPERSEDED, oldfox P1 CONCERN): a missing generatedAt /
+	// retentionDays / counts was filled with 0, and counts were copied from
+	// the wire AFTER entries were silently filtered. Both hid protocol and
+	// dataflow faults. Missing/invalid required fields now throw a protocol
+	// error (never a fake 0), and counts are recomputed from POST-FILTER
+	// entries so the plan is always internally consistent.
+	if (typeof record.generatedAt !== "number" || !Number.isFinite(record.generatedAt)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid generatedAt")
+	}
+	if (typeof record.retentionDays !== "number" || !Number.isFinite(record.retentionDays)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid retentionDays")
+	}
+	const countsRaw = record.counts
+	if (
+		countsRaw === null || typeof countsRaw !== "object" || Array.isArray(countsRaw) ||
+		typeof (countsRaw as Record<string, unknown>).prune !== "number" ||
+		typeof (countsRaw as Record<string, unknown>).skip !== "number" ||
+		(countsRaw as Record<string, unknown>).byReason === null ||
+		typeof (countsRaw as Record<string, unknown>).byReason !== "object" ||
+		Array.isArray((countsRaw as Record<string, unknown>).byReason)
+	) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid counts")
+	}
+	const byReason: Record<string, number> = {}
+	let prune = 0
+	let skip = 0
+	for (const entry of entries) {
+		if (entry.decision === "prune") {
+			prune += 1
+		} else {
+			skip += 1
+			const reason = entry.reason ?? "unknown"
+			byReason[reason] = (byReason[reason] ?? 0) + 1
+		}
+	}
+	return {
+		generatedAt: record.generatedAt,
+		retentionDays: record.retentionDays,
+		entries,
+		counts: { prune, skip, byReason },
+	}
+}
+
 /** Build the honest UNSUPPORTED rejection for an absent async capability. */
 function unsupported(capability: string): never {
 	throw new BridgeProtocolError(
@@ -4385,6 +4460,32 @@ export class BridgeSessionSeam implements SessionSeam {
 		// "capability unavailable" answer).
 		const value = await this.#transport.request("session.list")
 		return projectBridgeSessionList(asRecord(value).items, limit)
+	}
+
+	/**
+	 * retention P1 — READ-ONLY prune plan (dry run). `retentionDays=0` means the
+	 * host skips every row; the default (90) stays host-side. This face NEVER
+	 * deletes: there is no `session.prune.apply` frame in this slice. A host
+	 * without the optional `sessionPersistence.stat` capability rejects with
+	 * UNSUPPORTED — that error propagates, never a fake empty plan.
+	 */
+	async planPrune(params?: {
+		retentionDays?: number
+		stagedIds?: string[]
+		blankGraceDays?: number
+		lockGraceMs?: number
+	}): Promise<BridgePrunePlan> {
+		// OLD CRITERION (SUPERSEDED): this face accepted a client-controlled
+		// `sessionsRoot` and forwarded it. The root is now host-derived; NO
+		// path is exposed here. The bridge only knows BOUND sessions, so wire
+		// the REAL staged id from `stagedSessionId()` (a resume staged before
+		// its next turn) into the exclusion set; over-exclusion is safe.
+		const staged = this.stagedSessionId()
+		const ids = new Set(params?.stagedIds ?? [])
+		if (staged !== undefined && staged !== "") ids.add(staged)
+		const wireParams = ids.size > 0 ? { ...(params ?? {}), stagedIds: [...ids] } : { ...(params ?? {}) }
+		const value = await this.#transport.request("session.prune.plan", wireParams)
+		return projectBridgePrunePlan(value)
 	}
 
 	/**
