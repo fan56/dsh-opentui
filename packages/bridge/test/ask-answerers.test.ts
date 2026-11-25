@@ -19,6 +19,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import { apply, getAskRegistry, resolveAskDeadlineMs } from '../src/index'
+import { resolveMaxAskWaitMs } from '../src/index'
 import { DEFAULT_MAX_ASK_WAIT_MS } from '../src/ask-registry'
 import { ASK_ERROR_CODES } from '../src/ask-frames'
 import { getSubagentIndex } from '../src/subagent-index'
@@ -74,6 +75,8 @@ function makeHarness(overrides: {
   onThrows?: boolean
   noOn?: boolean
   askDeadlineMs?: unknown
+  /** R3: inject the profile-patch hard cap at the real construction point. */
+  maxAskWaitMs?: unknown
   /** Install a fake cordis `ctx.get` (the base fake has none, so the catalog
    *  re-pin guard early-returns). Used by the F1 policy-inheritance tests to
    *  actually reach `ctx.get('sessions'/'approval')`. */
@@ -170,6 +173,8 @@ function makeHarness(overrides: {
   overrides.preRegister?.(ctx)
   // F1-A2: the construction point reads askDeadlineMs from the plugin config.
   const config = overrides.askDeadlineMs !== undefined ? { askDeadlineMs: overrides.askDeadlineMs } : {}
+  // R3: maxAskWaitMs is additive — existing callers keep the 1h default.
+  if (overrides.maxAskWaitMs !== undefined) Object.assign(config, { maxAskWaitMs: overrides.maxAskWaitMs })
   // apply() must never throw even when ctx.on is missing or throws.
   apply(ctx, config)
   const registry = getAskRegistry(ctx)
@@ -680,6 +685,113 @@ describe('F1-A2 — askDeadlineMs config wiring + timeout outcome decision', () 
     h.emitHost('approval/request', approvalReq(sessionId))
     await sleep(0)
     expect(h.registry.timerCount()).toBe(2) // deadline (at the cap) + hard cap still armed
+  })
+})
+
+/**
+ * R3 — profile-patch `maxAskWaitMs` hard-cap override. Pure-function cases are
+ * environment-independent; the apply() cases drive the real construction point
+ * over the NDJSON wire, never a registry method call.
+ */
+describe('R3 — maxAskWaitMs config validation + hard cap', () => {
+  test('E1: valid positive integer (incl. the default) passes through with no warn', () => {
+    const warns: unknown[][] = []
+    const warn = (...args: unknown[]) => { warns.push(args) }
+    expect(resolveMaxAskWaitMs(25, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(25)
+    expect(resolveMaxAskWaitMs(DEFAULT_MAX_ASK_WAIT_MS, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(DEFAULT_MAX_ASK_WAIT_MS)
+    expect(resolveMaxAskWaitMs(undefined, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(DEFAULT_MAX_ASK_WAIT_MS)
+    expect(resolveMaxAskWaitMs(null, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(DEFAULT_MAX_ASK_WAIT_MS)
+    expect(warns).toHaveLength(0)
+  })
+
+  test('E2: non-number / NaN / 0 / negative / fractional / Infinity / above cap are ignored + one warn each', () => {
+    const warns: unknown[][] = []
+    const warn = (...args: unknown[]) => { warns.push(args) }
+    const invalid: unknown[] = ['25', NaN, 0, -1, 1.5, Infinity, DEFAULT_MAX_ASK_WAIT_MS + 1]
+    for (const raw of invalid) expect(resolveMaxAskWaitMs(raw, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(DEFAULT_MAX_ASK_WAIT_MS)
+    expect(warns).toHaveLength(invalid.length) // exactly one warn per ignored config, not per ask
+    for (const args of warns) expect(String(args[0])).toContain('invalid maxAskWaitMs')
+  })
+
+  test('E3: config maxAskWaitMs shrinks the hard cap at the real apply() construction point', async () => {
+    const h = makeHarness({ maxAskWaitMs: 25 })
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    expect(h.registry.timerCount()).toBe(1) // hard cap only — askDeadlineMs still null
+    await mustSettle(pending, 'R3 hard cap')
+
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    const settled = h.registry.settlements().filter((s) => s.eventId === ask.eventId)
+    expect(settled).toHaveLength(1) // first-wins: no second terminal
+    expect(settled[0].outcome).toBe('unavailable') // D6 fail-closed
+    expect(settled[0].code).toBe(ASK_ERROR_CODES.DEADLINE_EXCEEDED)
+    expect(settled[0].message).toContain('maxAskWaitMs')
+    // settleReason rides on ask.settled.reason (journal `settleReason` is
+    // asserted by the real-journal driver, not this fake ctx).
+    const terminals = h.askFrames('ask.settled').filter((f) => f.payload.eventId === ask.eventId)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0].payload.reason).toBe('timeout')
+    expect(h.askFrames('ask.cancel').some((f) => f.payload.eventId === ask.eventId && f.payload.reason === 'deadline')).toBe(true)
+  })
+
+  test('E4: invalid config never shrinks or zeroes the cap (one warn at construction)', async () => {
+    for (const raw of [-1, '25']) {
+      const h = makeHarness({ maxAskWaitMs: raw })
+      expect(h.warns.filter((line) => line.includes('invalid maxAskWaitMs'))).toHaveLength(1)
+      const { sessionId } = await startTurn(h, 1)
+      h.emitHost('approval/request', approvalReq(sessionId))
+      await sleep(0)
+      expect(h.registry.timerCount()).toBe(1) // 1h default still armed
+      expect(h.registry.settlements()).toHaveLength(0) // no short-cap settlement
+      h.dispose()
+    }
+  })
+
+  test('E4b: askDeadlineMs clamps to the EFFECTIVE (injected) cap, not the 1h default', async () => {
+    const h = makeHarness({ maxAskWaitMs: 100, askDeadlineMs: 200 })
+    expect(h.warns.filter((line) => line.includes('clamped to hard cap'))).toHaveLength(1)
+    const { sessionId } = await startTurn(h, 1)
+    h.emitHost('approval/request', approvalReq(sessionId))
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(2) // deadline at 100 + hard cap at 100
+  })
+})
+
+/**
+ * R3 harness hook for the real turn.abort chain. Production semantics are NOT
+ * touched: `handleAbort` (index.ts:4307) calls
+ * `agent.cancel({kind:'user'},{keepInbox:true})`, which fires the active
+ * driver's AbortSignal; that signal is the host request `signal` read by
+ * `onApprovalRequest` and passed to `waitForAnswerer`, whose `onAbort` calls
+ * `ask.settleExternal(eventId, {settleReason:'aborted'})` (index.ts:2809).
+ * The fake agent's cancel() is a no-op, so this hook hands a REAL AbortSignal
+ * to the host request and aborts it — the same terminal the driver fires.
+ */
+function turnAbortableRequest(request: Record<string, unknown>) {
+  const controller = new AbortController()
+  return { ...request, signal: controller.signal, abortTurn: () => controller.abort() }
+}
+
+describe('R3 — host abort signal reaches settleExternal(aborted)', () => {
+  test('E6-unit: signal abort settles an in-flight approval as aborted, not timeout', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1)
+    const req = turnAbortableRequest(approvalReq(sessionId))
+    const pending = h.emitHost('approval/request', req)[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    expect(h.registry.settlements()).toHaveLength(0)
+
+    req.abortTurn()
+    expect(await mustSettle(pending, 'host abort')).toBe('cancelled')
+    const settled = h.registry.settlements().filter((s) => s.eventId === ask.eventId)
+    expect(settled).toHaveLength(1)
+    expect(settled[0].outcome).toBe('cancelled')
+    expect(settled[0].code).toBeUndefined() // no ASK_DEADLINE_EXCEEDED on abort
+    const terminals = h.askFrames('ask.settled').filter((f) => f.payload.eventId === ask.eventId)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0].payload.reason).toBe('aborted')
+    expect(h.askFrames('ask.cancel').some((f) => f.payload.eventId === ask.eventId)).toBe(false) // no timeout cancel frame
   })
 })
 

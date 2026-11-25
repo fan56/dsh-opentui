@@ -22,6 +22,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_PROFILE } from '../../packages/shell/scripts/lib/profile-name.mjs'
 import { provisionScratchProfile } from '../lib/scratch-profile.mjs'
+import { agentDefaultModelRow } from './r6-harness-lib.mjs'
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`)
@@ -31,6 +32,22 @@ const arg = (name, def) => {
 const home = resolve(arg('home', ''))
 const ws = resolve(arg('workspace', ''))
 const port = String(arg('port', '0'))
+// R6 (additive): optional explicit companion selection, e.g. `--companions
+// registry` to mount the real use_agent tool. Absent => the D2 default roster,
+// identical to every pre-existing scenario.
+const companions = arg('companions', '')
+// R6 (additive): `--r6-ask` registers the by-name `r6-asker` child agent the
+// two-phase mock dispatches, and declares its permission as `ask` explicitly.
+// The child session's effective approval policy is still re-pinned to `ask`
+// by the bridge's real `subagent/catalog` handling; this file is only the
+// client-local agent corpus the real `use_agent` tool dispatches into.
+const r6Ask = process.argv.includes('--r6-ask')
+// R6 (additive): the fake-gw/demo-1 route has no reasoning-effort catalog, so
+// the deployed `high` default makes the first real turn die with
+// UNSUPPORTED_REASONING_EFFORT. Only the R6 driver passes this flag; it drops
+// that default from the isolated scratch patch (the R1/R4 approach). Absent =>
+// the original `high` row, identical to every pre-existing scenario.
+const noReasoningEffort = process.argv.includes('--no-reasoning-effort')
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const PROFILE = DEFAULT_PROFILE
 
@@ -42,7 +59,7 @@ mkdirSync(ws, { recursive: true })
 chmodSync(home, 0o700)
 let profileDir
 try {
-  profileDir = provisionScratchProfile({ home, repo: REPO })
+  profileDir = provisionScratchProfile({ home, repo: REPO, ...(companions ? { companions } : {}) })
 } catch (error) {
   console.error(`e2e-flows: ${error.message}`)
   process.exit(3)
@@ -80,12 +97,7 @@ const routeText = `# e2e-flows scratch profile — provider fake-gw points at th
             maxTokens: 8192
             input:
               - text
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: fake-gw
-    model: demo-1
-    reasoningEffort: high
+${agentDefaultModelRow({ noReasoningEffort })}
 `
 let keptEntries = ''
 if (existsSync(templatePatchPath)) {
@@ -126,6 +138,22 @@ writeFileSync(join(home, 'models-store.json'), JSON.stringify({
 // --- workspace overlay: pin the session route -------------------------------
 mkdirSync(join(ws, '.dsh'), { recursive: true })
 writeFileSync(join(ws, '.dsh', 'config.yml'), 'model:\n  provider: fake-gw\n  model: demo-1\n')
+
+if (r6Ask) {
+  const agentsDir = join(home, 'agents')
+  mkdirSync(agentsDir, { recursive: true })
+  writeFileSync(join(agentsDir, 'r6-asker.md'), [
+    '---',
+    'name: r6-asker',
+    'permission: ask',
+    '---',
+    '',
+    'E2E_R6_CHILD',
+    '',
+    'Run the prepared gated bash/write probe tool so the operator sees a real approval card, then report the tool result briefly. Do NOT use ask_user_question (subagent origin is rejected by the host).',
+    '',
+  ].join('\n'))
+}
 
 console.log(`E2E_HOME=${home}`)
 console.log(`E2E_WS=${ws}`)

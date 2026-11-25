@@ -83,6 +83,25 @@ const HS_CHILD_KEY = 'E2E_HS_CHILD'
 const HS_DONE = 'E2E-HS-LADDER-DONE — the looper child was hard-stopped by the maxRounds policy and its result came back.'
 let hsLoopSeq = 0
 
+// R6 child-routing two-phase script (additive; disjoint markers from every
+// other phase). The PARENT marker makes the main agent dispatch a REAL
+// `use_agent` call to the `r6-asker` agent; that agent's persona/task carries
+// the CHILD marker. The installed host refuses `ask_user_question` from a
+// subagent-origin session (UserQuestionError / DELEGATED_CALLER — origin
+// 'subagent'). So the CHILD phase emits a REAL bash/write tool call instead:
+// the tool NAME is discovered from the request's own `tools` array (same
+// discipline as verify/e2e-flows/fake-model.mjs E2E_TOOL), never hardcoded and
+// never ask_user_question. A gated write tool in a `permission: ask` child
+// raises the host's REAL approval card on the PARENT TUI; the driver picks
+// "Allow once" frame-by-frame. The settled child result returns to the parent,
+// which finishes with R6_DONE. No journal row or childSessionId is ever
+// synthesised by this server — it only streams tool calls the real host runs.
+const R6_PARENT_KEY = 'E2E_R6_PARENT'
+const R6_CHILD_KEY = 'E2E_R6_CHILD'
+const R6_AGENT = 'r6-asker'
+const R6_DONE = 'E2E-R6-DONE — the child ran the gated tool through the real approval card and is finishing.'
+const R6_CHILD_DONE = 'E2E-R6-CHILD-DONE — the child received the tool result and is finishing its turn.'
+
 // 70-steer evidence key: the steer text the scenario injects into the
 // RUNNING looper child. When it shows up in a request body the injection
 // observably rode the delivery chain into the child's next LLM call —
@@ -257,8 +276,31 @@ const completionMessage = (delta, finishReason) => ({
   usage: { prompt_tokens: 64, completion_tokens: 24, total_tokens: 88 },
 })
 
+/** True when `key` occurs in the session's OWN prompt — i.e. a non-tool
+ *  message — rather than merely inside a tool-result payload. The parent's
+ *  post-dispatch body embeds the child prompt inside a `role:"tool"` message;
+ *  a raw `bodyText.includes(key)` misrouted that parent turn to
+ *  `r6-child-final` (round5 root cause), so `r6-final` never streamed and the
+ *  driver timed out waiting for E2E-R6-DONE. Malformed bodies never reach
+ *  here (handleChat rejects them first); the fallback keeps keying sane. */
+function markerInOwnPrompt(bodyText, key) {
+  try {
+    const messages = JSON.parse(bodyText)?.messages
+    if (!Array.isArray(messages)) return bodyText.includes(key)
+    for (const message of messages) {
+      if (message?.role === 'tool') continue
+      const content = message?.content
+      const text = typeof content === 'string' ? content : JSON.stringify(content ?? '')
+      if (text.includes(key)) return true
+    }
+    return false
+  } catch {
+    return bodyText.includes(key)
+  }
+}
+
 /** Decide the scripted phase for one chat request body. */
-function decidePhase(bodyText) {
+export function decidePhase(bodyText) {
   // 75-hard-stop ladder keys first (see the constant block above): the child
   // persona marker wins over everything (every looper request loops again),
   // then the parent's dispatch/finish split on the tool-result presence.
@@ -266,6 +308,14 @@ function decidePhase(bodyText) {
     || bodyText.includes('tool_call_id')
   if (bodyText.includes(HS_CHILD_KEY)) return 'hs-loop'
   if (bodyText.includes(HS_PARENT_KEY)) return hasToolResult ? 'hs-final' : 'hs-dispatch'
+  // R6 keys NEXT: only a CHILD SESSION request body — the marker in the
+  // session's own (non-tool) prompt — may route to child-*; the child still
+  // wins when its history snapshot also carries the parent marker. The
+  // PARENT turn after the tool result embeds the child prompt ONLY inside a
+  // role:tool message, so markerInOwnPrompt(child) is false there and the
+  // turn correctly routes to r6-final (never r6-child-final).
+  if (markerInOwnPrompt(bodyText, R6_CHILD_KEY)) return hasToolResult ? 'r6-child-final' : 'r6-child-ask'
+  if (markerInOwnPrompt(bodyText, R6_PARENT_KEY)) return hasToolResult ? 'r6-final' : 'r6-dispatch'
   // btw keys first: the side call's snapshot embeds the main prompt, so a
   // btw request body contains BOTH markers.
   if (bodyText.includes('E2E_BTW_Q')) return 'btw'
@@ -411,6 +461,79 @@ function hsToolCall(phase) {
   }
 }
 
+/** Discover the REAL gated write tool the host advertised in this request.
+ *  Mirrors verify/e2e-flows/fake-model.mjs `pickBash`: read `payload.tools`
+ *  (`function.name` or bare `name`), prefer a tool in the approval-gate write
+ *  policy (bash/write/edit/apply_patch), then any bash-family tool. Never
+ *  falls back to ask_user_question — that is exactly the tool the installed
+ *  host rejects for a subagent-origin session. Exported so the harness unit
+ *  test exercises this exact function (module import never binds the server). */
+export function pickR6Tool(bodyText) {
+  let tools = []
+  try { tools = JSON.parse(String(bodyText))?.tools ?? [] } catch { return undefined }
+  const names = (Array.isArray(tools) ? tools : [])
+    .map((t) => t?.function?.name ?? t?.name ?? '')
+    .filter((n) => typeof n === 'string' && n !== '')
+  return names.find((n) => /^(bash|write|edit|apply_patch)$/.test(n))
+    ?? names.find((n) => /bash|shell|command|exec|terminal/i.test(n))
+}
+
+/** Scripted tool-call arguments for the discovered gated tool, calibrated to
+ *  the HOST's advertised schemas (the request/header `tools` array the child
+ *  journal records):
+ *    bash       -> { description, command }              (required: description, command)
+ *    write      -> { file_path, content }                (required: file_path, content)
+ *    edit       -> { file_path, old_string, new_string } (required: all three)
+ *  The old `cmd` / `path` fields do not exist in those schemas and the host
+ *  rejected the child tool call with ToolArgsError / INVALID_ARGS. The command
+ *  is a no-op echo so an accidental auto-approve cannot mutate the workspace.
+ *  Exported so the harness self-test verifies the EXACT args against the real
+ *  schema field names. */
+export function r6ToolArgs(name) {
+  if (name === 'write' || name === 'write_file') {
+    return { file_path: 'e2e-r6-permission-probe.txt', content: 'E2E-R6-PERMISSION-TOOL-RAN' }
+  }
+  if (name === 'edit') {
+    return {
+      file_path: 'e2e-r6-permission-probe.txt',
+      old_string: 'E2E-R6-PERMISSION-TOOL-RAN',
+      new_string: 'E2E-R6-PERMISSION-TOOL-RAN',
+    }
+  }
+  return { description: 'R6 child approval-gate probe', command: 'echo E2E-R6-PERMISSION-TOOL-RAN' }
+}
+
+/** One scripted tool-call reply for the R6 child-routing phases.
+ *  `r6-dispatch` is the parent's REAL use_agent call; `r6-child-ask` is the
+ *  child's REAL gated bash/write tool call (name discovered from the request's
+ *  tools, NOT ask_user_question). The prompt embeds the child marker so the
+ *  next body the child sends is keyed to `r6-child-ask`. */
+function r6ToolCall(phase, bodyText) {
+  if (phase === 'r6-dispatch') {
+    return {
+      tool_calls: [{
+        id: 'call-e2e-r6-dispatch',
+        type: 'function',
+        function: {
+          name: 'use_agent',
+          arguments: JSON.stringify({
+            agent: R6_AGENT,
+            prompt: `${R6_CHILD_KEY}: run the prepared bash/write probe tool so the operator sees a real approval card, then report the tool result briefly. Do NOT use ask_user_question.`,
+          }),
+        },
+      }],
+    }
+  }
+  const name = pickR6Tool(bodyText) ?? 'bash'
+  return {
+    tool_calls: [{
+      id: 'call-e2e-r6-child-tool',
+      type: 'function',
+      function: { name, arguments: JSON.stringify(r6ToolArgs(name)) },
+    }],
+  }
+}
+
 function handleChat(req, res, body) {
   let bodyText = ''
   try {
@@ -426,6 +549,14 @@ function handleChat(req, res, body) {
   const stream = bodyText.includes('"stream":true') || bodyText.includes('"stream": true')
   log(`chat path=${req.url} phase=${phase} stream=${stream}`)
   if (bodyText.includes(STEER_KEY)) log(`steer-marker=${STEER_KEY}`)
+  if (phase.startsWith('r6-')) {
+    log(`r6-marker parent=${R6_PARENT_KEY} child=${R6_CHILD_KEY} phase=${phase}`)
+  }
+  if (phase === 'r6-child-ask') {
+    // Evidence for the driver: the child tool name came from THIS request's
+    // tools, and it is a gated write tool — never ask_user_question.
+    log(`r6-child-tool name=${pickR6Tool(bodyText) ?? 'NONE'} phase=${phase}`)
+  }
   if (process.env.MOCK_DUMP_DIR && bodyText.includes('role":"tool')) {
     writeFileSync(`${process.env.MOCK_DUMP_DIR}/last-tool-result-body.json`, bodyText)
     log(`dumped tool-result body to ${process.env.MOCK_DUMP_DIR}/last-tool-result-body.json`)
@@ -436,12 +567,19 @@ function handleChat(req, res, body) {
       ? { tool_calls: [{ id: TOOL_CALL_ID, type: 'function', function: { name: TOOL_NAME, arguments: JSON.stringify(QUESTIONS) } }] }
       : phase === 'hs-dispatch' || phase === 'hs-loop'
       ? hsToolCall(phase)
+      : phase === 'r6-dispatch' || phase === 'r6-child-ask'
+      ? r6ToolCall(phase, bodyText)
       : phase === 'btw'
       ? { content: btwAnswer(bodyText) }
       : phase === 'main-slow'
       ? { content: `${Array.from({ length: BTW_MAIN_TICKS }, (_, i) => `main-line progress tick ${i + 1}; `).join('')}${BTW_MAIN_DONE}` }
-      : { content: phase === 'final' ? FINAL_TEXT : phase === 'hs-final' ? HS_DONE : IGNORE_TEXT }
-    const finishReason = phase === 'ask' || phase === 'hs-dispatch' || phase === 'hs-loop' ? 'tool_calls' : 'stop'
+      : { content: phase === 'final' ? FINAL_TEXT
+          : phase === 'hs-final' ? HS_DONE
+          : phase === 'r6-final' ? R6_DONE
+          : phase === 'r6-child-final' ? R6_CHILD_DONE
+          : IGNORE_TEXT }
+    const finishReason = phase === 'ask' || phase === 'hs-dispatch' || phase === 'hs-loop'
+      || phase === 'r6-dispatch' || phase === 'r6-child-ask' ? 'tool_calls' : 'stop'
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(completionMessage(message, finishReason)))
     return
@@ -488,9 +626,14 @@ function handleChat(req, res, body) {
   } else if (phase === 'hs-dispatch' || phase === 'hs-loop') {
     events.push(sseChunk({ role: 'assistant', tool_calls: [{ index: 0, ...hsToolCall(phase).tool_calls[0] }] }, null))
     events.push(sseChunk({}, 'tool_calls'))
+  } else if (phase === 'r6-dispatch' || phase === 'r6-child-ask') {
+    events.push(sseChunk({ role: 'assistant', tool_calls: [{ index: 0, ...r6ToolCall(phase, bodyText).tool_calls[0] }] }, null))
+    events.push(sseChunk({}, 'tool_calls'))
   } else {
     const text = phase === 'final' ? FINAL_TEXT
       : phase === 'hs-final' ? HS_DONE
+      : phase === 'r6-final' ? R6_DONE
+      : phase === 'r6-child-final' ? R6_CHILD_DONE
       : phase === 'ch-warm' ? CH_TURN_ONE_TEXT
       : phase === 'ch-cold' ? CH_TURN_TWO_TEXT
       : IGNORE_TEXT
@@ -536,6 +679,10 @@ const server = http.createServer((req, res) => {
 // the server never starts.
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   server.listen(PORT, HOST, () => {
-    log(`ready http://${HOST}:${PORT}`)
+    // Log the ACTUAL bound port so a --port 0 caller can discover the
+    // ephemeral listener (the previous line printed the requested port 0).
+    const bound = typeof server.address() === 'object' && server.address() !== null
+      ? server.address().port : PORT
+    log(`ready http://${HOST}:${bound}`)
   })
 }
