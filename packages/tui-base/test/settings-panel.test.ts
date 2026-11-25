@@ -96,6 +96,51 @@ describe("v1 whitelist", () => {
 	})
 })
 
+// settings-defaults-029 — three local rows show the EFFECTIVE default when the
+// key is missing, and say so; an explicitly stored value (including 0) wins.
+describe("local effective defaults (50 / 90 / 5)", () => {
+	test("unset keys display 50 / 90 / 5 with an effective-default note", () => {
+		const items = localItems()
+		const byId = (id: string) => items.find((item) => item.id === id)!
+		for (const [id, expected] of [
+			["maxRounds", "50"],
+			["retentionDays", "90"],
+			["activityPanelHeight", "5"],
+		] as const) {
+			const item = byId(id)
+			expect(item.value).toBe(expected)
+			expect(item.note).toContain("effective default")
+			expect(item.note).toContain(expected)
+		}
+	})
+
+	test("explicit 0 / old values win and carry no effective-default note", () => {
+		const items = buildLocalItems({
+			merged: { maxRounds: 0, retentionDays: 30, session: { activity_panel_height: "7" } },
+			profile: {},
+			workspace: {},
+			writable: true,
+		})
+		const byId = (id: string) => items.find((item) => item.id === id)!
+		expect(byId("maxRounds").value).toBe("0")
+		expect(byId("maxRounds").note).toBeUndefined()
+		expect(byId("retentionDays").value).toBe("30")
+		expect(byId("retentionDays").note).toBeUndefined()
+		expect(byId("activityPanelHeight").value).toBe("7")
+		expect(byId("activityPanelHeight").note).toBeUndefined()
+	})
+
+	test("en/zh both carry the effective-default key with the same placeholder", async () => {
+		const base = new URL("../../i18n/locales/", import.meta.url)
+		const en = await Bun.file(new URL("en.json", base)).json()
+		const zh = await Bun.file(new URL("zh-CN.json", base)).json()
+		const key = "settings.note.effectiveDefault"
+		expect(en[key]).toContain("{value}")
+		expect(zh[key]).toContain("{value}")
+		expect(en[key]).not.toBe(zh[key])
+	})
+})
+
 describe("host baseline (n/a, never a guessed default)", () => {
 	test("a namespace the document does not carry renders n/a and is not editable", () => {
 		const items = buildHostItems(subagentDoc, true)

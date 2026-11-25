@@ -216,13 +216,22 @@ export function dockLineCap(terminalRows?: number): number {
 export const ACTIVITY_PANEL_GEARS = ["1", "5", "7", "10", "all"] as const
 export type ActivityPanelGear = (typeof ACTIVITY_PANEL_GEARS)[number]
 
+/**
+ * settings-defaults-029 — the effective gear when the key is UNSET. `5` is the
+ * product default; an explicitly stored gear (even `"1"`) always wins. On a
+ * short terminal the compact degradation still wins BEFORE this default is
+ * applied (see {@link activityPanelCapSpec}).
+ */
+export const DEFAULT_ACTIVITY_PANEL_GEAR: ActivityPanelGear = "5"
+
 /** `all` is a legacy spelling; under the 10-line ceiling it equals the `10`
  * gear. A LITERAL (not `MERGED_DOCK_TOTAL_LINES`) on purpose: this module and
  * merged-dock.ts import each other, so a cross-module top-level initializer
  * would hit a TDZ ReferenceError when merged-dock is the first module loaded. */
 export const ACTIVITY_PANEL_ALL_LINES = 10
 
-/** The selected gear; undefined = unset → the graded `dockLineCap` default. */
+/** The selected gear; undefined = unset → `DEFAULT_ACTIVITY_PANEL_GEAR` ("5")
+ * at normal terminals, compact `dockLineCap` on short ones. */
 export const [activityPanelGear, setActivityPanelGear] = createSignal<ActivityPanelGear | undefined>(undefined)
 
 /** The stored `session.activity_panel_height` value: one of the five gear
@@ -267,21 +276,24 @@ export interface ActivityPanelCapSpec {
 }
 
 /**
- * Gear → THINK line cap (pure, 2026-11-19). Unset gear = the graded
- * `dockLineCap` default. A short terminal (≤ COMPOSER_COMPACT_TERMINAL_ROWS,
- * the two-row rule-bar contract) leaves the gear INERT — the degraded strip
- * wins at any value. Numeric gears cap THINK at N lines (clamped to the
- * 10-line content ceiling). `all` is a legacy spelling that means 10. The
- * former 2/3-of-rows growth rule and halfBudget clamp are REMOVED — the
- * content area is hard-capped at 10 lines regardless of terminal height.
+ * Gear → THINK line cap (pure; 2026-11-19 rule table, defaults revised in
+ * settings-defaults-029). A short terminal (≤ COMPOSER_COMPACT_TERMINAL_ROWS,
+ * the two-row rule-bar contract) is checked FIRST: the degraded strip wins at
+ * ANY gear, including the unset default — compact priority is never weakened.
+ * Otherwise an UNSET gear resolves to {@link DEFAULT_ACTIVITY_PANEL_GEAR}
+ * (`"5"`, 5 think lines); an explicitly stored gear (even `"1"`) wins over the
+ * default. Numeric gears cap THINK at N lines (clamped to the 10-line content
+ * ceiling). `all` is a legacy spelling that means 10. The former 2/3-of-rows
+ * growth rule and halfBudget clamp are REMOVED — the content area is
+ * hard-capped at 10 lines regardless of terminal height.
  */
 export function activityPanelCapSpec(gear: ActivityPanelGear | undefined, terminalRows?: number): ActivityPanelCapSpec {
-	if (gear === undefined) return { maxLines: dockLineCap(terminalRows) }
 	if (terminalRows !== undefined && terminalRows <= COMPOSER_COMPACT_TERMINAL_ROWS) {
 		return { maxLines: dockLineCap(terminalRows) }
 	}
-	if (gear === "all") return { maxLines: ACTIVITY_PANEL_ALL_LINES }
-	return { maxLines: Math.min(Number(gear), MERGED_DOCK_TOTAL_LINES) }
+	const effective = gear ?? DEFAULT_ACTIVITY_PANEL_GEAR
+	if (effective === "all") return { maxLines: ACTIVITY_PANEL_ALL_LINES }
+	return { maxLines: Math.min(Number(effective), MERGED_DOCK_TOTAL_LINES) }
 }
 
 // --------------------------------- height tween (2026-11-19) ---------------

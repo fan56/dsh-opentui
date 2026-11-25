@@ -226,6 +226,7 @@
   "settings.note.permissionPresetScope": "仅影响新会话；当前会话用 /permission <档位> 立即切换",
   "settings.note.maxDepthPinned": "只读 · 由 profile 钉死为 1（安全约束）",
   "settings.note.hostLocalFile": "无 — 宿主未提供该设置：{reason}",
+  "settings.note.effectiveDefault": "生效默认值：{value}（未存储）",
   "settings.writable.noFace": "host 设置面不可用 — 仅本地偏好可写",
   "settings.writable.describeFailed": "settings/describe 失败：{detail} — host 设置不可写，本地偏好仍可写",
   "settings.writable.readOnlyDoc": "该 profile 的设置文档为只读（writable: false）— 所有写入控件已禁用",

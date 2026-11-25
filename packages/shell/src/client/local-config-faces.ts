@@ -89,6 +89,14 @@ const CONFIG_KEYS = [
 	"footerHints", "hintsLocale", "autoResume", "autoResumeDays",
 	"maxRoundsGrace", "activity_panel_height", "stepsDisplay", "stepsCollapse",
 	"stepsFolded",
+	// settings-defaults-029 — two SCALAR preference keys. Both the read side
+	// (`configLoad`'s CONFIG_KEYS projection) and the write side (`configSave`'s
+	// CONFIG_KEY_SET guard) derive from this one list, so they stay in sync.
+	// An explicitly stored `0` is preserved (ladder disabled / cutoff off);
+	// an unset key falls back in the shared pure readers, NOT in this face.
+	// The `session` section is deliberately NOT a whitelist key: no whole
+	// object (with its nested gear) crosses the seam via configSave.
+	"maxRounds", "retentionDays",
 	// 025-w1a — /preset staged selection (next-session preset id). A plain
 	// scalar preference, same class as theme/lang; no secret crosses the seam.
 	"agentPreset",

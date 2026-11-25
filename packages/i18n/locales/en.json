@@ -226,6 +226,7 @@
   "settings.note.permissionPresetScope": "new sessions only; switch this session with /permission <preset>",
   "settings.note.maxDepthPinned": "read-only · pinned by the profile to 1 (safety constraint)",
   "settings.note.hostLocalFile": "n/a — host did not serve this setting: {reason}",
+  "settings.note.effectiveDefault": "effective default: {value} (not stored)",
   "settings.writable.noFace": "host settings face unavailable — only local preferences are writable",
   "settings.writable.describeFailed": "settings/describe failed: {detail} — host settings not writable, local preferences still writable",
   "settings.writable.readOnlyDoc": "the profile's settings document is read-only (writable: false) — all write controls disabled",

@@ -5,8 +5,9 @@
  *   - the config validator accepts ONLY the five gear spellings;
  *   - boot replay restores the gear and silently REJECTS an invalid stored
  *     value (the default sizing keeps running — the hints-line fail-open law);
- *   - the geometry resolver (2026-11-19): unset gear = the graded dockLineCap
- *     default byte for byte, short terminals stay inert, numeric gears cap the
+ *   - the geometry resolver (2026-11-19; defaults revised in
+ *     settings-defaults-029): unset gear = the 5-line product default, except
+ *     short terminals where compact degradation wins; numeric gears cap the
  *     THINK block at N lines (≤ 10), `all` is a legacy spelling that means 10;
  *     the tool block is NEVER gear-driven and the 2/3-of-rows growth rule and
  *     halfBudget clamp are GONE;
@@ -22,6 +23,7 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	ACTIVITY_PANEL_GEARS,
+	DEFAULT_ACTIVITY_PANEL_GEAR,
 	activityPanelCapSpec,
 	activityPanelGear,
 	activityPanelHeightFromConfig,
@@ -91,11 +93,21 @@ describe("applyActivityPanelConfig", () => {
 })
 
 describe("activityPanelCapSpec", () => {
-	test("unset gear = the graded dockLineCap default, byte for byte", () => {
+	// settings-defaults-029 —必要更新透明记录（旧 criterion 逐字保留）：
+	//   old: activityPanelCapSpec(undefined, 24) === {maxLines:1}  —— 不变（compact 优先）
+	//   old: activityPanelCapSpec(undefined, 45) === {maxLines:2}  —— 更新为 5
+	//   old: activityPanelCapSpec(undefined, 60) === {maxLines:3}  —— 更新为 5
+	//   old: activityPanelCapSpec(undefined, undefined) === {maxLines:3} —— 更新为 5
+	// 旧断言未删除，只改期望值；断言强度（exact equality）不降。
+	test("unset gear = the 5-line product default, EXCEPT on short terminals (compact wins)", () => {
+		expect(DEFAULT_ACTIVITY_PANEL_GEAR).toBe("5")
 		expect(activityPanelCapSpec(undefined, 24)).toEqual({ maxLines: 1 })
-		expect(activityPanelCapSpec(undefined, 45)).toEqual({ maxLines: 2 })
-		expect(activityPanelCapSpec(undefined, 60)).toEqual({ maxLines: 3 })
-		expect(activityPanelCapSpec(undefined, undefined)).toEqual({ maxLines: 3 })
+		expect(activityPanelCapSpec(undefined, COMPOSER_COMPACT_TERMINAL_ROWS)).toEqual({ maxLines: 1 })
+		expect(activityPanelCapSpec(undefined, 45)).toEqual({ maxLines: 5 })
+		expect(activityPanelCapSpec(undefined, 60)).toEqual({ maxLines: 5 })
+		expect(activityPanelCapSpec(undefined, undefined)).toEqual({ maxLines: 5 })
+		// An explicit legacy gear still wins over the new default.
+		expect(activityPanelCapSpec("7", 60)).toEqual({ maxLines: 7 })
 	})
 
 	test("short terminals leave the gear inert (the rule-bar contract wins)", () => {

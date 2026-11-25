@@ -550,8 +550,9 @@ describe("settings modal: section model", () => {
 		expect(row.editable).toBe(true)
 		expect(row.options).toEqual(["default", "1", "5", "7", "10", "all"])
 		expect(row.write).toEqual({ via: "config", key: "session.activity_panel_height" })
-		// Unset config renders `default` (the graded terminal-height sizing).
-		expect(row.value).toBe("default")
+		// settings-defaults-029 必要更新透明记录：old criterion (verbatim) =
+		// `expect(row.value).toBe("default")` — 未设置 gear 现在显示生效默认 5。
+		expect(row.value).toBe("5")
 		const configured = buildOpentuiRows({ ...context(), merged: { session: { activity_panel_height: "7" } } }).find(
 			(entry) => entry.id === "activityPanelHeight",
 		)!
@@ -1099,15 +1100,17 @@ describe("settings modal: real keys", () => {
 
 	test("the panelHeight row renders in en and zh (the t() copy is bilingual)", async () => {
 		// EN: the label rides the opentui section, the picker offers the six
-		// gears with the cursor on the effective value (`default`).
+		// gears with the cursor on the effective value (`5` since
+		// settings-defaults-029). Transparent update: old criterion (verbatim)
+		// was `expect(frame()).toContain("▸ default")`.
 		const { setup, frame } = await mount({ preselect: "activityPanelHeight" })
 		try {
 			expect(frame()).toContain("Think display lines")
-			expect(frame()).toContain("default")
+			expect(frame()).toContain("effective default")
 			setup.mockInput.pressEnter() // open the enum picker
 			await settle(setup)
 			expect(frame()).toContain("Think display lines")
-			expect(frame()).toContain("▸ default")
+			expect(frame()).toContain("▸ 5")
 			expect(frame()).toContain("10")
 			expect(frame()).toContain("all")
 		} finally {
@@ -1119,12 +1122,14 @@ describe("settings modal: real keys", () => {
 			setLanguage("zh-CN")
 			const zh = await mount({ preselect: "activityPanelHeight" })
 			try {
+				// settings-defaults-029 透明更新：old criterion (verbatim) =
+				// `expect(zh.frame()).toContain("default")` / `expect(zh.frame()).toContain("▸ default")`.
 				expect(zh.frame()).toContain("思考显示行数")
-				expect(zh.frame()).toContain("default")
+				expect(zh.frame()).toContain("5")
 				zh.setup.mockInput.pressEnter()
 				await settle(zh.setup)
 				expect(zh.frame()).toContain("思考显示行数")
-				expect(zh.frame()).toContain("▸ default")
+				expect(zh.frame()).toContain("▸ 5")
 			} finally {
 				await zh.setup.dispose()
 			}

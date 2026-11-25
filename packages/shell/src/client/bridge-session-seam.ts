@@ -132,6 +132,11 @@ import {
 	projectHostSettingsDocument,
 	settingsFailureReason,
 } from "./bridge-settings-route.ts"
+// maxRounds hard-stop ladder — the RUNTIME consumer of the profile config.json
+// `maxRounds`/`maxRoundsGrace` knobs. One policy instance per session binding;
+// driven by additive `agent.progress` rounds, delivered through the seam's real
+// child steer/interrupt faces (settings-defaults-029 default-50 blocker).
+import { SubagentRoundPolicy, parseSubagentRoundLimits } from "../subagent-policy.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -2478,6 +2483,13 @@ export class BridgeSessionSeam implements SessionSeam {
 		lastLine?: string
 		elapsedSec?: number
 	}>()
+	/**
+	 * maxRounds ladder — ONE instance per session binding (lazily created on the
+	 * first `agent.progress` that grows a child's rounds). Disposed on rebind /
+	 * dispose; a settled child is forgotten so a catalog revive of the same id
+	 * starts a fresh ladder. Limits are read live from the profile config.json.
+	 */
+	#roundPolicy: SubagentRoundPolicy | undefined
 	/** The session the current subagent map belongs to; reset on binding change. */
 	#subagentSessionId: string | undefined
 	/**
@@ -3864,6 +3876,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		for (const [childId, startedAt] of before) {
 			const view = this.#subagentViews.get(childId)
 			if (view === undefined || view.status === "running") continue
+			// maxRounds: this run is terminal. Forget its latches so a later
+			// catalog revive of the SAME childId (a new run) gets a fresh ladder.
+			this.#roundPolicy?.forgetChild(childId)
 			if (view.elapsedSec === undefined || view.endedAt === undefined) continue
 			const runKey = `${childId}@${startedAt ?? ""}`
 			const frozen = this.#subagentSettleSnapshots.get(runKey)
@@ -4228,6 +4243,67 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * The round ladder's runtime consumer. Created lazily so a session with no
+	 * child progress pays nothing. The two knobs are read LIVE from the profile
+	 * config.json through the local config face — `parseSubagentRoundLimits`
+	 * owns the unset→50/0 and explicit-0-disables rules; no settings-ns provider
+	 * is consulted (the retired plugin face answered defaults forever).
+	 *
+	 * Delivery rides the seam's REAL child faces: the wrap-up goes out through
+	 * `steerChild` (subagents.prompt, delivery 'steer') with the policy's own
+	 * canonical `wrapupMessage`, and the force-stop through `interruptChild`
+	 * (subagents.interrupt + confirm-then-emit settle). The policy's F6 hooks
+	 * land the markers in the canonical view so they survive meta sync / settle
+	 * and reach every onSubagentViews subscriber.
+	 */
+	#ensureRoundPolicy(): SubagentRoundPolicy {
+		if (this.#roundPolicy === undefined) {
+			this.#roundPolicy = new SubagentRoundPolicy({
+				limits: () => parseSubagentRoundLimits(this.configLoad()),
+				// A settled child is terminal for this run — never re-awaken it
+				// with a wrap-up or a force-stop (re-checked at the deferred
+				// wrap-up flush too, in case it settled in the same tick).
+				isSettled: (childId) => {
+					const view = this.#subagentViews.get(childId)
+					return view === undefined || view.status !== "running"
+				},
+				wrapup: (childId, message) => this.steerChild(childId, message),
+				// A resolved interrupt issued a stop; a rejection (no binding /
+				// failed disposition) reports that nothing was stopped.
+				forceStop: (childId) => this.interruptChild(childId).then(() => true, () => false),
+				onWrapUp: (childId, round) => this.#markRoundPolicy(childId, "injectedRound", round),
+				onForceStop: (childId, round) => this.#markRoundPolicy(childId, "hardStopRound", round),
+				onSpinStop: (childId, round) => this.#markRoundPolicy(childId, "spinStopRound", round),
+			})
+		}
+		return this.#roundPolicy
+	}
+
+	/** Drop the policy on a binding change/dispose so a deferred wrap-up can
+	 *  never land on the next session's roster. */
+	#resetRoundPolicy(): void {
+		this.#roundPolicy?.dispose()
+		this.#roundPolicy = undefined
+	}
+
+	/** Land one policy marker in the canonical view (first latch wins) and
+	 *  push it through the existing onSubagentViews emit path. */
+	#markRoundPolicy(
+		childId: string,
+		field: "injectedRound" | "hardStopRound" | "spinStopRound",
+		round: number,
+	): void {
+		const view = this.#subagentViews.get(childId)
+		if (view === undefined || view[field] !== undefined) return
+		const next: SeamSubagentView = { ...view }
+		if (field === "injectedRound") next.injectedRound = round
+		else if (field === "hardStopRound") next.hardStopRound = round
+		else next.spinStopRound = round
+		this.#subagentViews.set(childId, next)
+		this.#emitSubagentViews()
+	}
+
+	/**
 	 * B3 — fold an additive `agent.progress` frame (host live rounds/tail).
 	 * RUNTIME update only: never mints a row, never touches a settled child,
 	 * keyed by childId. The `#subagentJournalLoaded` one-time guard is untouched —
@@ -4255,11 +4331,18 @@ export class BridgeSessionSeam implements SessionSeam {
 			? payload.elapsedSec
 			: undefined
 		const prev = this.#subagentProgress.get(childId)
-		this.#subagentProgress.set(childId, {
+		const merged: { rounds: number; lastLine?: string; elapsedSec?: number } = {
 			rounds: Math.max(prev?.rounds ?? 0, rounds),
 			...(lastLine !== undefined ? { lastLine } : prev?.lastLine !== undefined ? { lastLine: prev.lastLine } : {}),
 			...(elapsedSec !== undefined ? { elapsedSec } : prev?.elapsedSec !== undefined ? { elapsedSec: prev.elapsedSec } : {}),
-		})
+		}
+		this.#subagentProgress.set(childId, merged)
+		// Drive the ladder ONLY when the round count actually grew. The policy
+		// latches per child; duplicate frames at the same round must not retry a
+		// delivery or re-enter the ladder.
+		if (merged.rounds > (prev?.rounds ?? 0)) {
+			this.#ensureRoundPolicy().onRoundCount(childId, merged.rounds, view.label)
+		}
 		// Restore first, emit once — no transient rounds=0 (P2b).
 		this.#syncSubagentMeta(false)
 		this.#emitSubagentViews()
@@ -4282,6 +4365,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentRunSeq.clear()
 			this.#subagentLiveStarts.clear()
 			this.#subagentProgress.clear() // B3: live progress belongs to the old binding
+			this.#resetRoundPolicy() // maxRounds: latches belong to the old binding
 			this.#subagentJournalLoaded.clear()
 			this.#subagentJournalMeta.clear()
 			this.#subagentTranscripts.clear() // 025-w1b D: transcripts belong to the old binding
@@ -4827,6 +4911,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#subagentRunSeq.clear()
 		this.#subagentLiveStarts.clear()
 		this.#subagentProgress.clear()
+		this.#resetRoundPolicy() // maxRounds: no deferred wrap-up survives teardown
 		this.#subagentJournalLoaded.clear()
 		this.#subagentJournalMeta.clear()
 		this.#sweepSettledRuns.clear()
