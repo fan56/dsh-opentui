@@ -238,7 +238,9 @@ export type TranscriptProps = {
 	 * focus on F6/click (pane-focus batch). Scrolling stays `scrollBy` +
 	 * native stickyScroll. */
 	scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
-	/** Vertical scrollbar (vendored `session.scrollbar` config; default off). */
+	/** Vertical scrollbar. Component default is OFF (`props.scrollbar ?? false`)
+	 *  for other hosts; the v2 page supplies a config-driven value from
+	 *  `session.scrollbar` (default true when absent, round7 AMEND). */
 	scrollbar?: boolean
 	/** Pane focus (pane-focus batch): true while the transcript owns the
 	 * renderer focus. Real renderer focus is the truth source — the page
