@@ -261,7 +261,9 @@ describe("storedTranscript", () => {
 		const rows = bridgeReplayRowsToSeamTranscript(REPLAY_ROWS)
 		expect(rows).toEqual([
 			{ kind: "user", text: "hello", final: true },
-			{ kind: "tool", text: "read", final: true, args: "{\"p\":1}", output: "\"file body\"", ok: true },
+			// AMEND: journal tool results extract output TEXT (live parity), never
+			// JSON.stringify's quoted envelope (`"\"file body\""`).
+			{ kind: "tool", text: "read", final: true, args: "{\"p\":1}", output: "file body", ok: true },
 			{ kind: "assistant", text: "world", final: true },
 		])
 	})

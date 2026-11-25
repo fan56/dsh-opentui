@@ -83,8 +83,9 @@ export function journalToTranscriptRows(
 	// tool rows — resume/fork replays the tool block with its args brief and
 	// result instead of dropping it. Result pairing mirrors the live path
 	// (remote-follow #toolResultEvent): ok is the isError mirror, brief is
-	// the JSON.stringify(output).slice(0,300) summary. Calls without a
-	// settled result (mid-turn resume) emit nothing — no fabricated rows.
+	// the finalized output TEXT (message.content / output), capped at 300 —
+	// never the raw JSON envelope. Calls without a settled result (mid-turn
+	// resume) emit nothing — no fabricated rows.
 	const toolCalls = new Map<string, { name: string; args: string }>()
 	for (const entry of skip > 0 ? entries.slice(skip) : entries) {
 		if (entry.type === "user/message") {
@@ -133,7 +134,10 @@ export function journalToTranscriptRows(
 				const known = callId ? toolCalls.get(callId) : undefined
 				if (callId) toolCalls.delete(callId)
 				const ok = entry.data.isError !== true && message.isError !== true
-				const brief = JSON.stringify(entry.data.output ?? entry.data).slice(0, 300)
+				// LIVE PARITY: the child log / Ctrl+G panel shows the tool's real
+				// output text (as the live agent.transcript row already does), never
+				// the raw JSON envelope.
+				const brief = toolResultText(entry.data).slice(0, 300)
 				items.push({
 					kind: "tool",
 					name: known?.name ?? "tool",
@@ -225,6 +229,38 @@ function sourceKind(data: Record<string, unknown>): unknown {
 /** Text blocks of an assistant message record. */
 function assistantText(data: Record<string, unknown>): string {
 	return blocksText(asRecord(data.message).content)
+}
+
+/**
+ * Finalized TEXT of a `tool/result`, matching the LIVE path's output extraction
+ * (bridge `contentText(message.content)`). The journal carries the result in
+ * `message.content` (text blocks or a flat string), sometimes in `output`, or
+ * in a nested `output.message.content`. NEVER JSON.stringify the raw event —
+ * that would paint `{"turn":1,...}` into the child log / Ctrl+G panel instead
+ * of the tool's actual output.
+ */
+function toolResultText(data: Record<string, unknown>): string {
+	const message = asRecord(data.message)
+	const output = asRecord(data.output)
+	const nestedMessage = asRecord(output.message)
+	const candidates: unknown[] = [
+		message.content,
+		data.content,
+		data.output,
+		data.text,
+		message.text,
+		output.content,
+		output.text,
+		nestedMessage.content,
+	]
+	for (const candidate of candidates) {
+		if (typeof candidate === "string" && candidate !== "") return candidate
+		if (Array.isArray(candidate)) {
+			const text = blocksText(candidate)
+			if (text !== "") return text
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
