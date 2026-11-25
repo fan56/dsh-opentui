@@ -1,0 +1,24 @@
+│                                                                              │
+│┌────────────────────────────────────────────────────────────────────────────┐│
+││  ❯ Walk the migration plan one more time. E2E_BTW_MAIN                     ││
+│└────────────────────────────────────────────────────────────────────────────┘│
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+   ┃ activity
+
+                                                       🏠 1 main  📋 2 todo 
+┃ Type a message (enter send, alt+enter newline)                               ┃
+  👤 Walk the migration plan one more time. E2E_BTW_MAIN
+  dsh  🌐 zai-coding-cn  🤖 glm-5.3-flash ● high  🔧 0 tools        10:41:12
+ ▒▒▓🐳░░░░░░░░░░ ⌨ enter steer · esc stop · ctrl+c stop
