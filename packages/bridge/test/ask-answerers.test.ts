@@ -470,6 +470,37 @@ describe('ADR-0011 T4 — fail-closed + cleanup settle', () => {
     expect(await mustSettle(pending, 'teardown')).toBe('cancelled')
     expect(h.registry.timerCount()).toBe(0)
   })
+
+  // Real disposeBinding ordering, not registry.clearTurn/clearSession called
+  // from the test: finalizeTurn (→ turn-ended) MUST win on the active turn's
+  // ask before clearSession (→ session-closed) reaches the other-turn ask.
+  test('session.close: activeTurn ask settles turn-ended, other-turn same-session pending settles session-closed', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1)
+
+    // A: a real host answerer, delivered on the active turn of this session.
+    const pendingA = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    const askA = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId).at(-1)!.payload
+
+    // B: another pending ask on the SAME session but a DIFFERENT turnId. It is
+    // staged on the registry only to set up state; every settlement below is
+    // driven by the real session.close → disposeBinding orchestration.
+    const askB = h.registry.create('other-turn', { sessionId, kind: 'approval', toolName: 'write' })
+    expect(h.registry.pendingIds()).toContain(askA.eventId)
+    expect(h.registry.pendingIds()).toContain(askB.eventId)
+
+    h.send({ id: 40, method: 'session.close', params: {} })
+    expect((await h.waitFor(40)).ok).toBe(true)
+
+    expect(await mustSettle(pendingA, 'A on session.close')).toBe('cancelled')
+    const reasons = new Map<string, string | undefined>()
+    for (const frame of h.askFrames('ask.settled')) reasons.set(frame.payload.eventId, frame.payload.reason)
+    expect(reasons.get(askA.eventId)).toBe('turn-ended')
+    expect(reasons.get(askB.eventId)).toBe('session-closed')
+    expect(h.registry.pendingIds()).not.toContain(askA.eventId)
+    expect(h.registry.pendingIds()).not.toContain(askB.eventId)
+  })
 })
 
 describe('F1-A1 — multi-session ask routing (catalog-driven child → parent ask channel)', () => {
@@ -1292,5 +1323,216 @@ describe('ask-slot arbitration — real waterfall next() chain (oldfox NO CHANGE
       answers: [{ id: 'q1', selected: ['Postgres'] }],
     })
     expect(h.askFrames('ask.request')).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ask-outcome v4 (§8.7 / §8.8 T9–T12) — bridge-side external settlement wiring.
+// Only the index.ts answerer/teardown paths are exercised here; the registry's
+// settleExternal semantics are covered by ask-registry.test.ts. Wrapping the
+// registry instance method records the exact input index.ts passed, without
+// changing the call itself.
+function spyExternalSettle(h: Harness): Array<{ eventId: string; input: Record<string, any> }> {
+  const calls: Array<{ eventId: string; input: Record<string, any> }> = []
+  const original = h.registry.settleExternal.bind(h.registry)
+  ;(h.registry as any).settleExternal = (eventId: string, input: Record<string, any>) => {
+    calls.push({ eventId, input })
+    return original(eventId, input)
+  }
+  return calls
+}
+
+const settledReasons = (h: Harness, eventId: string): string[] =>
+  h.askFrames('ask.settled')
+    .filter((f) => f.payload.eventId === eventId)
+    .map((f) => f.payload.reason)
+
+/** Count only NDJSON bridge frames, ignoring any reporter stdout noise. */
+const bridgeFrameCount = (h: Harness): number => h.frames.filter((line) => {
+  try {
+    const f = JSON.parse(line)
+    return f !== null && typeof f === 'object' && ('ok' in f || 'type' in f)
+  } catch { return false }
+}).length
+
+describe('ask-outcome v4 — bridge external settlement wiring', () => {
+  test('host signal abort writes aborted through the registry, keeps the answerer fallback, and a late answer is a no-op', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const host = new AbortController()
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, { signal: host.signal }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+
+    host.abort()
+    expect(await mustSettle(pending, 'host abort')).toBe('cancelled')
+    expect(calls).toEqual([{ eventId: ask.eventId, input: { settleReason: 'aborted' } }])
+    expect(settledReasons(h, ask.eventId)).toEqual(['aborted'])
+    expect(h.registry.settlements()).toHaveLength(1)
+
+    h.send({ id: 60, method: 'ask.response', params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once' } })
+    const reply = await h.waitFor(60)
+    expect(reply.ok).toBe(false)
+    expect(h.registry.settlements()).toHaveLength(1) // no second terminal
+    expect(settledReasons(h, ask.eventId)).toEqual(['aborted'])
+  })
+
+  test('connection teardown settles every pending ask with connection-closed and emits no frame after closing', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    const framesBefore = bridgeFrameCount(h)
+
+    h.dispose()
+    h.dispose() // idempotent
+    expect(await mustSettle(pending, 'teardown')).toBe('cancelled')
+    expect(calls).toEqual([{ eventId: ask.eventId, input: { settleReason: 'connection-closed' } }])
+    expect(h.registry.settlements()).toHaveLength(1)
+    expect(h.registry.pendingIds()).toEqual([])
+    // closing=true suppresses writeFrame, so teardown never writes ask.settled.
+    expect(settledReasons(h, ask.eventId)).toEqual([])
+    expect(bridgeFrameCount(h)).toBe(framesBefore)
+  })
+
+  test('repeated teardown keeps one cancelled settlement and the connection-closed call', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+
+    h.dispose()
+    h.dispose() // idempotent teardown must not add a second terminal
+
+    expect(await mustSettle(pending, 'repeated teardown')).toBe('cancelled')
+    expect(h.registry.settlements().map(({ eventId, outcome }) => ({ eventId, outcome }))).toEqual([
+      { eventId: ask.eventId, outcome: 'cancelled' },
+    ])
+    expect(calls).toEqual([{ eventId: ask.eventId, input: { settleReason: 'connection-closed' } }])
+    expect(h.registry.pendingIds()).toEqual([])
+  })
+
+  test('approvalGateExpiry.signal aborts independently: timeout + defaultOutcome rejected, no windowMs timer', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const host = new AbortController()
+    const gate = new AbortController()
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, {
+      signal: host.signal,
+      approvalGateExpiry: { windowMs: 50, defaultOutcome: 'rejected', signal: gate.signal },
+    }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    expect(h.registry.timerCount()).toBe(1) // hard cap only — windowMs builds no timer
+
+    gate.abort()
+    expect(await mustSettle(pending, 'gate timeout')).toBe('rejected')
+    expect(calls).toEqual([{
+      eventId: ask.eventId,
+      input: { settleReason: 'timeout', defaultOutcome: 'rejected' },
+    }])
+    expect(settledReasons(h, ask.eventId)).toEqual(['timeout'])
+    expect(h.registry.settlements()).toHaveLength(1)
+    expect(host.signal.aborted).toBe(false) // gate never composed with the host signal
+
+    // A late answer cannot rewrite the terminal.
+    h.send({ id: 61, method: 'ask.response', params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once' } })
+    expect((await h.waitFor(61)).ok).toBe(false)
+    expect(h.registry.settlements()).toHaveLength(1)
+  })
+
+  test('gate defaultOutcome unavailable maps to host "unavailable"', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const gate = new AbortController()
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, {
+      approvalGateExpiry: { windowMs: 10, defaultOutcome: 'unavailable', signal: gate.signal },
+    }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    gate.abort()
+    expect(await mustSettle(pending, 'gate unavailable')).toBe('unavailable')
+    expect(calls).toEqual([{
+      eventId: ask.eventId,
+      input: { settleReason: 'timeout', defaultOutcome: 'unavailable' },
+    }])
+    expect(settledReasons(h, ask.eventId)).toEqual(['timeout'])
+    expect(h.registry.settlements()).toHaveLength(1)
+  })
+
+  test('signal order preserved: gate-first stays timeout (host abort cannot rewrite)', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const gate = new AbortController()
+    const host = new AbortController()
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, {
+      signal: host.signal,
+      approvalGateExpiry: { windowMs: 20, defaultOutcome: 'rejected', signal: gate.signal },
+    }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+
+    gate.abort()
+    expect(await mustSettle(pending, 'gate first')).toBe('rejected')
+    host.abort() // host listener was cleared on settle — no rewrite
+    expect(h.registry.settlements()).toHaveLength(1)
+    expect(settledReasons(h, ask.eventId)).toEqual(['timeout'])
+    expect(calls.filter((c) => c.eventId === ask.eventId).map((c) => c.input.settleReason)).toEqual(['timeout'])
+  })
+
+  test('signal order preserved: host-first stays aborted (gate timeout cannot rewrite)', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const gate = new AbortController()
+    const host = new AbortController()
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, {
+      signal: host.signal,
+      approvalGateExpiry: { windowMs: 20, defaultOutcome: 'rejected', signal: gate.signal },
+    }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+
+    host.abort()
+    expect(await mustSettle(pending, 'host first')).toBe('cancelled')
+    gate.abort() // gate listener was cleared on settle — no rewrite
+    expect(h.registry.settlements()).toHaveLength(1)
+    expect(settledReasons(h, ask.eventId)).toEqual(['aborted'])
+    expect(calls.filter((c) => c.eventId === ask.eventId).map((c) => c.input.settleReason)).toEqual(['aborted'])
+  })
+
+  test('request without approvalGateExpiry keeps the existing answer path (no gate wiring)', async () => {
+    const h = makeHarness()
+    const calls = spyExternalSettle(h)
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    h.send({ id: 62, method: 'ask.response', params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once' } })
+    expect((await h.waitFor(62)).ok).toBe(true)
+    expect(await mustSettle(pending, 'no expiry')).toBe('allowed-once')
+    expect(calls).toEqual([])
+    expect(settledReasons(h, ask.eventId)).toEqual(['answered'])
+    expect(h.registry.settlements()).toHaveLength(1)
+  })
+
+  test('fail-closed ask forwards toolName/callId and keeps unknown session literal', async () => {
+    const h = makeHarness()
+    const pending = h.emitHost('approval/request', approvalReq('no-session'))[0]
+    expect(await mustSettle(pending, 'fail-closed metadata')).toBe('unavailable')
+    const settled = h.askFrames('ask.settled')
+    expect(settled).toHaveLength(1)
+    expect(settled[0].payload).toMatchObject({
+      reason: 'no-channel', outcome: 'unavailable', sessionId: 'unknown',
+      toolName: 'bash', callId: 'call-1',
+    })
   })
 })

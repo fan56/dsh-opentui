@@ -17,8 +17,15 @@ import {
   redactIdentifier,
   summarizeAnswers,
   type AskJournalEvent,
+  type AskJournalTerminalEvent,
+  type AskJournalWriteEvent,
 } from '../src/ask-journal'
 import { AskRegistry, type AskRegistryOptions } from '../src/ask-registry'
+
+/** Compile-time check: `value` must satisfy T; returns it unchanged. */
+function accepts<T>(value: T): T {
+  return value
+}
 
 const cleanups: Array<() => void> = []
 afterEach(() => {
@@ -386,5 +393,49 @@ describe('ADR-0011 D7 — always-grant reconstruction from the durable journal (
     } finally {
       fresh.dispose()
     }
+  })
+})
+
+describe('settleReason / childSessionId — read compatibility and terminal write constraint', () => {
+  const base = {
+    eventId: 't1:ask-1',
+    askKind: 'approval' as const,
+    sessionId: 's1',
+    turnId: 't1',
+    source: 'answer' as const,
+    at: 1,
+  }
+
+  test('TYPE: old rows read without settleReason; terminal writes require it', () => {
+    accepts<AskJournalEvent>({ ...base, kind: 'ask.responded' })
+    accepts<AskJournalEvent>({
+      ...base, kind: 'ask.cancelled', settleReason: 'connection-closed', childSessionId: 'child-1',
+    })
+    accepts<AskJournalTerminalEvent>({
+      ...base, kind: 'ask.responded', settleReason: 'answered', childSessionId: 'child-1',
+    })
+    accepts<AskJournalWriteEvent>({ ...base, kind: 'ask.requested' })
+    accepts<AskJournalWriteEvent>({ ...base, kind: 'ask.cancelled', settleReason: 'aborted' })
+
+    // @ts-expect-error terminal journal rows require settleReason
+    const missing: AskJournalTerminalEvent = { ...base, kind: 'ask.responded' }
+    expect(missing.eventId).toBe('t1:ask-1')
+
+    // @ts-expect-error terminal write union requires settleReason on terminal kinds
+    const badWrite: AskJournalWriteEvent = { ...base, kind: 'ask.cancelled' }
+    expect(badWrite.eventId).toBe('t1:ask-1')
+
+    // @ts-expect-error settleReason is closed vocabulary; 'ended' is legacy fallback only
+    const badReason: AskJournalTerminalEvent = { ...base, kind: 'ask.responded', settleReason: 'ended' }
+    expect(badReason.eventId).toBe('t1:ask-1')
+  })
+
+  test('legacy rows without settleReason still replay alongside rows carrying the new fields', () => {
+    const legacy = { ...base, kind: 'ask.responded', behavior: 'always', outcome: 'approved', toolName: 'bash' }
+    const tools = alwaysGrantToolsFromJournal('s1', [
+      { type: ASK_GRANT_JOURNAL_TYPE, payload: legacy },
+      { type: ASK_GRANT_JOURNAL_TYPE, payload: { ...legacy, settleReason: 'answered', childSessionId: 'child-1' } },
+    ])
+    expect(tools).toEqual(['bash'])
   })
 })

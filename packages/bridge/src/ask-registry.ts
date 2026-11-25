@@ -28,15 +28,16 @@ import {
   type AskErrorCode,
   type AskVerdict,
   type AskBehavior,
+  type AskSettleReason,
 } from './ask-frames'
 import {
   ASK_JOURNAL_KINDS,
   SessionPermissionSummary,
   redactIdentifier,
   summarizeAnswers,
-  type AskJournalEvent,
   type AskJournalSink,
   type AskJournalSource,
+  type AskJournalWriteEvent,
 } from './ask-journal'
 import { WRITE_TOOL_POLICY } from './approval-gate'
 
@@ -88,6 +89,34 @@ export interface FailClosedInput {
   sessionId: string
   kind: AskKind
   reason?: string
+  /** Correlation metadata, when the caller has it. Journal fields are redacted;
+   *  `callId` has no journal column and is carried on the frame only. */
+  toolName?: string
+  callId?: string
+  childSessionId?: string
+}
+
+/** External terminal reasons accepted by the by-eventId settlement entry.
+ *  `aborted` = host signal, `connection-closed` = teardown, `timeout` = the
+ *  independent approval-policy gate signal (never the host signal). */
+export type AskExternalSettleReason = Extract<AskSettleReason, 'aborted' | 'connection-closed' | 'timeout'>
+
+/** approval-policy `defaultOutcome` words mapped by the gate timeout path. */
+export type AskGateDefaultOutcome = 'rejected' | 'unavailable'
+
+export interface ExternalSettleInput {
+  settleReason: AskExternalSettleReason
+  /** Explicit terminal outcome wins; otherwise derived from settleReason and
+   *  (for timeout) `defaultOutcome`. */
+  outcome?: AskOutcome
+  /** Gate timeout default: rejected→denied, unavailable→unavailable. */
+  defaultOutcome?: AskGateDefaultOutcome
+  /** Optional `ask.cancel` reason; when absent no cancel frame is emitted. */
+  cancelReason?: AskCancelReason
+  /** Journal audit source; defaults by reason (timeout/teardown). */
+  source?: AskJournalSource
+  code?: AskErrorCode
+  message?: string
 }
 
 interface PendingAsk {
@@ -103,6 +132,9 @@ interface PendingAsk {
 }
 
 interface SettleOptions {
+  /** Mandatory closed terminal reason written to BOTH the terminal journal row
+   *  and the outbound `ask.settled` frame. Never inferred from `ask.cancel`. */
+  settleReason: AskSettleReason
   code?: AskErrorCode
   message?: string
   /** When set, an `ask.cancel` frame is emitted before `ask.settled`. */
@@ -119,6 +151,14 @@ interface SettleOptions {
 }
 
 const DEFAULT_RECORD_LIMIT = 256
+
+/** Explicit answer mapping (research §6.1): never infer a cancellation from a
+ *  missing verdict — questions simply carry answers instead of a verdict. */
+const ANSWER_SETTLE_REASON: Record<Exclude<AskOutcome, 'cancelled'>, AskSettleReason> = {
+  approved: 'answered',
+  denied: 'rejected',
+  unavailable: 'unavailable',
+}
 
 /** Absolute hard cap default (1h). Exported so the bridge's profile-patch
  *  askDeadlineMs validation clamps to the SAME value this registry enforces. */
@@ -224,8 +264,11 @@ export class AskRegistry {
     sessionId: string
     askKind: AskKind
     toolName?: string
+    childSessionId?: string
   }): string {
     const eventId = this.nextEventId(turnId)
+    // Journal-only: the grant effect already lives in the in-process summary,
+    // so this row must not emit a frame or add any new authorization semantics.
     this.#writeJournal({
       eventId,
       kind: ASK_JOURNAL_KINDS.RESPONDED,
@@ -233,9 +276,11 @@ export class AskRegistry {
       sessionId: redactIdentifier(input.sessionId) ?? input.sessionId,
       turnId: redactIdentifier(turnId) ?? turnId,
       ...(redactIdentifier(input.toolName) !== undefined ? { toolName: redactIdentifier(input.toolName) } : {}),
+      ...(redactIdentifier(input.childSessionId) !== undefined ? { childSessionId: redactIdentifier(input.childSessionId) } : {}),
       verdict: 'allowed-once',
       outcome: 'approved',
       behavior: 'always',
+      settleReason: 'auto-approved',
       source: 'summary',
       at: this.#now(),
     })
@@ -245,7 +290,7 @@ export class AskRegistry {
   // ---- journal side effects ------------------------------------------------
   /** Single funnel for every redacted journal write (T7). Never throws into a
    *  decision path: persistence is a side effect, not part of the verdict. */
-  #writeJournal(event: AskJournalEvent): void {
+  #writeJournal(event: AskJournalWriteEvent): void {
     try {
       this.#journal(event)
     } catch (err) {
@@ -283,6 +328,18 @@ export class AskRegistry {
     this.#sink(frame)
   }
 
+  /** Terminal frames are best-effort: by the time a settle is emitted the
+   *  decision is already committed (pending removed, journal written), so a
+   *  throwing sink must not abort it. Unlike #emit (used by create(), whose
+   *  throw drives the A22 rollback), this containment never propagates. */
+  #emitTerminal(frame: AskOutboundFrame): void {
+    try {
+      this.#emit(frame)
+    } catch (err) {
+      this.#logger?.warn?.('[ask-registry] terminal frame emit failed (decision unchanged): %s', err)
+    }
+  }
+
   // ---- create / register ---------------------------------------------------
   /**
    * Register a new pending ask and arm its timers. The `eventId` is generated
@@ -303,6 +360,7 @@ export class AskRegistry {
     if (deadlineAt !== undefined) {
       entry.deadlineTimer = this.#arm(() => {
         this.#settle(entry, this.#deadlineOutcome(entry.request.kind), {
+          settleReason: 'timeout',
           code: ASK_ERROR_CODES.DEADLINE_EXCEEDED,
           cancelReason: 'deadline',
           message: 'ask deadline exceeded',
@@ -314,6 +372,7 @@ export class AskRegistry {
     // Absolute hard cap — fail-closed to unavailable (D6).
     entry.hardCapTimer = this.#arm(() => {
       this.#settle(entry, 'unavailable', {
+        settleReason: 'timeout',
         code: ASK_ERROR_CODES.DEADLINE_EXCEEDED,
         cancelReason: 'deadline',
         message: 'maxAskWaitMs hard cap exceeded',
@@ -324,17 +383,34 @@ export class AskRegistry {
     // ADR-0011 T7 (A4): record the pending decision BEFORE it can settle. Only
     // allowlisted identifiers reach the log — `reason`, `questions`, `callId`
     // and every other free-form payload field are deliberately not copied.
-    this.#writeJournal({
-      eventId,
-      kind: ASK_JOURNAL_KINDS.REQUESTED,
-      askKind: request.kind,
-      sessionId: redactIdentifier(request.sessionId) ?? request.sessionId,
-      turnId: redactIdentifier(turnId) ?? turnId,
-      ...(redactIdentifier(request.toolName) !== undefined ? { toolName: redactIdentifier(request.toolName) } : {}),
-      source: 'request',
-      at: createdAt,
-    })
-    this.#emit({ type: ASK_FRAME_TYPES.REQUEST, payload: request })
+    // A child session id IS allowlisted (redacted), like sessionId/turnId.
+    try {
+      this.#writeJournal({
+        eventId,
+        kind: ASK_JOURNAL_KINDS.REQUESTED,
+        askKind: request.kind,
+        sessionId: redactIdentifier(request.sessionId) ?? request.sessionId,
+        turnId: redactIdentifier(turnId) ?? turnId,
+        ...(redactIdentifier(request.toolName) !== undefined ? { toolName: redactIdentifier(request.toolName) } : {}),
+        ...(redactIdentifier(request.childSessionId) !== undefined ? { childSessionId: redactIdentifier(request.childSessionId) } : {}),
+        source: 'request',
+        at: createdAt,
+      })
+      this.#emit({ type: ASK_FRAME_TYPES.REQUEST, payload: request })
+    } catch (err) {
+      // A failing sink must not leave a ghost pending entry with live timers:
+      // its hard-cap/deadline callback would settle an ask nobody was told about.
+      // Re-throw so the caller's existing failClosed path can use a fresh id.
+      this.#disarm(entry.deadlineTimer)
+      this.#disarm(entry.graceTimer)
+      this.#disarm(entry.hardCapTimer)
+      entry.deadlineTimer = undefined
+      entry.graceTimer = undefined
+      entry.hardCapTimer = undefined
+      this.#pending.delete(eventId)
+      this.#logger?.warn?.('[ask-registry] ask.request emit failed; rolled back %s: %s', eventId, err)
+      throw err
+    }
     return request
   }
 
@@ -346,7 +422,7 @@ export class AskRegistry {
     return kind === 'approval' ? 'denied' : 'cancelled'
   }
 
-  #settle(entry: PendingAsk, outcome: AskOutcome, options: SettleOptions = {}): AskSettlement {
+  #settle(entry: PendingAsk, outcome: AskOutcome, options: SettleOptions): AskSettlement {
     const eventId = entry.request.eventId
     this.#disarm(entry.deadlineTimer)
     this.#disarm(entry.graceTimer)
@@ -362,7 +438,7 @@ export class AskRegistry {
     if (options.cancelReason !== undefined) {
       // PENDING-CONFIRMATION (Q2): detach/grace expiry has no dedicated reason
       // in the §3.2 vocabulary; 'host-abort' is the closest documented value.
-      this.#emit({ type: ASK_FRAME_TYPES.CANCEL, payload: { eventId, reason: options.cancelReason } })
+      this.#emitTerminal({ type: ASK_FRAME_TYPES.CANCEL, payload: { eventId, reason: options.cancelReason } })
     }
 
     const settlement: AskSettlement = {
@@ -386,6 +462,8 @@ export class AskRegistry {
       sessionId: redactIdentifier(entry.request.sessionId) ?? entry.request.sessionId,
       turnId: redactIdentifier(entry.turnId) ?? entry.turnId,
       ...(redactIdentifier(entry.request.toolName) !== undefined ? { toolName: redactIdentifier(entry.request.toolName) } : {}),
+      ...(redactIdentifier(entry.request.childSessionId) !== undefined ? { childSessionId: redactIdentifier(entry.request.childSessionId) } : {}),
+      settleReason: options.settleReason,
       ...(options.verdict !== undefined ? { verdict: options.verdict } : {}),
       outcome,
       ...(options.behavior !== undefined ? { behavior: options.behavior } : {}),
@@ -395,8 +473,61 @@ export class AskRegistry {
       source: options.source ?? (cancelled ? 'teardown' : 'answer'),
       at: settlement.at,
     })
-    this.#emit({ type: ASK_FRAME_TYPES.SETTLED, payload: { eventId, outcome } })
+    // Correlation metadata comes from the pending entry so the live notice can
+    // be mounted on the right (parent) session and attributed to the child.
+    this.#emitTerminal({
+      type: ASK_FRAME_TYPES.SETTLED,
+      payload: {
+        eventId,
+        outcome,
+        reason: options.settleReason,
+        sessionId: entry.request.sessionId,
+        kind: entry.request.kind,
+        ...(entry.request.toolName !== undefined ? { toolName: entry.request.toolName } : {}),
+        ...(entry.request.callId !== undefined ? { callId: entry.request.callId } : {}),
+        ...(entry.request.childSessionId !== undefined ? { childSessionId: entry.request.childSessionId } : {}),
+      },
+    })
     return settlement
+  }
+
+  // ---- external settlement (host abort / teardown / gate timeout) ---------
+  /**
+   * By-eventId terminal entry shared by `ask.abort`, connection teardown and
+   * the approval-policy gate signal. Non-pending ids are a pure no-op: no
+   * journal row, no frame, no throw, no id-memory mutation.
+   */
+  settleExternal(eventId: string, input: ExternalSettleInput): AskSettlement | undefined {
+    const entry = this.#pending.get(eventId)
+    if (entry === undefined) return undefined
+
+    let outcome: AskOutcome
+    if (input.outcome !== undefined) {
+      outcome = input.outcome
+    } else if (input.settleReason === 'timeout') {
+      // Gate timeout follows the policy's defaultOutcome, never the host
+      // signal; rejected→denied, unavailable→unavailable. Without an explicit
+      // value keep the registry's existing kind-based deadline default.
+      outcome = input.defaultOutcome === 'rejected'
+        ? 'denied'
+        : input.defaultOutcome === 'unavailable'
+          ? 'unavailable'
+          : this.#deadlineOutcome(entry.request.kind)
+    } else {
+      // Host abort / connection teardown preserve the existing cancel outcome.
+      outcome = 'cancelled'
+    }
+
+    return this.#settle(entry, outcome, {
+      settleReason: input.settleReason,
+      ...(input.code !== undefined
+        ? { code: input.code }
+        : input.settleReason === 'timeout' ? { code: ASK_ERROR_CODES.DEADLINE_EXCEEDED } : {}),
+      ...(input.message !== undefined ? { message: input.message } : {}),
+      ...(input.cancelReason !== undefined ? { cancelReason: input.cancelReason } : {}),
+      ...(input.settleReason !== 'timeout' ? { ended: true } : {}),
+      source: input.source ?? (input.settleReason === 'timeout' ? 'timeout' : 'teardown'),
+    })
   }
 
   // ---- answer --------------------------------------------------------------
@@ -447,7 +578,9 @@ export class AskRegistry {
       return { ok: false, code: ASK_ERROR_CODES.INVALID_RESPONSE, message: 'behavior:"session" needs a granted escalation' }
     }
 
-    let outcome: AskOutcome
+    // `cancelled` is deliberately not reachable here: a late/teardown answer
+    // never settles, and a missing verdict just means a questions answer.
+    let outcome: Exclude<AskOutcome, 'cancelled'>
     switch (params.verdict) {
       case 'allowed-once':
         outcome = 'approved'
@@ -491,9 +624,11 @@ export class AskRegistry {
           askKind: entry.request.kind,
           sessionId: sourceSession,
           turnId: sourceTurn,
+          ...(redactIdentifier(entry.request.childSessionId) !== undefined ? { childSessionId: redactIdentifier(entry.request.childSessionId) } : {}),
           toolName: tool,
           verdict: 'allowed-once',
           outcome: 'approved',
+          settleReason: 'answered',
           behavior: 'always',
           source: 'answer',
           at: this.#now(),
@@ -502,6 +637,7 @@ export class AskRegistry {
     }
 
     const settlement = this.#settle(entry, outcome, {
+      settleReason: ANSWER_SETTLE_REASON[outcome],
       ...(params.verdict !== undefined ? { verdict: params.verdict } : {}),
       ...(params.behavior !== undefined ? { behavior: params.behavior } : {}),
       ...(params.answers !== undefined ? { answers: params.answers } : {}),
@@ -535,13 +671,31 @@ export class AskRegistry {
       askKind: input.kind,
       sessionId: redactIdentifier(input.sessionId) ?? input.sessionId,
       turnId: redactIdentifier(input.turnId) ?? input.turnId,
+      ...(redactIdentifier(input.toolName) !== undefined ? { toolName: redactIdentifier(input.toolName) } : {}),
+      ...(redactIdentifier(input.childSessionId) !== undefined ? { childSessionId: redactIdentifier(input.childSessionId) } : {}),
       verdict: 'unavailable',
       outcome: 'unavailable',
+      settleReason: 'no-channel',
       code: ASK_ERROR_CODES.CHANNEL_UNAVAILABLE,
       source: 'fail-closed',
       at: settlement.at,
     })
-    this.#emit({ type: ASK_FRAME_TYPES.SETTLED, payload: { eventId, outcome: 'unavailable' } })
+    // `sessionId:'unknown'` stays literal so the client can filter the row
+    // instead of misattributing it to the currently bound session. `callId`
+    // has no journal column; it is carried on the frame only.
+    this.#emitTerminal({
+      type: ASK_FRAME_TYPES.SETTLED,
+      payload: {
+        eventId,
+        outcome: 'unavailable',
+        reason: 'no-channel',
+        sessionId: input.sessionId,
+        kind: input.kind,
+        ...(input.toolName !== undefined ? { toolName: input.toolName } : {}),
+        ...(input.callId !== undefined ? { callId: input.callId } : {}),
+        ...(input.childSessionId !== undefined ? { childSessionId: input.childSessionId } : {}),
+      },
+    })
     return { settlement, code: ASK_ERROR_CODES.CHANNEL_UNAVAILABLE }
   }
 
@@ -552,6 +706,7 @@ export class AskRegistry {
       if (entry.deliveredTo !== sessionId || entry.graceTimer !== undefined) continue
       entry.graceTimer = this.#arm(() => {
         this.#settle(entry, 'cancelled', {
+          settleReason: 'detached',
           cancelReason: 'host-abort',
           code: ASK_ERROR_CODES.TURN_ENDED,
           message: 'client detached past the grace window',
@@ -577,7 +732,7 @@ export class AskRegistry {
     const out: AskSettlement[] = []
     for (const entry of [...this.#pending.values()]) {
       if (entry.turnId !== turnId) continue
-      out.push(this.#settle(entry, 'cancelled', { cancelReason: reason, ended: true, message: 'turn ended' }))
+      out.push(this.#settle(entry, 'cancelled', { settleReason: 'turn-ended', cancelReason: reason, ended: true, message: 'turn ended' }))
     }
     return out
   }
@@ -587,7 +742,7 @@ export class AskRegistry {
     const out: AskSettlement[] = []
     for (const entry of [...this.#pending.values()]) {
       if (entry.deliveredTo !== sessionId) continue
-      out.push(this.#settle(entry, 'cancelled', { cancelReason: reason, ended: true, message: 'session ended' }))
+      out.push(this.#settle(entry, 'cancelled', { settleReason: 'session-closed', cancelReason: reason, ended: true, message: 'session ended' }))
     }
     return out
   }
@@ -603,7 +758,10 @@ export class AskRegistry {
   }
 
   // ---- teardown / leak safety ---------------------------------------------
-  /** Release every armed timer and drop all state. Idempotent. */
+  /** Release every armed timer and drop all state. Idempotent. The bounded
+   *  settlement snapshot is deliberately retained: teardown clears live state,
+   *  but the settlements already recorded must remain observable for post-teardown
+   *  audit and tests. */
   dispose(): void {
     for (const handle of this.#timers) clearTimeout(handle)
     this.#timers.clear()
@@ -611,7 +769,6 @@ export class AskRegistry {
     this.#seqByTurn.clear()
     this.#settledIds.clear()
     this.#endedIds.clear()
-    this.#settlementLog.length = 0
     this.#summary.clear()
     this.#logger?.debug?.('[ask-registry] disposed: all timers released')
   }
