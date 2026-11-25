@@ -18,7 +18,7 @@
 // Environment: bun, tmux and the global `dsh` must be on PATH. Each scenario
 // runs the real in-process provisioner against its scratch HOME.
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -469,6 +469,79 @@ scenario('mcp', 'host tool catalog lists the context7 MCP tools', async (ctx) =>
   } else {
     ctx.skip('context7 MCP tools', `host tool catalog had ${names.length} tools but no context7/mcp__ entry (MCP server unreachable or adapter not installed)`)
   }
+})
+
+// R3 (scratch-only): real-bridge hard cap + pending abort. This scenario does
+// NOT boot the TUI or touch the operator home. It spawns the dedicated driver
+// which applies the REAL bridge over NDJSON frames, shrinks maxAskWaitMs via
+// config injection, and aborts a pending ask with a REAL turn.abort frame.
+// Only the journal STORE is redirected to a scratch JSONL; no registry call is
+// faked. Use --keep to preserve the driver's evidence directory.
+scenario('r3-hardcap-abort', 'R3: config-injected hard cap + real turn.abort frame on real bridge', async (ctx) => {
+  const out = join(ctx.home, 'r3-evidence')
+  mkdirSync(out, { recursive: true })
+  const run = sh('bun', [join(HERE, 'r3-hardcap-abort.ts'), '--out', out, '--hard-cap-ms', '60', '--abort-cap-ms', '3000'], { encoding: 'utf8' })
+  if (run.stdout) process.stdout.write(run.stdout)
+  if (run.stderr) process.stderr.write(run.stderr)
+  ctx.expect('R3 scratch driver exited 0', run.status === 0, 'exit 0', `exit ${run.status}`)
+  const summaryPath = join(out, 'assert-summary.json')
+  const summary = existsSync(summaryPath) ? JSON.parse(readFileSync(summaryPath, 'utf8')) : undefined
+  ctx.expect('R3 scratch driver had zero failed assertions', summary?.failures === 0, 'failures=0', summary)
+  ctx.note(`R3 scratch evidence: ${out} (use --keep to preserve)`)
+})
+
+// R5 (scratch-only): bridge stdin EOF teardown on the real bridge. This
+// scenario does NOT boot the TUI or touch the operator home. The driver raises
+// two pending approval asks over real NDJSON frames, then fires a single stdin
+// 'end' edge (NO session.close / turn.abort / signal / registry call), keeps the
+// process alive until the scratch journal flushes, and reads that file directly
+// to assert one connection-closed terminal row per pending id and zero
+// ask.settled live frames. A second driver pass consumes the same journal with
+// --resume-last to verify the notice text through the real derivation code.
+scenario('r5-connection-closed', 'R5: stdin EOF teardown -> connection-closed + --resume-last notice replay', async (ctx) => {
+  const out = join(ctx.home, 'r5-evidence')
+  mkdirSync(out, { recursive: true })
+  const driver = join(HERE, 'r5-connection-closed.ts')
+  const eof = sh('bun', [driver, '--out', out], { encoding: 'utf8' })
+  if (eof.stdout) process.stdout.write(eof.stdout)
+  if (eof.stderr) process.stderr.write(eof.stderr)
+  ctx.expect('R5 EOF scratch driver exited 0', eof.status === 0, 'exit 0', `exit ${eof.status}`)
+  const journal = join(out, 'journal.jsonl')
+  ctx.expect('R5 EOF arm wrote a scratch journal', existsSync(journal), 'journal.jsonl present', existsSync(journal))
+  const summaryPath = join(out, 'assert-summary.json')
+  const summary = existsSync(summaryPath) ? JSON.parse(readFileSync(summaryPath, 'utf8')) : undefined
+  ctx.expect('R5 EOF scratch driver had zero failed assertions', summary?.failures === 0, 'failures=0', summary)
+
+  const replay = sh('bun', [driver, '--resume-last', '--journal', journal, '--out', out], { encoding: 'utf8' })
+  if (replay.stdout) process.stdout.write(replay.stdout)
+  if (replay.stderr) process.stderr.write(replay.stderr)
+  ctx.expect('R5 --resume-last replay driver exited 0', replay.status === 0, 'exit 0', `exit ${replay.status}`)
+  const replaySummaryPath = join(out, 'assert-summary-replay.json')
+  const replaySummary = existsSync(replaySummaryPath) ? JSON.parse(readFileSync(replaySummaryPath, 'utf8')) : undefined
+  ctx.expect('R5 --resume-last replay had zero failed assertions', replaySummary?.failures === 0, 'failures=0', replaySummary)
+  ctx.note(`R5 scratch evidence: ${out} (use --keep to preserve)`)
+})
+
+// R6 (scratch-only): real TUI child session routing. This scenario does NOT
+// reuse the suite's fake model or the generic scratch home — it spawns the
+// dedicated driver which provisions a scratch profile with the use_agent
+// companion mounted, boots the REAL TUI against the LOCAL two-phase mock LLM;
+// the child raises the REAL approval card via a gated bash/write tool (the host
+// rejects subagent-origin ask_user_question), the driver picks "Allow once"
+// frame-by-frame, and reads the REAL journal + projection code. NO childSessionId
+// or journal row is synthesised; if the real child cannot start the driver
+// exits 2 with BLOCKED. Use --keep to keep.
+scenario('r6-child-routing', 'R6: real use_agent child -> gated tool approval card -> childSessionId journal + projection', async (ctx) => {
+  const out = join(ctx.home, 'r6-evidence')
+  mkdirSync(out, { recursive: true })
+  const run = sh('bun', [join(HERE, 'r6-child-routing.ts'), '--out', out], { encoding: 'utf8' })
+  if (run.stdout) process.stdout.write(run.stdout)
+  if (run.stderr) process.stderr.write(run.stderr)
+  ctx.expect('R6 child-routing driver exited 0', run.status === 0, 'exit 0', `exit ${run.status}`)
+  const summaryPath = join(out, 'assert-summary.json')
+  const summary = existsSync(summaryPath) ? JSON.parse(readFileSync(summaryPath, 'utf8')) : undefined
+  ctx.expect('R6 scratch driver had zero failed assertions', summary?.failures === 0 && !summary?.blocked, 'failures=0 blocked=none', summary)
+  ctx.note(`R6 scratch evidence: ${out} (use --keep to preserve)`)
 })
 
 const waitForCfg = async (path, pred, timeoutMs) => {

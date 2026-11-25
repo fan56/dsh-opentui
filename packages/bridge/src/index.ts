@@ -2045,6 +2045,28 @@ export function resolveAskDeadlineMs(
   return raw
 }
 
+/**
+ * R3: normalize the profile-patch `maxAskWaitMs` hard-cap override at the same
+ * single construction point as `askDeadlineMs`. A POSITIVE FINITE INTEGER not
+ * above DEFAULT_MAX_ASK_WAIT_MS shrinks the absolute cap; every other value
+ * (non-number, NaN, Infinity, <=0, fractional, above the default) is IGNORED
+ * with ONE warn and the 1h default stays armed. Shrinking the safety cap is
+ * opt-in for scratch harnesses only; raising it is never allowed. `warn` is
+ * injectable so both cases are unit-testable without a live bridge.
+ */
+export function resolveMaxAskWaitMs(
+  raw: unknown,
+  cap: number = DEFAULT_MAX_ASK_WAIT_MS,
+  warn: (format: unknown, ...params: unknown[]) => void = () => {},
+): number {
+  if (raw === undefined || raw === null) return cap
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0 || raw > cap) {
+    warn('[dsh-opentui-bridge] invalid maxAskWaitMs %s ignored (using hard cap %d)', String(raw), cap)
+    return cap
+  }
+  return raw
+}
+
 // ---------------------------------------------------------------------------
 // B3 (batch close) — per-bridge progress residue diagnostic. The progress maps
 // live inside apply()'s closure; this WeakMap lets a test / forensic probe read
@@ -2841,20 +2863,27 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
 
   // F1-A2: per-ask wall clock, overridable from the profile patch config.
-  // Default stays null (no per-ask deadline) so the 1h maxAskWaitMs hard cap
+  // Default stays null (no per-ask deadline) so the maxAskWaitMs hard cap
   // remains the only fallback — changing the default is out of scope.
-  const askDeadlineMsRaw = config !== null && typeof config === 'object'
-    ? (config as { askDeadlineMs?: unknown }).askDeadlineMs
-    : undefined
+  const configObject = config !== null && typeof config === 'object' ? config as Record<string, unknown> : undefined
+  // R3: a profile patch may SHRINK the absolute hard cap (scratch harnesses use
+  // this to cover it in seconds). Validation is once here, never per ask; an
+  // invalid value is ignored with ONE warn so a bad config can never raise or
+  // zero the safety cap. The registry still arms the cap it actually enforces.
+  const maxAskWaitMs = resolveMaxAskWaitMs(configObject?.maxAskWaitMs, DEFAULT_MAX_ASK_WAIT_MS, (fmt, ...params) =>
+    logger.warn(fmt, ...params),
+  )
+  const askDeadlineMsRaw = configObject?.askDeadlineMs
   // S1: validate once here (never per ask) — invalid/negative → ignored + warn;
-  // above the 1h hard cap → clamped + warn (else the config silently loses to
-  // the cap timer). The registry still owns the cap it actually enforces.
-  const askDeadlineMs = resolveAskDeadlineMs(askDeadlineMsRaw, DEFAULT_MAX_ASK_WAIT_MS, (fmt, ...params) =>
+  // above the EFFECTIVE hard cap → clamped + warn (else the config silently
+  // loses to the cap timer). The registry still owns the cap it actually arms.
+  const askDeadlineMs = resolveAskDeadlineMs(askDeadlineMsRaw, maxAskWaitMs, (fmt, ...params) =>
     logger.warn(fmt, ...params),
   )
 
   const ask = new AskRegistry({
     askDeadlineMs,
+    maxAskWaitMs,
     logger,
     journal: writeAskJournal,
     sink: (frame) => {
