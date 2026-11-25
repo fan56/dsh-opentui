@@ -24,3 +24,43 @@ export function narrowCacheHitMode(value: unknown): CacheHitMode {
 export function readCacheHitMode(config: Record<string, unknown> | undefined | null): CacheHitMode {
 	return narrowCacheHitMode(config?.cacheHitMode)
 }
+
+// ---------------------------------------------------------------------------
+// settings-defaults-029 — shared numeric preference defaults.
+//
+// These are PURE readers over a merged `configLoad()` view. They are shared on
+// purpose: the /settings panel displays the effective value, the subagent
+// round policy enforces the cap, and the (later) session prune will read the
+// retention window. One default per key keeps display and runtime from
+// drifting. An explicitly stored `0` is a REAL value (disable the ladder /
+// disable the retention cutoff), never a missing key: it survives both readers.
+// Malformed / negative / non-finite values fall back, like the lang validator's
+// fail-open law — a hand-edited config cannot widen a default silently.
+// ---------------------------------------------------------------------------
+
+/** Default global subagent round cap (the round ladder's global cap). */
+export const DEFAULT_MAX_ROUNDS = 50
+
+/** Default stored-session retention window in days (future prune consumer). */
+export const DEFAULT_RETENTION_DAYS = 90
+
+/** Non-negative integer config value, or undefined when absent/malformed. */
+function configNonNegativeInt(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.floor(value)
+	if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value.trim())
+	return undefined
+}
+
+/** Effective global subagent cap off a `configLoad()` result (explicit 0 kept). */
+export function readMaxRounds(config: Record<string, unknown> | undefined | null): number {
+	return configNonNegativeInt(config?.maxRounds) ?? DEFAULT_MAX_ROUNDS
+}
+
+/**
+ * Effective session-retention days off a `configLoad()` result (explicit 0
+ * kept). Shared pure fallback for the later prune implementation; this slice
+ * only supplies the reader — no deletion is performed anywhere.
+ */
+export function readRetentionDays(config: Record<string, unknown> | undefined | null): number {
+	return configNonNegativeInt(config?.retentionDays) ?? DEFAULT_RETENTION_DAYS
+}

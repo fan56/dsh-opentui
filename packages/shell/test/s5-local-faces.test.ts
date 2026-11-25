@@ -74,6 +74,52 @@ describe("S5 configSave — whitelisted keys only", () => {
 	})
 })
 
+// settings-defaults-029 — the two new SCALAR whitelist keys. The face stays a
+// dumb projection: it never injects 50/90 (the shared pure readers do that at
+// the consumer), and it never carries the `session` whole object across.
+describe("settings-defaults-029 — scalar config keys", () => {
+	test("explicit 0 / old values read back, including after a fresh restart instance", () => {
+		const s = scratch()
+		const store = new LocalConfigStore(s.home, s.profile, s.home)
+		expect(store.configLoad().maxRounds).toBeUndefined() // unset stays unset on the face
+		expect(store.configLoad().retentionDays).toBeUndefined()
+
+		store.configSave({ maxRounds: 0, retentionDays: 30 } as Record<string, unknown>)
+		expect(store.configLoad().maxRounds).toBe(0) // explicit 0 is a real stored value
+		expect(store.configLoad().retentionDays).toBe(30)
+		const onDisk = JSON.parse(readFileSync(s.config, "utf8"))
+		expect(onDisk.maxRounds).toBe(0)
+		expect(onDisk.retentionDays).toBe(30)
+
+		// Restart readback: a NEW store instance reads the SAME profile file.
+		const restarted = new LocalConfigStore(s.home, s.profile, s.home)
+		expect(restarted.configLoad().maxRounds).toBe(0)
+		expect(restarted.configLoad().retentionDays).toBe(30)
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("whitelist never leaks: no session whole object, no secret key/value", () => {
+		const s = scratch()
+		const store = new LocalConfigStore(s.home, s.profile, s.home)
+		store.configSave({
+			maxRounds: 7,
+			session: { activity_panel_height: "7", apiKey: "SENTINEL" },
+			apiKey: "SENTINEL",
+			unknownKey: "SENTINEL",
+		} as Record<string, unknown>)
+		const onDisk = JSON.parse(readFileSync(s.config, "utf8")) as Record<string, unknown>
+		expect(onDisk.maxRounds).toBe(7)
+		expect(onDisk).not.toHaveProperty("session")
+		expect(onDisk).not.toHaveProperty("apiKey")
+		expect(onDisk).not.toHaveProperty("unknownKey")
+		const view = JSON.stringify(store.configLoad())
+		for (const needle of ["SENTINEL", "session", "activity_panel_height", "unknownKey"]) {
+			expect(view).not.toContain(needle)
+		}
+		rmSync(s.home, { recursive: true, force: true })
+	})
+})
+
 describe("S5 agents face — REAL corpus, no mocks", () => {
 	test("list/body read a real agent .md from the scratch corpus", () => {
 		const s = scratch()

@@ -15,7 +15,10 @@
  *
  * Three knobs, read live by each facade at every decision point:
  * - `maxRounds` (global): caps a child's assistant messages (each LLM
- *   round-trip is one "round"). `<= 0` disables the whole ladder.
+ *   round-trip is one "round"). `<= 0` disables the whole ladder. Since
+ *   settings-defaults-029 an UNSET key defaults to 50 (see
+ *   {@link DEFAULT_SUBAGENT_ROUND_LIMITS}); an explicitly stored 0 still
+ *   disables it.
  * - `maxRoundsGrace`: the wrap-up grace window. After the wrap-up lands at
  *   the cap, `maxRoundsGrace` further rounds are allowed; at `cap + grace`
  *   the run is FORCE-STOPPED — code, not persuasion.
@@ -56,6 +59,17 @@
  * the spin legs never widen a cap or add grace.
  */
 
+/**
+ * Shell-side frozen default for the global subagent round cap. Kept as a
+ * package-local constant on purpose: the shell must not deep-import tui-base
+ * source (`../../tui-base/src/seams/config.ts`), and the shell package does
+ * not depend on tui-base. The display side keeps its own identical constant
+ * at `packages/tui-base/src/seams/config.ts` (its seam/config boundary); BOTH
+ * are frozen at 50 by settings-defaults-029 and must move together. An
+ * explicitly stored `0` still disables the ladder here (see below).
+ */
+const DEFAULT_MAX_ROUNDS = 50
+
 /** The parsed `dsh-opentui` settings knobs. */
 export interface SubagentRoundLimits {
 	/** Global assistant-message cap per child (`<= 0` disables the ladder). */
@@ -64,8 +78,15 @@ export interface SubagentRoundLimits {
 	maxRoundsGrace: number
 }
 
-/** Defaults: disabled — an unconfigured deployment enforces nothing. */
-export const DEFAULT_SUBAGENT_ROUND_LIMITS: SubagentRoundLimits = { maxRounds: 0, maxRoundsGrace: 0 }
+/**
+ * Defaults (settings-defaults-029): an UNCONFIGURED deployment caps a child at
+ * {@link DEFAULT_MAX_ROUNDS} (50) assistant rounds; the grace window stays 0
+ * (warn-only, never force-stop by default). An EXPLICIT `maxRounds: 0` still
+ * disables the whole ladder — the shared `readMaxRounds` reader and
+ * `parseSubagentRoundLimits` both keep a stored zero, so "disabled" is an
+ * operator choice, not the absence of a config key.
+ */
+export const DEFAULT_SUBAGENT_ROUND_LIMITS: SubagentRoundLimits = { maxRounds: DEFAULT_MAX_ROUNDS, maxRoundsGrace: 0 }
 
 /** The settings namespace this policy reads (settings entry id `dsh-opentui`). */
 export const SUBAGENT_LIMITS_NS = "dsh-opentui"
@@ -528,6 +549,22 @@ export class SubagentRoundPolicy {
 		const caps: ResolvedCaps = { cap, grace: limits.maxRoundsGrace }
 		this.#resolvedCaps.set(childId, caps)
 		return caps
+	}
+
+	/**
+	 * Forget one child's latches when its run settles. A later catalog revive of
+	 * the SAME childId is a NEW run and must get a fresh ladder (the caps were
+	 * frozen for the old run). Does not affect any other child; pending deferred
+	 * wrap-ups for this child see the emptied state at their flush and no-op.
+	 */
+	forgetChild(childId: string): void {
+		this.#injected.delete(childId)
+		this.#hardStopped.delete(childId)
+		this.#resolvedCaps.delete(childId)
+		this.#injectedLabel.delete(childId)
+		this.#injectedRound.delete(childId)
+		this.#injectedAt.delete(childId)
+		this.#spinState.delete(childId)
 	}
 
 	/** Stop feeding; pending deferred wrap-ups will not fire afterwards. */

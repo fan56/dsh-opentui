@@ -26,7 +26,9 @@
  *   - `describe().writable === false` disables every write control and the
  *     header explains why.
  *   - a key the host baseline does not define renders `n/a` and is not
- *     editable (no guessed defaults).
+ *     editable (no guessed defaults). LOCAL numeric/gear keys are different:
+ *     an unset key shows its EFFECTIVE default (50 / 90 / 5) with an explicit
+ *     "effective default" note; an explicitly stored value (even 0) wins.
  *
  * Keys (the agents-panel law): a global priority-2 keymap layer gated on the
  * module open signal + an empty dialog stack; a focus-catcher input keeps
@@ -48,8 +50,8 @@ import {
 	type FooterHints,
 	type HintLocale,
 } from "./hints-line"
-import { readCacheHitMode } from "../../seams/config"
-import { activityPanelHeightFromConfig, setActivityPanelGear } from "./widgets-dock"
+import { readCacheHitMode, readMaxRounds, readRetentionDays } from "../../seams/config"
+import { activityPanelHeightFromConfig, DEFAULT_ACTIVITY_PANEL_GEAR, setActivityPanelGear } from "./widgets-dock"
 import type {
 	SeamPermissionCatalog,
 	SeamSettingsDocument,
@@ -70,6 +72,17 @@ const MAX_ZONE_ROWS = 4
 const unknownValue = () => t("settings.value.unset")
 const naValue = () => t("settings.value.na")
 const readonlyNote = () => t("settings.zone.readonlyNote")
+/** Effective-default marker for a row whose key is UNSET (settings-defaults-029). */
+const effectiveDefaultNote = (value: string) => t("settings.note.effectiveDefault", { value })
+
+/** Whether a numeric config key is absent/malformed (an explicit 90/0 is NOT unset).
+ * Mirrors the shared `configNonNegativeInt` reader used for the displayed value. */
+function unsetNumeric(config: Record<string, unknown>, key: string): boolean {
+	const value = config[key]
+	if (typeof value === "number") return !Number.isFinite(value) || value < 0
+	if (typeof value === "string") return !/^\d+$/.test(value.trim())
+	return true
+}
 
 // ---------------------------------------------------------------- zones --
 
@@ -181,6 +194,10 @@ export function buildLocalItems(input: {
 	const { merged, profile, workspace, writable } = input
 	const hints = footerHintsFromConfig(merged.footerHints) ?? DEFAULT_FOOTER_HINTS
 	const base = { zone: "local" as const, editable: writable }
+	// settings-defaults-029: an UNSET local key displays its EFFECTIVE default
+	// and says so; an explicitly stored value (including 0) always wins. The
+	// host-zone "no guessed defaults" rule is untouched.
+	const storedGear = activityPanelHeightFromConfig((merged.session as Record<string, unknown> | undefined)?.activity_panel_height)
 	const items: SettingsItem[] = [
 		{
 			...base,
@@ -268,35 +285,40 @@ export function buildLocalItems(input: {
 			// profile's existing session slice instead of clobbering it.
 			id: "activityPanelHeight",
 			label: t("settings.row.activityPanelHeight"),
-			// Normalized display: an out-of-contract stored value (hand-edited
-			// config) runs the default at runtime, so the row must SAY default
-			// too — the raw string would render a value the runtime ignores.
-			value:
-				activityPanelHeightFromConfig((merged.session as Record<string, unknown> | undefined)?.activity_panel_height) ??
-				"default",
+			// Normalized display: an unset/out-of-contract stored value runs the
+			// effective default ("5") at runtime, so the row must SAY 5 too —
+			// the raw string would render a value the runtime ignores.
+			value: storedGear ?? DEFAULT_ACTIVITY_PANEL_GEAR,
 			source: "config.json · session.activity_panel_height",
 			kind: "enum",
 			options: ["default", "1", "5", "7", "10", "all"],
+			...(storedGear === undefined ? { note: effectiveDefaultNote(DEFAULT_ACTIVITY_PANEL_GEAR) } : {}),
 			write: { via: "config", key: "session.activity_panel_height" },
 		},
 		{
 			...base,
 			id: "retentionDays",
 			label: "retentionDays",
-			value: num(merged.retentionDays)?.toString() ?? unknownValue(),
+			value: readRetentionDays(merged).toString(),
 			source: "config.json · retentionDays",
 			kind: "number",
 			min: 0,
+			...(unsetNumeric(merged, "retentionDays")
+				? { note: effectiveDefaultNote(String(readRetentionDays(undefined))) }
+				: {}),
 			write: { via: "config", key: "retentionDays" },
 		},
 		{
 			...base,
 			id: "maxRounds",
 			label: "maxRounds",
-			value: num(merged.maxRounds)?.toString() ?? unknownValue(),
+			value: readMaxRounds(merged).toString(),
 			source: "config.json · maxRounds (subagent round cap)",
 			kind: "number",
 			min: 0,
+			...(unsetNumeric(merged, "maxRounds")
+				? { note: effectiveDefaultNote(String(readMaxRounds(undefined))) }
+				: {}),
 			write: { via: "config", key: "maxRounds" },
 		},
 		{

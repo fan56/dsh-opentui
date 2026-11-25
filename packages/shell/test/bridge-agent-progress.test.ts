@@ -11,14 +11,19 @@
 import { describe, expect, test } from "bun:test"
 import { BridgeSessionSeam, type BridgeEventFrame, type BridgeTransport } from "../src/client/bridge-session-seam.ts"
 import type { SeamSubagentView } from "../../tui-base/src/seams/session.ts"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 type Reply = { kind: "value"; value: unknown } | { kind: "error"; error: unknown }
 
-function makeHarness() {
+function makeHarness(local?: { dshHome?: string; profile?: string; workspaceDir?: string }) {
 	const replies = new Map<string, Reply>()
+	const requests: { method: string; params?: Record<string, unknown> }[] = []
 	const eventListeners: ((frame: BridgeEventFrame) => void)[] = []
 	const transport: BridgeTransport = {
-		async request(method) {
+		async request(method, params) {
+			requests.push({ method, params })
 			const reply = replies.get(method)
 			if (reply === undefined) return {}
 			if (reply.kind === "error") throw reply.error
@@ -33,14 +38,27 @@ function makeHarness() {
 		},
 	}
 	const logger = { info() {}, warn() {}, error() {}, debug() {} }
-	const seam = new BridgeSessionSeam({ transport, ctx: { logger } })
+	const seam = new BridgeSessionSeam({ transport, ctx: { logger }, ...local })
 	return {
 		seam,
 		replies,
+		requests,
 		emit(frame: BridgeEventFrame) {
 			for (const l of [...eventListeners]) l(frame)
 		},
 	}
+}
+
+/** Deterministic profile home for the maxRounds config face: either NO config.json
+ *  (unset → default 50/0) or one carrying the two knobs. Returns its cleanup. */
+function configHome(config?: Record<string, unknown>) {
+	const dshHome = mkdtempSync(join(tmpdir(), "dsh-round-policy-"))
+	if (config !== undefined) {
+		const profileDir = join(dshHome, "profiles", "opentui-monday")
+		mkdirSync(profileDir, { recursive: true })
+		writeFileSync(join(profileDir, "config.json"), JSON.stringify(config))
+	}
+	return { dshHome, cleanup: () => rmSync(dshHome, { recursive: true, force: true }) }
 }
 
 function spawn(parentId: string, childId: string): BridgeEventFrame {
@@ -135,5 +153,125 @@ describe("B3 agent.progress client fold", () => {
 		// No progress frame may rewrite the terminal.
 		h.emit(progress(parent, child, 50, "after-settle", 50))
 		expect(h.seam.subagentViews()[0]).toMatchObject({ rounds: 9, lastLine: "final", status: "completed" })
+	})
+})
+
+// ---------------------------------------------------------------------------
+// maxRounds runtime consumer — the config.json knobs now have a REAL consumer:
+// the shared SubagentRoundPolicy is driven by additive `agent.progress` rounds
+// and delivers through the seam's real child steer / interrupt faces.
+// ---------------------------------------------------------------------------
+
+describe("maxRounds ladder wired to agent.progress (config.json consumer)", () => {
+	const promptCalls = (h: ReturnType<typeof makeHarness>) => h.requests.filter((r) => r.method === "subagents.prompt")
+	const interruptCalls = (h: ReturnType<typeof makeHarness>) => h.requests.filter((r) => r.method === "subagents.interrupt")
+
+	test("unset keys → cap 50 / grace 0: wrap-up at 50, no force-stop past the cap", async () => {
+		const home = configHome() // no config.json at all
+		try {
+			const h = makeHarness({ dshHome: home.dshHome, profile: "opentui-monday" })
+			h.emit(spawn("p", "c1"))
+			h.emit(progress("p", "c1", 49, "still going", 4.9))
+			await tick()
+			expect(promptCalls(h)).toHaveLength(0)
+			expect(h.seam.subagentViews()[0]!.injectedRound).toBeUndefined()
+
+			h.emit(progress("p", "c1", 50, "at cap", 5))
+			await tick()
+			const prompts = promptCalls(h)
+			expect(prompts).toHaveLength(1)
+			const content = (prompts[0]!.params!.content as Array<{ text: string }>)[0]!.text
+			expect(content).toContain("Round limit reached (50")
+			expect(h.seam.subagentViews()[0]!.injectedRound).toBe(50)
+
+			// grace 0 = warn-only: even far past the cap no interrupt is issued.
+			h.emit(progress("p", "c1", 80, "past cap", 8))
+			await tick()
+			expect(interruptCalls(h)).toHaveLength(0)
+			expect(promptCalls(h)).toHaveLength(1) // one wrap-up per child
+		} finally {
+			home.cleanup()
+		}
+	})
+
+	test("explicit maxRounds:0 disables the ladder even at round 100", async () => {
+		const home = configHome({ maxRounds: 0, maxRoundsGrace: 3 })
+		try {
+			const h = makeHarness({ dshHome: home.dshHome, profile: "opentui-monday" })
+			h.emit(spawn("p", "c1"))
+			h.emit(progress("p", "c1", 100, "unbounded", 10))
+			await tick()
+			expect(promptCalls(h)).toHaveLength(0)
+			expect(interruptCalls(h)).toHaveLength(0)
+			const view = h.seam.subagentViews()[0]!
+			expect(view.injectedRound).toBeUndefined()
+			expect(view.hardStopRound).toBeUndefined()
+		} finally {
+			home.cleanup()
+		}
+	})
+
+	test("cap + grace: wrap-up at cap, real interruptChild force-stop at cap+grace", async () => {
+		const home = configHome({ maxRounds: 3, maxRoundsGrace: 2 })
+		try {
+			const h = makeHarness({ dshHome: home.dshHome, profile: "opentui-monday" })
+			// Bind a session so the real interruptChild has a parent id.
+			h.replies.set("session.open", { kind: "value", value: { sessionId: "parent" } })
+			h.replies.set("session.send", { kind: "value", value: { turnId: "t-bind" } })
+			h.replies.set("subagents.interrupt", {
+				kind: "value", value: { childId: "c1", disposition: "already-settled" },
+			})
+			h.seam.resumeSession("parent")
+			const done = h.seam.turn("go", {
+				onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+			})
+			await tick()
+			h.emit({ type: "turn.end", payload: { turnId: "t-bind", text: "" } })
+			await done
+			await tick()
+
+			h.emit(spawn("parent", "c1"))
+			h.emit(progress("parent", "c1", 3, "at cap", 3))
+			await tick()
+			expect(promptCalls(h)).toHaveLength(1)
+			expect(h.seam.subagentViews()[0]!.injectedRound).toBe(3)
+			expect(interruptCalls(h)).toHaveLength(0)
+
+			h.emit(progress("parent", "c1", 4, "in grace", 4))
+			await tick()
+			expect(interruptCalls(h)).toHaveLength(0)
+
+			h.emit(progress("parent", "c1", 5, "past grace", 5))
+			await tick()
+			await tick()
+			expect(interruptCalls(h)).toHaveLength(1)
+			expect(interruptCalls(h)[0]!.params).toEqual({ parentSessionId: "parent", childId: "c1" })
+			expect(h.seam.subagentViews()[0]!.hardStopRound).toBe(5)
+		} finally {
+			home.cleanup()
+		}
+	})
+
+	test("settle does not re-awaken: no wrap-up when the child settles in the same tick", async () => {
+		const home = configHome({ maxRounds: 3, maxRoundsGrace: 2 })
+		try {
+			const h = makeHarness({ dshHome: home.dshHome, profile: "opentui-monday" })
+			h.emit(spawn("p", "c1"))
+			// The cap crossing schedules a deferred wrap-up; settle before it flushes.
+			h.emit(progress("p", "c1", 3, "at cap", 3))
+			h.emit({ type: "agent.settle", payload: { sessionId: "p", runId: "r", seq: 0, outcome: "completed" } })
+			await tick()
+			expect(promptCalls(h)).toHaveLength(0)
+			expect(h.seam.subagentViews()[0]!.status).toBe("completed")
+			expect(h.seam.subagentViews()[0]!.injectedRound).toBeUndefined()
+
+			// Late progress on a settled child is authoritative — never wakes it.
+			h.emit(progress("p", "c1", 50, "after settle", 50))
+			await tick()
+			expect(promptCalls(h)).toHaveLength(0)
+			expect(interruptCalls(h)).toHaveLength(0)
+		} finally {
+			home.cleanup()
+		}
 	})
 })
