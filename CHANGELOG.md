@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-11-26
+
+### Added
+
+- **Secure session retention via `/prune` and `/prune-purge`.** `/prune` uses a
+  90-day retention window by default, offers a preview before acting, moves the
+  pruned sessions to a trash (recycle bin), and supports `restore`.
+  `/prune-purge` permanently removes trashed sessions after a residency period
+  and requires a second confirmation.
+- **Live transcript for Ctrl+G sub-sessions.** Shows the sub-session's `runId`,
+  buffers up to 500 lines / 64 KB, and keeps tool output across multiple lines.
+- **Transcript scrollbar and "N new messages" indicator.** A scrollbar on the
+  right edge of the transcript, an "N new messages" hint when the view is away
+  from the bottom, `submit` returns the view to the bottom, and
+  `alt+shift+end` jumps to the bottom.
+
+### Changed
+
+- **`maxRounds` defaults to 50 when unset.** An explicit `0` disables the
+  limit. At runtime, once the limit is reached the running sub-agent is
+  wrapped up and then hard-stopped.
+- **`think` display defaults to 5.**
+- **`retentionDays` defaults to 90.**
+- **Real-client environment precheck hardened.**
+
+### Fixed
+
+- **Replies after a `todo` were invisible when the view was scrolled away from
+  the bottom.**
+- **Blank sub-session panels / lost output.**
+- **Real-device evidence for ask R3/R5/R6.**
+
+### Known Risks
+
+- **`maxRounds` 50 forces a wrap-up on long-running sub-agents.**
+- **`prune` moves sessions to a trash.** Cross-process read-only viewers may
+  briefly hit `ENOENT`; the sessions can be brought back with `restore`.
+
 ## [0.28.2] - 2026-11-25
 
 ### Added
