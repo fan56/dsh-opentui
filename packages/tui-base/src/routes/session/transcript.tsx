@@ -4,7 +4,7 @@
  * Extracted from the vendored `routes/session/index.tsx` region at the
  * `<scrollbox>` (upstream 1514–1571): same visual structure —
  *
- *   row > flexGrow col (position relative) > scrollbox
+ *   row > flexGrow col > scrollbox + in-flow height=1 hint row
  *   stickyScroll + stickyStart="bottom"   (prop-sensitive; NOT stickyScrollPosition)
  *   keyed marginTop=1 rows via <For>
  *   bottom slot (children/footer/notices) — legacy hosts only
@@ -39,7 +39,7 @@
  * bottom slot is flexShrink=0 and its child (the composer) sets an explicit
  * height — auto-height boxes collapse in flex columns.
  */
-import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { For, createEffect, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useRenderer, onAnimationTick } from "@opentui/solid"
 import { useTerminalSize } from "./terminal-size"
 import { BoxRenderable, SyntaxStyle, TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
@@ -48,10 +48,21 @@ import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import { splitRecommended } from "./ask-options"
 import type { ComposerPendingRow } from "./composer-state"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
+import { Keymap } from "../../context/keymap"
 import { t } from "../../i18n"
+import { TuiKeybind } from "../../config/keybind"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { transcriptFrame, unfocusedBorderColor } from "../../skin/semantic"
-import { skinFadeInColor, SKIN_FADE_IN_MS } from "./widgets-dock"
+import { mixSkinColor, skinFadeInColor, skinFaintColor, SKIN_FADE_IN_MS, SKIN_PULSE_DIM } from "./widgets-dock"
+import {
+	awayFromBottom,
+	keybindLabel,
+	newMessageCopyKey,
+	newMessageCount,
+	pulseLevel,
+	shouldPulse,
+	HINT_PULSE_TOTAL_MS,
+} from "./transcript-scroll-hints"
 
 // ---------------------------------------------------------------------------
 // Skin code-block form (batch δ, contract §1 代码块). Streaming paints the
@@ -386,6 +397,114 @@ export function Transcript(props: TranscriptProps) {
 			projection.rows.filter((row) => row.kind !== "tool" && row.kind !== "reasoning" && row.kind !== "subagents") as readonly SeamRow[],
 	)
 
+	// -----------------------------------------------------------------------
+	// Away-from-bottom hint. PASSIVE by contract: the scrollbar's `change`
+	// event and row-count changes only update local signals — native
+	// stickyScroll keeps sole ownership of the follow flag (nothing below
+	// writes `scroll.stickyScroll`). The old paddingBottom=1 reserved row is
+	// now a real in-flow `height={1}` sibling of the scrollbox: constant
+	// viewport budget, no absolute overlay, no extra terminal row.
+	// -----------------------------------------------------------------------
+	const [away, setAway] = createSignal(false)
+	const [newRows, setNewRows] = createSignal(0)
+	const [pulseTick, setPulseTick] = createSignal(0)
+	let transcriptScroll: ScrollBoxRenderable | undefined
+	let rowsAtBottom = 0
+	let lastCount = 0
+	let wasAway = false
+	let pulseStartedAt: number | undefined
+
+	/** Single state transition, driven by geometry + row count only. */
+	const syncAway = () => {
+		const scroll = transcriptScroll
+		if (!scroll || scroll.isDestroyed) return
+		const awayNow = awayFromBottom({
+			scrollTop: scroll.scrollTop,
+			viewportHeight: scroll.viewport.height,
+			scrollHeight: scroll.scrollHeight,
+		})
+		const rows = visibleRows().length
+		if (!awayNow) {
+			rowsAtBottom = rows
+			lastCount = 0
+			wasAway = false
+			pulseStartedAt = undefined
+			setNewRows(0)
+			setAway(false)
+			return
+		}
+		// Baseline is frozen at the moment the reader leaves the bottom; a
+		// streaming increment on an existing row never changes row COUNT, so
+		// it cannot grow N or start a pulse.
+		if (!wasAway) {
+			rowsAtBottom = rows
+			lastCount = 0
+		}
+		const count = newMessageCount(rows, rowsAtBottom)
+		setAway(true)
+		setNewRows(count)
+		if (shouldPulse(lastCount, count) && motionDecorationsEnabled()) {
+			pulseStartedAt = Date.now()
+			setPulseTick((t) => t + 1)
+		}
+		lastCount = count
+		wasAway = true
+	}
+
+	/** Keeps N in step with row arrivals even when the scrollbar emits no event. */
+	createEffect(() => {
+		visibleRows().length
+		syncAway()
+	})
+
+	const toBottom = () => {
+		if (!transcriptScroll || transcriptScroll.isDestroyed) return
+		transcriptScroll.scrollTo(Infinity)
+		// Optimistic hide: the `change` event converges to the same state after
+		// layout. Never touches stickyScroll — scrollTo(Infinity) re-engages
+		// native follow by itself.
+		rowsAtBottom = visibleRows().length
+		lastCount = 0
+		wasAway = false
+		pulseStartedAt = undefined
+		setNewRows(0)
+		setAway(false)
+	}
+
+	// The tick accessor READS pulseTick, so the animation-clock effect
+	// re-evaluates on every tick and unregisters itself as soon as the 600ms
+	// window closes. reduced/off never register a tick at all (static hint).
+	const pulsing = () => {
+		pulseTick()
+		return motionDecorationsEnabled() && pulseStartedAt !== undefined && Date.now() - pulseStartedAt < HINT_PULSE_TOTAL_MS
+	}
+	onAnimationTick(
+		() => (pulsing() && motionAnimationRunning() ? motionFrameRate() : undefined),
+		() => setPulseTick((t) => t + 1),
+	)
+	// The chord is read from the LIVE keymap binding (the same resolved config
+	// that dispatches the command), not from TuiKeybind.defaultValue. A user
+	// remap of session.scroll.to_bottom therefore updates the hint without a
+	// copy edit. With no Keymap.Provider (bare example / FT harness), fall back
+	// to the shipped default chord. The locale tables carry only `{keys}`.
+	const keymap = Keymap.useOptional()
+	const liveToBottomKeys = keymap ? Keymap.useShortcut("session.scroll.to_bottom") : undefined
+	const toBottomKeys = () => liveToBottomKeys?.() ?? keybindLabel(TuiKeybind.defaultValue("session.scroll.to_bottom"))
+	const hintText = () => {
+		const keys = toBottomKeys()
+		const count = newRows()
+		return count > 0
+			? t(newMessageCopyKey(count), { count, keys })
+			: t("transcript.scroll.toLatest", { keys })
+	}
+	const hintColor = () => {
+		const target = color.loading()
+		pulseTick()
+		if (!motionDecorationsEnabled() || pulseStartedAt === undefined) return target
+		const level = pulseLevel(Date.now() - pulseStartedAt)
+		return level > 0 ? mixSkinColor(target, skinFaintColor(target, color.background()), level * SKIN_PULSE_DIM) : target
+	}
+
 	const rowView = (row: SeamRow) => {
 		switch (row.kind) {
 			case "user":
@@ -432,12 +551,13 @@ export function Transcript(props: TranscriptProps) {
 	}
 
 	onCleanup(() => {
+		if (transcriptScroll && !transcriptScroll.isDestroyed) transcriptScroll.verticalScrollBar.off("change", syncAway)
 		props.scrollRef?.(undefined)
 	})
 
 	return (
 		<box flexDirection="column" flexGrow={1} minHeight={0} width="100%" backgroundColor={color.background()}>
-			{/* session route shape: row > flexGrow col (position relative) > scrollbox.
+			{/* session route shape: row > flexGrow col > scrollbox + in-flow hint.
 			 * Pane-focus frame: the border wraps the REPLY viewport only — the
 			 * composer dock below stays outside it. Focused = heavy + accent +
 			 * accent title; unfocused = single + border.base + text.faint title.
@@ -452,7 +572,7 @@ export function Transcript(props: TranscriptProps) {
 				title={frame().title}
 				titleColor={frame().titleColor}
 			>
-				<box flexGrow={1} minHeight={0} position="relative" paddingBottom={1}>
+				<box flexGrow={1} minHeight={0} flexDirection="column">
 					<scrollbox
 						flexGrow={1}
 						/* Batch 11 (U1 layout finding): rows never shrink (flexShrink=0
@@ -479,7 +599,12 @@ export function Transcript(props: TranscriptProps) {
 							},
 						}}
 						ref={(value: ScrollBoxRenderable) => {
+							transcriptScroll = value
 							props.scrollRef?.(value)
+							// Passive geometry listener — idempotent in case the
+							// ref fires again on a re-mount of the scrollbox.
+							value.verticalScrollBar.off("change", syncAway)
+							value.verticalScrollBar.on("change", syncAway)
 						}}
 					>
 						<For each={visibleRows()}>
@@ -521,6 +646,24 @@ export function Transcript(props: TranscriptProps) {
 							)}
 						</For>
 					</scrollbox>
+					{/* Away hint owns the reserved bottom row IN FLOW: the old
+					 * paddingBottom=1 is now this always-mounted height=1 box,
+					 * AFTER the scrollbox so its overflow="hidden" cannot clip
+					 * it. flexShrink=0 holds the viewport budget constant at
+					 * bottom / away; only the text is conditional, so the row
+					 * never mounts or unmounts (no extra terminal row). */}
+						<box
+							id="transcript-scroll-hint"
+							flexShrink={0}
+							height={1}
+							flexDirection="row"
+							justifyContent="flex-end"
+							onMouseUp={toBottom}
+						>
+						<Show when={away()}>
+							<text fg={hintColor()}>{hintText()}</text>
+						</Show>
+					</box>
 				</box>
 			</box>
 			{/* widgets slot (batch D1, ./widgets-dock.tsx): the fixed Todos →
