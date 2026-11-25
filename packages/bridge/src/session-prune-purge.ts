@@ -27,6 +27,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
+import { zstdDecompressSync as nodeZstdDecompressSync } from 'node:zlib'
 import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import {
   encodeSegment,
@@ -108,6 +109,8 @@ export interface PurgeFsLike {
   realpath(path: string): Promise<string>
   readdir(path: string): Promise<string[]>
   readFile(path: string): Promise<string>
+  /** Binary read of the zstd session artifact; never decoded as text. */
+  readFileBuffer(path: string): Promise<Buffer>
   writeFile(path: string, data: string, options: { flag: 'wx'; mode?: number }): Promise<void>
   appendFile(path: string, data: string): Promise<void>
   unlink(path: string): Promise<void>
@@ -138,6 +141,9 @@ export interface PurgeDeps {
 export interface AppliedManifest {
   readonly id: string
   readonly to: string
+  /** Original live session directory, written by apply; the live-path gate
+   *  authority when the host backend can no longer stat a trashed session. */
+  readonly from?: string
   readonly opId: string
   readonly appliedAt: number
 }
@@ -211,20 +217,15 @@ export function verifyPurgeToken(token: unknown, secret: string, now: number): P
   const parts = token.split('.')
   if (parts.length !== 2 || parts[0] === '' || parts[1] === '') fail('BAD_TOKEN', 'malformed purge token')
   const expected = createHmac('sha256', secret).update(parts[0]).digest()
-  let actual: Buffer
-  try {
-    actual = Buffer.from(parts[1], 'hex')
-  } catch {
-    fail('BAD_TOKEN', 'malformed purge token signature')
-  }
+  const actual = Buffer.from(parts[1], 'hex')
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
     fail('BAD_TOKEN', 'purge token signature mismatch')
   }
-  let raw: unknown
+  let raw: unknown = undefined
   try {
     raw = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'))
   } catch {
-    fail('BAD_TOKEN', 'purge token payload is not decodable')
+    // A non-decodable payload fails the shape gate below.
   }
   if (!Array.isArray(raw) || raw.length !== 9 || raw[0] !== 1) fail('BAD_TOKEN', 'purge token payload shape mismatch')
   const [v, opId, ids, paths, root, retentionDays, issuedAt, expiresAt, nonce] = raw as [
@@ -243,7 +244,7 @@ export function verifyPurgeToken(token: unknown, secret: string, now: number): P
   if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)) fail('BAD_TOKEN', 'purge token timestamps are invalid')
   if (issuedAt > now + 1_000) fail('STALE_TOKEN', 'purge token issued in the future')
   if (now >= expiresAt) fail('STALE_TOKEN', 'purge token expired')
-  return { v, opId, ids, paths, root, retentionDays, issuedAt, expiresAt, nonce }
+  return { v: 1, opId, ids, paths, root, retentionDays, issuedAt, expiresAt, nonce }
 }
 
 /** Host-local signing secret: read from `<trash>/.purge.secret`, bootstrap on
@@ -280,6 +281,57 @@ function readLocationPath(location: SessionPruneSnapshot['location']): string | 
 }
 
 const RUN_NAME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
+const ARTIFACT_FILENAME = 'session.v4.jsonl.zstd'
+
+type ZstdDecompress = (frame: Buffer) => Buffer
+
+/** Bun's zstd decoder validates the frame body; the node:zlib shim is a fallback. */
+function zstdDecompress(frame: Buffer): Buffer {
+  const bun = (globalThis as { Bun?: { zstdDecompressSync?: ZstdDecompress } }).Bun
+  if (bun?.zstdDecompressSync !== undefined) return bun.zstdDecompressSync(frame)
+  return nodeZstdDecompressSync(frame)
+}
+
+/**
+ * Read `header.id` from the FIRST line of the trash artifact itself. After
+ * apply's rename, the live `sessionPersistence.stat(id)` returns undefined, so
+ * the artifact is the only header authority for purge. The id is cross-checked
+ * against the manifest id and the encoded basename by the caller, so a tampered
+ * manifest or a renamed directory cannot make an unrelated artifact purgeable.
+ */
+async function readTrashArtifactHeaderId(fs: PurgeFsLike, dir: string): Promise<string> {
+  const artifact = join(dir, ARTIFACT_FILENAME)
+  let frame: Buffer
+  try {
+    frame = await fs.readFileBuffer(artifact)
+  } catch (err) {
+    fail('BAD_MANIFEST', 'trash entry has no readable session artifact', { artifact, code: errorCode(err) })
+  }
+  if (frame.length === 0) fail('BAD_MANIFEST', 'trash session artifact is empty', { artifact })
+  let text: string
+  try {
+    text = zstdDecompress(frame).toString('utf8')
+  } catch (err) {
+    fail('BAD_MANIFEST', 'trash session artifact is not a valid zstd frame', {
+      artifact, message: err instanceof Error ? err.message : String(err),
+    })
+  }
+  const firstLine = text.split('\n', 1)[0] ?? ''
+  let header: unknown
+  try {
+    header = JSON.parse(firstLine)
+  } catch {
+    fail('BAD_MANIFEST', 'trash session artifact header is not JSON', { artifact })
+  }
+  if (header === null || typeof header !== 'object') {
+    fail('BAD_MANIFEST', 'trash session artifact header is not an object', { artifact })
+  }
+  const id = (header as { id?: unknown }).id
+  if (typeof id !== 'string' || id === '') {
+    fail('BAD_MANIFEST', 'trash session artifact header.id is missing', { artifact })
+  }
+  return id
+}
 
 async function readAppliedManifest(fs: PurgeFsLike, dir: string): Promise<AppliedManifest> {
   let text: string
@@ -302,7 +354,13 @@ async function readAppliedManifest(fs: PurgeFsLike, dir: string): Promise<Applie
   if (typeof m.appliedAt !== 'number' || !Number.isFinite(m.appliedAt)) {
     fail('BAD_MANIFEST', 'applied manifest appliedAt is invalid', { dir })
   }
-  return { id: m.id, to: m.to, opId: m.opId, appliedAt: m.appliedAt }
+  return {
+    id: m.id,
+    to: m.to,
+    ...(typeof m.from === 'string' && m.from !== '' ? { from: m.from } : {}),
+    opId: m.opId,
+    appliedAt: m.appliedAt,
+  }
 }
 
 async function probeLockForPurge(lockProbe: LockProbe | undefined, lockPath: string): Promise<void> {
@@ -363,12 +421,30 @@ export async function assessTrashEntry(
   if (liveState === 'CONFLICT') {
     fail('CONFLICT', 'purge refused: session.id exists outside trash (restore conflict)', { id: manifest.id })
   }
-  const snapshot = await deps.persistence.stat(manifest.id)
-  if (snapshot?.header?.id !== manifest.id) {
-    fail('BAD_MANIFEST', 'fresh persistence header.id mismatch', { id: manifest.id })
+  // The header comes from the TRASH ARTIFACT, not from live persistence: the
+  // host backend cannot stat a session after apply renamed it into trash.
+  const artifactHeaderId = await readTrashArtifactHeaderId(fs, entryPath)
+  if (artifactHeaderId !== manifest.id) {
+    fail('BAD_MANIFEST', 'trash artifact header.id mismatch', { id: manifest.id, artifactHeaderId })
   }
-  const livePath = readLocationPath(snapshot?.location)
-  if (livePath !== undefined && livePath !== entryPath) {
+  // Persistence is consulted only for an OPTIONAL live-path hint, never to
+  // validate a header. `undefined` (the normal trashed state) is expected.
+  // The authoritative original live path is the apply-written manifest `from`,
+  // so the collision gate still works when the host backend cannot stat the
+  // trashed id at all.
+  let liveSnapshot: SessionPruneSnapshot | undefined
+  try {
+    liveSnapshot = await deps.persistence.stat(manifest.id)
+  } catch {
+    // An optional hint must never gate a purge: a recreated/corrupt live
+    // artifact can make the backend throw. The manifest `from` gate below
+    // is authoritative and still decides CONFLICT.
+    liveSnapshot = undefined
+  }
+  const hintedPath = readLocationPath(liveSnapshot?.location)
+  const originalPath = manifest.from === undefined ? undefined : join(manifest.from, ARTIFACT_FILENAME)
+  for (const livePath of [hintedPath, originalPath]) {
+    if (livePath === undefined || livePath === entryPath) continue
     try {
       await fs.lstat(livePath)
       fail('CONFLICT', 'purge refused: live path for this id exists again', { id: manifest.id, livePath })

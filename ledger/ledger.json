@@ -124,89 +124,96 @@
     },
     "wired_protocol": {
       "mark": "bridge-protocol (ADR-0010)",
-      "count": 12,
+      "count": 13,
       "methods": [
         {
           "method": "bridge.ping",
           "kind": "meta",
-          "source_line": 5501,
+          "source_line": 5534,
           "capir_id": null,
           "note": "protocol version negotiation (no host call)"
         },
         {
           "method": "bridge.hello",
           "kind": "meta",
-          "source_line": 5510,
+          "source_line": 5543,
           "capir_id": null,
           "note": "protocol version negotiation (no host call)"
         },
         {
           "method": "session.prune.plan",
           "kind": "business",
-          "source_line": 5544,
+          "source_line": 5577,
           "capir_id": null,
           "note": "retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion"
         },
         {
           "method": "session.prune.apply",
           "kind": "business",
-          "source_line": 5550,
+          "source_line": 5583,
           "capir_id": null,
           "note": "retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id"
         },
         {
+          "method": "session.prune.purge",
+          "kind": "business",
+          "source_line": 5589,
+          "capir_id": null,
+          "note": "retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id"
+        },
+        {
           "method": "subagents.interrupt",
           "kind": "business",
-          "source_line": 5617,
+          "source_line": 5656,
           "capir_id": null,
           "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
         },
         {
           "method": "subagents.stopChildren",
           "kind": "business",
-          "source_line": 5621,
+          "source_line": 5660,
           "capir_id": null,
           "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
         },
         {
           "method": "session.open",
           "kind": "business",
-          "source_line": 5625,
+          "source_line": 5664,
           "capir_id": null,
           "note": "binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful"
         },
         {
           "method": "session.send",
           "kind": "business",
-          "source_line": 5629,
+          "source_line": 5668,
           "capir_id": null,
           "note": "single in-flight turn state machine + streaming turn"
         },
         {
           "method": "session.close",
           "kind": "business",
-          "source_line": 5633,
+          "source_line": 5672,
           "capir_id": null,
           "note": "binding dispose"
         },
         {
           "method": "turn.abort",
           "kind": "business",
-          "source_line": 5637,
+          "source_line": 5676,
           "capir_id": null,
           "note": "turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel"
         },
         {
           "method": "ask.response",
           "kind": "business",
-          "source_line": 5641,
+          "source_line": 5680,
           "capir_id": null,
           "note": "bridge-internal AskRegistry settlement (no host call)"
         },
         {
           "method": "journal.replay",
           "kind": "business",
-          "source_line": 5645,
+          "source_line": 5684,
           "capir_id": null,
           "note": "I-class persistence read (persistence.open(id,'read')); no same-name CapIR id"
         }

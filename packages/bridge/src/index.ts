@@ -5249,38 +5249,43 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return
     }
 
-    const dshHome = resolvePruneDshHome(ctx, config)
-    const hostPolicy = resolveHostPurgePolicy(ctx, config)
-    const lockProbe = createPruneLockProbe(tryLockExclusive)
-    const nodePurgeFs: PurgeFsLike = {
-      lstat, realpath, stat, readdir,
-      readFile: (path) => readFile(path, 'utf8'),
-      writeFile: (path, data, options) => writeFile(path, data, options),
-      appendFile,
-      unlink,
-      rmdir,
-      mkdir: (path, options) => options?.recursive
-        ? mkdir(path, { recursive: true, mode: options.mode })
-        : mkdir(path, { mode: options?.mode }),
-    }
-    const now = Date.now()
-    const deps = {
-      persistence,
-      lister: { list: (request: Parameters<typeof controller.list>[0]) => controller.list(request) },
-      lockProbe,
-      now,
-      opId: `${utcStamp(now)}-${randomUUID().slice(0, 8)}`,
-      secret: await resolvePurgeSecret(nodePurgeFs, dshHome, () => randomUUID() + randomUUID()),
-      retentionDays: hostPolicy.retentionDays,
-      tokenTtlMs: hostPolicy.tokenTtlMs,
-      newSecret: () => randomUUID() + randomUUID(),
-      withApplyLock: <T>(fn: () => Promise<T>) => withHostApplyLock(dshHome, tryLockExclusive, fn),
-    }
-
     try {
+      const dshHome = resolvePruneDshHome(ctx, config)
+      const hostPolicy = resolveHostPurgePolicy(ctx, config)
+      const lockProbe = createPruneLockProbe(tryLockExclusive)
+      const nodePurgeFs: PurgeFsLike = {
+        lstat, realpath, stat, readdir,
+        readFile: (path) => readFile(path, 'utf8'),
+        readFileBuffer: (path) => readFile(path),
+        writeFile: (path, data, options) => writeFile(path, data, options),
+        appendFile,
+        unlink,
+        rmdir,
+        mkdir: (path, options) => options?.recursive
+          ? mkdir(path, { recursive: true, mode: options.mode })
+          : mkdir(path, { mode: options?.mode }),
+      }
+      const now = Date.now()
+      const deps = {
+        persistence,
+        lister: { list: (request: Parameters<typeof controller.list>[0]) => controller.list(request) },
+        lockProbe,
+        now,
+        opId: `${utcStamp(now)}-${randomUUID().slice(0, 8)}`,
+        secret: await resolvePurgeSecret(nodePurgeFs, dshHome, () => randomUUID() + randomUUID()),
+        retentionDays: hostPolicy.retentionDays,
+        tokenTtlMs: hostPolicy.tokenTtlMs,
+        newSecret: () => randomUUID() + randomUUID(),
+        withApplyLock: <T>(fn: () => Promise<T>) => withHostApplyLock(dshHome, tryLockExclusive, fn),
+      }
       if (p.phase === 'prepare') {
         const result = await preparePurge(nodePurgeFs, deps, dshHome)
-        replyOk(req.id, { ...result, tokenPayload: undefined })
+        replyOk(req.id, {
+          opId: result.opId,
+          candidates: result.candidates,
+          rejected: result.rejected,
+          token: result.token,
+        })
         return
       }
       const result = await purgeTrashSessions(nodePurgeFs, deps, dshHome, p.token)
@@ -5577,6 +5582,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // (no CapIR id): registered in ledger wired_protocol (11 -> 12).
     if (req.method === 'session.prune.apply') {
       await handleApplySessionPrune(req)
+      return
+    }
+    // retention P3 — trash-only purge. A hand-copied protocol frame (no CapIR
+    // id): registered in ledger wired_protocol (12 -> 13).
+    if (req.method === 'session.prune.purge') {
+      await handlePurgeSessionPrune(req)
       return
     }
     // 025-w1b B/C — session.search / session.fork ride the generated capcontract

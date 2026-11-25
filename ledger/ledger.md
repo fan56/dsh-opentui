@@ -12,7 +12,7 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 |---|---:|---|
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
-| Wired protocol (ADR-0010, not @manual) | 12 frames | bridge-protocol (ADR-0010) |
+| Wired protocol (ADR-0010, not @manual) | 13 frames | bridge-protocol (ADR-0010) |
 | Wired manual (@manual host-copy) | 0 methods | derived-from-manual host-copy |
 | Wired (generated capcontract) | 28 methods | S1+S2+S3+S5-generated-capcontract |
 | in_wired total (of 257) | 28 methods | union of wire-dim capir_ids + generated ids |
@@ -55,18 +55,19 @@ Corrections applied in provenance mapping data:
 
 | method | kind | source line | protocol nature |
 |---|---|---:|---|
-| bridge.ping | meta | 5501 | protocol version negotiation (no host call) |
-| bridge.hello | meta | 5510 | protocol version negotiation (no host call) |
-| session.prune.plan | business | 5544 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
-| session.prune.apply | business | 5550 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
-| subagents.interrupt | business | 5617 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| subagents.stopChildren | business | 5621 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| session.open | business | 5625 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
-| session.send | business | 5629 | single in-flight turn state machine + streaming turn |
-| session.close | business | 5633 | binding dispose |
-| turn.abort | business | 5637 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
-| ask.response | business | 5641 | bridge-internal AskRegistry settlement (no host call) |
-| journal.replay | business | 5645 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
+| bridge.ping | meta | 5534 | protocol version negotiation (no host call) |
+| bridge.hello | meta | 5543 | protocol version negotiation (no host call) |
+| session.prune.plan | business | 5577 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
+| session.prune.apply | business | 5583 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
+| session.prune.purge | business | 5589 | retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id |
+| subagents.interrupt | business | 5656 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| subagents.stopChildren | business | 5660 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| session.open | business | 5664 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
+| session.send | business | 5668 | single in-flight turn state machine + streaming turn |
+| session.close | business | 5672 | binding dispose |
+| turn.abort | business | 5676 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
+| ask.response | business | 5680 | bridge-internal AskRegistry settlement (no host call) |
+| journal.replay | business | 5684 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
 
 ## Wired manual host-copy (@manual count source — must be 0)
 
