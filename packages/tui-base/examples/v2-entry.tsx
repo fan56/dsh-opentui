@@ -81,7 +81,7 @@ import { HistoryPanel, openHistoryPanel } from "../src/routes/session/history-pa
 import { SubagentsViewer, openSubagentsViewer } from "../src/routes/session/subagents-viewer"
 import { SettingsModalHost } from "../src/routes/session/settings-modal"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
-import { readCacheHitMode } from "../src/seams/config"
+import { readCacheHitMode, resolveSessionScrollbar } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogPrompt } from "../src/ui/dialog-prompt"
 import { DialogConfirm } from "../src/ui/dialog-confirm"
@@ -1368,10 +1368,16 @@ function V2SessionPageBody(props: {
 				createComponent(Transcript, {
 					seam,
 					projection,
-					// Scrollbar (transcript-scroll-hints): opt in at the v2
-					// entry only. The component default stays off for other
-					// hosts, and the track keeps Transcript's themed colors.
-					scrollbar: true,
+					// Scrollbar (round7 AMEND): the v2 page opts in by default,
+					// but an explicit `session.scrollbar: false` turns it off.
+					// `configLoad()`'s whitelist omits nested `session`, so the
+					// reader decodes the full-config seam faces READ-ONLY —
+					// workspace overlay > profile raw > configLoad. The
+					// component default stays off for other hosts and the track
+					// keeps Transcript's themed colors.
+					get scrollbar() {
+						return resolveSessionScrollbar(seam.workspaceConfig?.(), seam.configRaw?.(), seam.configLoad?.())
+					},
 					// Pane focus: heavy/accent frame while the transcript owns
 					// the renderer focus, single/border.base otherwise.
 					focused: paneFocus.transcriptFocused,

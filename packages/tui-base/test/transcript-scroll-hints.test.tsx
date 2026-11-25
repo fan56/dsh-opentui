@@ -22,6 +22,7 @@ import { TuiKeybind } from "../src/config/keybind"
 import { Transcript } from "../src/routes/session/transcript"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { NullSessionSeam, type SeamTranscriptRow } from "../src/seams/session"
+import { readSessionScrollbar, resolveSessionScrollbar } from "../src/seams/config"
 import { setMotionTier, type MotionTier } from "../src/skin/motion"
 import {
 	awayFromBottom,
@@ -149,13 +150,28 @@ describe("hint copy through i18n", () => {
 // ---------------------------------------------------------------------------
 
 describe("wiring shape", () => {
-	test("v2 entry opts in; component default stays off with a themed track", () => {
+	test("v2 entry opts in from config (default true); component default stays off with a themed track", () => {
 		const v2 = src("examples/v2-entry.tsx")
-		expect(v2).toMatch(/createComponent\(Transcript, \{[\s\S]*?scrollbar: true/)
+		// round7 AMEND: no hardcoded `scrollbar: true` — a getter resolves the
+		// config faces read-only through the shared seam reader.
+		expect(v2).toMatch(/createComponent\(Transcript, \{[\s\S]*?get scrollbar\(\) \{[\s\S]*?resolveSessionScrollbar\(/)
+		expect(v2).toMatch(/resolveSessionScrollbar\(seam\.workspaceConfig\?\.\(\), seam\.configRaw\?\.\(\), seam\.configLoad\?\.\(\)\)/)
+		expect(v2).not.toMatch(/scrollbar: true,/)
 		const transcript = src("src/routes/session/transcript.tsx")
 		expect(transcript).toMatch(/scrollbar\?: boolean/)
 		expect(transcript).toMatch(/visible: props\.scrollbar \?\? false/)
 		expect(transcript).toMatch(/trackOptions: \{[\s\S]*?backgroundColor: color\.background\(\)[\s\S]*?foregroundColor: color\.reasoningBorder\(\)/)
+	})
+
+	test("scrollbar config default / explicit false (pure resolve seam reader)", () => {
+		// default when unconfigured, off when explicitly false — both legs are
+		// exercised against the same helper the v2 getter calls at mount.
+		expect(resolveSessionScrollbar()).toBe(true)
+		expect(resolveSessionScrollbar({}, undefined, null)).toBe(true)
+		expect(resolveSessionScrollbar({ theme: "blue", cacheHitMode: "session" })).toBe(true)
+		expect(resolveSessionScrollbar({ session: { scrollbar: false } })).toBe(false)
+		expect(resolveSessionScrollbar({ session: { scrollbar: true } })).toBe(true)
+		expect(readSessionScrollbar({ session: { scrollbar: false } })).toBe(false)
 	})
 
 	test("user submit scrolls to bottom before projection.send", () => {

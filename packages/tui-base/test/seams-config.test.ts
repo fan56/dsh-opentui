@@ -7,10 +7,13 @@ import {
 	DEFAULT_CACHE_HIT_MODE,
 	DEFAULT_MAX_ROUNDS,
 	DEFAULT_RETENTION_DAYS,
+	DEFAULT_SESSION_SCROLLBAR,
 	narrowCacheHitMode,
 	readCacheHitMode,
 	readMaxRounds,
 	readRetentionDays,
+	readSessionScrollbar,
+	resolveSessionScrollbar,
 } from "../src/seams/config.ts"
 
 describe("seams/config cacheHitMode", () => {
@@ -61,5 +64,35 @@ describe("seams/config numeric defaults", () => {
 		expect(readRetentionDays({ retentionDays: "soon" })).toBe(90)
 		expect(readRetentionDays({ retentionDays: Infinity })).toBe(90)
 		expect(readRetentionDays({ retentionDays: {} })).toBe(90)
+	})
+})
+
+/** round7 AMEND — nested `session.scrollbar` off the read-only config faces. */
+describe("seams/config session.scrollbar", () => {
+	test("absent / malformed config degrades to unset, never a silent false", () => {
+		expect(readSessionScrollbar()).toBeUndefined()
+		expect(readSessionScrollbar({})).toBeUndefined()
+		expect(readSessionScrollbar(undefined, null, { theme: "blue", cacheHitMode: "session" })).toBeUndefined()
+		expect(readSessionScrollbar({ session: { scrollbar: "false" } })).toBeUndefined()
+		expect(readSessionScrollbar({ session: "off" })).toBeUndefined()
+	})
+
+	test("explicit boolean in any config face is read (workspace > profile > configLoad)", () => {
+		expect(readSessionScrollbar({ session: { scrollbar: false } })).toBe(false)
+		expect(readSessionScrollbar({ session: { scrollbar: true } })).toBe(true)
+		expect(readSessionScrollbar({ theme: "blue", session: { scrollbar: false, sidebar: "auto" } })).toBe(false)
+		// first explicit value wins: the v2 wiring passes workspace, profile, load.
+		expect(readSessionScrollbar({ session: { scrollbar: false } }, { session: { scrollbar: true } })).toBe(false)
+		expect(readSessionScrollbar({}, { session: { scrollbar: false } })).toBe(false)
+	})
+
+	test("default is true; explicit false survives the resolve", () => {
+		expect(DEFAULT_SESSION_SCROLLBAR).toBe(true)
+		expect(resolveSessionScrollbar()).toBe(true)
+		expect(resolveSessionScrollbar({})).toBe(true)
+		expect(resolveSessionScrollbar(undefined, null, { theme: "dark" })).toBe(true)
+		expect(resolveSessionScrollbar({ session: { scrollbar: false } })).toBe(false)
+		expect(resolveSessionScrollbar({ session: { scrollbar: true } })).toBe(true)
+		expect(resolveSessionScrollbar({ session: { scrollbar: "false" } })).toBe(true)
 	})
 })
