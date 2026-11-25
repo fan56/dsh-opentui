@@ -2714,10 +2714,26 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
   const childTranscripts = new Map<string, ChildTranscriptState>()
   const MAX_PENDING_TOOL_CALLS = 64
+  /**
+   * Stable CHILD-RUN identity per transcript frame. The parent `turnId` is NOT
+   * enough: one parent turn can settle a child and re-spawn it, and the new run
+   * restarts its `seq` at 0. Source the id from the spawn fact — the catalog
+   * `childCreatedAt` (also cached as the SubagentIndex row's `startedAt`) or the
+   * tool-workflow `runId` — so a client can dedupe by (childId, runId, seq).
+   */
+  const childTranscriptRunIds = new Map<string, string>()
 
   /** Run identity for a child frame = the in-flight turn (same key as progress). */
   function transcriptTurnId(): string {
     return inFlightTurnId ?? ''
+  }
+
+  /** Stable child-run id carried on every transcript frame of this run. */
+  function childTranscriptRunId(childId: string): string {
+    const fromSpawn = childTranscriptRunIds.get(childId)
+    if (fromSpawn !== undefined && fromSpawn !== '') return fromSpawn
+    const indexed = getSubagentIndex(ctx).get(childId)
+    return indexed !== undefined && indexed.startedAt > 0 ? `child@${indexed.startedAt}` : ''
   }
 
   function childTranscriptState(childId: string): ChildTranscriptState {
@@ -2739,6 +2755,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       turnId: st.turnId,
       sessionId: binding.sessionId,
       childId,
+      runId: childTranscriptRunId(childId),
       seq: st.seq,
       rows,
     })
@@ -2760,6 +2777,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   /** Binding teardown / roster reset — no live row may survive into a new session. */
   function clearTranscriptState(): void {
     childTranscripts.clear()
+    childTranscriptRunIds.clear()
   }
 
   /** Settle cleanup for one child: drop its run state entirely. */
@@ -3463,6 +3481,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId,
         typeof data.childCreatedAt === 'number' ? data.childCreatedAt : undefined,
       )
+      // A fresh catalog fact is a NEW child run (it can re-spawn the same
+      // childId inside one parent turn). Anchor its transcript run id to the
+      // host wall clock so seq can restart at 0 without a client dedupe clash.
+      childTranscriptRunIds.set(
+        childId,
+        `catalog:${childId}@${typeof data.childCreatedAt === 'number' ? data.childCreatedAt : ''}`,
+      )
       // F1 trigger (a): catalog frame. Mirror the parent's LIVE policy onto this
       // child (delegation 'never' → 'ask' under normal policy; left 'never' under
       // full access). Parent policy switches are handled by trigger (b) below —
@@ -3504,6 +3529,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       if (type === 'tool-workflow/agent-start') {
         const childId = idString(data.childId)
         if (!childId) return
+        // tool-workflow supplies its own stable per-run id — use it as the
+        // transcript child-run identity (no catalog childCreatedAt here).
+        childTranscriptRunIds.set(childId, idString(data.runId))
         emitEvent('agent.spawn', {
           turnId,
           sessionId: boundId,

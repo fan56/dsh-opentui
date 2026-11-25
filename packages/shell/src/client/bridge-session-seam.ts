@@ -1581,6 +1581,25 @@ export function childTranscriptRowToLine(row: unknown): string {
 	return text
 }
 
+/**
+ * Round5 — the viewer renders every transcript element as a height=1 single-line
+ * `<text>` node, so a folded `▶ ${text}\n⎿ ${output}` string loses its second
+ * line. Split every embedded newline into a SEPARATE array element before the
+ * log is written to #subagentTranscripts. Applied at BOTH entry points (journal
+ * baseline + live append). Empty segments are dropped, matching the existing
+ * `line !== ""` filtering already done by both paths (journal projection and
+ * live loop) so empty-line handling stays consistent across the two entries.
+ */
+export function splitChildLogLines(lines: readonly string[]): string[] {
+	const out: string[] = []
+	for (const line of lines) {
+		for (const part of line.split("\n")) {
+			if (part !== "") out.push(part)
+		}
+	}
+	return out
+}
+
 /** L2b C3: first confirm poll delay, the doubling ceiling, and the total cap
  *  (45s, inside the plan's 30–60s band). A child that is still host-running at
  *  the cap is NOT force-settled — the marker is dropped so the turn-boundary
@@ -2576,10 +2595,13 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #subagentTranscripts = new Map<string, string[]>()
 	/**
 	 * LIVE TRANSCRIPT — per-child dedupe/order of `agent.transcript` frames.
-	 * The dedupe identity is (childId, turnId RUN, seq): a new turnId is a new
-	 * child run and starts a fresh seen-set while the journal baseline lines stay.
+	 * The dedupe identity is (childId, runId, seq). `runId` is the CHILD run
+	 * identity (catalog childCreatedAt / tool-workflow runId), NOT the parent
+	 * turn: one parent turn can settle a child and re-spawn it with seq back at
+	 * 0. A changed runId opens a fresh seen-set; a new `agent.spawn` also clears
+	 * the old run's seen/settle lock. The journal baseline lines stay.
 	 */
-	readonly #subagentTranscriptRuns = new Map<string, { turnId: string; seen: Set<number> }>()
+	readonly #subagentTranscriptRuns = new Map<string, { runId: string; seen: Set<number> }>()
 	/** LIVE TRANSCRIPT — a settled child is journal-authoritative; no live append. */
 	readonly #subagentTranscriptSettled = new Set<string>()
 	/** LIVE TRANSCRIPT — a child whose journal read was attempted and failed. */
@@ -4113,7 +4135,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			// LIVE TRANSCRIPT: FIRST journal replay is the baseline; a later
 			// terminal re-read OVERWRITES it (never appends) because the journal
 			// is authoritative after settle. A new baseline starts a fresh seen-set.
-			this.#subagentTranscripts.set(childId, capChildLog(bridgeReplayRowsToChildLog(cleanRows)))
+			this.#subagentTranscripts.set(childId, capChildLog(splitChildLogLines(bridgeReplayRowsToChildLog(cleanRows))))
 			this.#subagentTranscriptReadFailed.delete(childId)
 			this.#subagentTranscriptRuns.delete(childId)
 			// Cache by run key even if the view changed in flight: a replay re-fold
@@ -4302,9 +4324,11 @@ export class BridgeSessionSeam implements SessionSeam {
 			const runId = typeof payload.runId === "string" ? payload.runId : ""
 			const childId = typeof payload.childId === "string" ? payload.childId : ""
 			// LIVE TRANSCRIPT: a spawn of this child is a NEW run — revoke the
-			// settle lock so live rows can land again (the journal baseline for
-			// the new run is re-read by #ensureChildJournal via the new run key).
+			// settle lock AND the old run's seen-set so a re-spawned child whose
+			// seq restarts at 0 in the SAME parent turn is not deduped away (the
+			// journal baseline for the new run is re-read by #ensureChildJournal).
 			if (childId !== "") {
+				this.#subagentTranscriptRuns.delete(childId)
 				this.#subagentTranscriptSettled.delete(childId)
 				this.#subagentTranscriptReadFailed.delete(childId)
 			}
@@ -4401,16 +4425,20 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	/**
 	 * LIVE TRANSCRIPT — append one additive `agent.transcript` frame to the
-	 * child's viewer log. Dedupe identity is (childId, turnId, seq): duplicate
-	 * frames (e.g. a replayed stdio frame) never double-paint, and a new turnId
-	 * opens a fresh run. A settled/unknown child is refused — after settle the
-	 * journal read is the only authority. Both caps are enforced on every append.
+	 * child's viewer log. Dedupe identity is (childId, runId, seq): duplicate
+	 * frames (e.g. a replayed stdio frame) never double-paint; a NEW CHILD run
+	 * (new runId) opens a fresh seen-set even inside the same parent turn, where
+	 * `seq` restarts at 0. `turnId` remains required as the parent-turn tag and
+	 * is the fallback identity only for a pre-runId bridge frame. A settled or
+	 * unknown child is refused — after settle the journal read is the only
+	 * authority. Both caps are enforced on every append.
 	 */
 	#foldAgentTranscript(frame: BridgeEventFrame): void {
 		const payload = asRecord(frame.payload)
 		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
 		const childId = typeof payload.childId === "string" ? payload.childId : ""
 		const turnId = typeof payload.turnId === "string" ? payload.turnId : ""
+		const runId = typeof payload.runId === "string" && payload.runId !== "" ? payload.runId : turnId
 		const seq = typeof payload.seq === "number" && Number.isFinite(payload.seq) ? payload.seq : -1
 		const rows = payload.rows
 		if (childId === "" || turnId === "" || seq < 0 || !Array.isArray(rows)) return
@@ -4428,8 +4456,8 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (frameSession !== "") this.#subagentSessionId = frameSession
 		} else if (frameSession !== "" && frameSession !== this.#subagentSessionId) return
 		let run = this.#subagentTranscriptRuns.get(childId)
-		if (run === undefined || run.turnId !== turnId) {
-			run = { turnId, seen: new Set<number>() }
+		if (run === undefined || run.runId !== runId) {
+			run = { runId, seen: new Set<number>() }
 			this.#subagentTranscriptRuns.set(childId, run)
 		}
 		if (run.seen.has(seq)) return
@@ -4439,7 +4467,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			const line = childTranscriptRowToLine(row)
 			if (line !== "") lines.push(line)
 		}
-		this.#subagentTranscripts.set(childId, capChildLog(lines))
+		this.#subagentTranscripts.set(childId, capChildLog(splitChildLogLines(lines)))
 		this.#subagentTranscriptReadFailed.delete(childId)
 		this.#emitSubagentViews()
 	}

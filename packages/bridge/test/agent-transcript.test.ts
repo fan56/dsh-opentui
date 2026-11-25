@@ -155,9 +155,11 @@ describe("LIVE TRANSCRIPT agent.transcript frames", () => {
 		const frames = h.frames("agent.transcript")
 		expect(frames.length).toBe(1)
 		const p = frames[0]!.payload
-		expect(Object.keys(p).sort()).toEqual(["childId", "rows", "seq", "sessionId", "turnId"])
+		expect(Object.keys(p).sort()).toEqual(["childId", "rows", "runId", "seq", "sessionId", "turnId"])
 		expect(p.childId).toBe("child-1")
 		expect(p.sessionId).toBe(parentId)
+		expect(typeof p.runId).toBe("string")
+		expect(p.runId.length).toBeGreaterThan(0)
 		expect(typeof p.seq).toBe("number")
 		expect(Array.isArray(p.rows)).toBe(true)
 		for (const row of p.rows) expect(["assistant", "tool"]).toContain(row.kind)
@@ -216,6 +218,31 @@ describe("LIVE TRANSCRIPT agent.transcript frames", () => {
 		h.emitSessionEvent({ id: "child-4" }, { type: "assistant/message", data: { content: "late" } })
 		expect(h.frames("agent.transcript")).toHaveLength(after)
 		expect(probeAgentTranscriptResidue(h.ctx)?.childTranscripts).toBe(0)
+	})
+
+	test("E3b: same parent turn settle→respawn gives a NEW child runId and seq restarts at 0", async () => {
+		const h = makeHarness()
+		const parentId = await startTurn(h, 41)
+		const child = "c-respawn"
+		h.emitSessionEvent({ id: parentId }, {
+			type: "subagent/catalog",
+			data: { childId: child, childCreatedAt: 1000, label: "scout" },
+		})
+		h.emitSessionEvent({ id: child }, { type: "assistant/message", data: { content: "first run" } })
+		// child settles — its own turn/end flips the index row to settled
+		h.emitSessionEvent({ id: child }, { type: "turn/end", data: {} })
+		// re-spawn inside the SAME parent turn: fresh catalog clock + turn/start revive
+		h.emitSessionEvent({ id: parentId }, {
+			type: "subagent/catalog",
+			data: { childId: child, childCreatedAt: 2000, label: "scout" },
+		})
+		h.emitSessionEvent({ id: child }, { type: "turn/start", data: {} })
+		h.emitSessionEvent({ id: child }, { type: "assistant/message", data: { content: "second run" } })
+		const frames = h.frames("agent.transcript")
+		expect(frames.map((f) => f.payload.seq)).toEqual([0, 0])
+		expect(frames.map((f) => f.payload.turnId)).toEqual([frames[0]!.payload.turnId, frames[1]!.payload.turnId])
+		expect(frames[0]!.payload.runId).not.toBe(frames[1]!.payload.runId)
+		expect(frames.map((f) => f.payload.rows[0].text)).toEqual(["first run", "second run"])
 	})
 
 	test("E4: unknown/foreign children never emit; parent turn pipeline unchanged", async () => {
