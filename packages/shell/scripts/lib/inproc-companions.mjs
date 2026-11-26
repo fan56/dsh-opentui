@@ -202,7 +202,7 @@ export function decideCompanionInstall({
   if (resolvedCore.major !== declaredCore.major) {
     return skip(`cross_major (${normalized} outside ${declaredRange})`)
   }
-  // `^0.21.0` excludes 0.22.0: while major is 0 the minor is the breaking
+  // `^0.22.0` excludes 0.23.0: while major is 0 the minor is the breaking
   // boundary, so a major-only guard would let breaking bumps into the profile.
   if (resolvedCore.major === 0 && resolvedCore.minor !== declaredCore.minor) {
     return skip(`cross_minor (${normalized} outside ${declaredRange})`)

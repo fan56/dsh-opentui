@@ -24,10 +24,16 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { classifyLock, LOCK_CORRUPT_GRACE_MS } from '../scripts/lib/provision-run-lock.mjs'
 import { holderExited } from '../scripts/lib/profile-lock.mjs'
+import { COMPANIONS } from '../scripts/lib/inproc-companions.mjs'
 import { DEFAULT_PROFILE } from '../scripts/lib/profile-name.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
 const tempDirs: string[] = []
+
+// The stub npm answers the registry companion's declared latest so exactly one
+// companion is in guard range and the install (and its ADD_SLEEP) holds the
+// lock window; the others stay cross_minor-skipped as in production drift.
+const STUB_LATEST = COMPANIONS.find((entry) => entry.short === 'registry')!.declaredRange.slice(1)
 
 const STUB_DSH = `#!/usr/bin/env node
 const fs = require('node:fs')
@@ -59,7 +65,7 @@ if (args[0] === 'plugin' && args[3] === 'add') {
 process.exit(0)
 `
 const STUB_NPM = `#!/bin/sh
-echo '{"latest":"0.21.0"}'
+echo '{"latest":"${STUB_LATEST}"}'
 `
 const STUB_WHICH = `#!/bin/sh
 echo "$DSH_STUB_WHICH_PATH"

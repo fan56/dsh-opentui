@@ -218,7 +218,7 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(off.exitCode).toBe(0)
     expect(text(off.stdout)).toContain('skipped (DSH_OPENTUI_COMPANION_LATEST=off)')
     expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
-    expect(JSON.parse(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8')).dependencies[REGISTRY]).toBe('0.21.0')
+    expect(JSON.parse(readFileSync(join(fx.home, 'profiles', DEFAULT_PROFILE, 'package.json'), 'utf8')).dependencies[REGISTRY]).toBe(LATEST_BY_NAME[REGISTRY])
   })
 
   test('a failed install is a WARN, not a boot blocker', () => {
