@@ -173,13 +173,25 @@ function plan(): PrunePlan {
 interface DepsOptions {
   lock?: (path: string) => Promise<{ status: "unlocked" | "lock-held" | "no-lock" | "unknown" }>
   opId?: string
+  /** Simulate the REAL backend losing/changing its stat record after the
+   *  forward rename. Must not affect rollback (which uses the frozen journal). */
+  statAfterRename?: (id: string) => Promise<unknown> | unknown
 }
 
 function deps(fs: MemoryFs, options: DepsOptions = {}) {
   let heldCount = 0
+  let renamed = false
+  fs.renameHook = (() => {
+    const original = fs.renameHook
+    return (from: string, to: string) => {
+      if (from === SESSION_DIR) renamed = true
+      original?.(from, to)
+    }
+  })()
   return {
     persistence: {
       async stat(id: string) {
+        if (renamed && options.statAfterRename !== undefined) return options.statAfterRename(id)
         return id === ID ? { header: { id }, location: { kind: "jsonl", path: ARTIFACT } } : undefined
       },
     },
@@ -255,6 +267,29 @@ describe("session.prune.apply — trash core", () => {
       expect(fs.renameCalls).toHaveLength(2)
       expect(fs.renameCalls[0][1]).toBe(fs.renameCalls[1][0])
       expect([...fs.files.keys()].some((p) => p.endsWith(".rollback.json"))).toBe(true)
+    }
+  })
+
+  test("real backend stat invalidation after rename does not block rollback (journal is the proof)", async () => {
+    for (const mode of ["throws", "wrong-header"] as const) {
+      const fs = new MemoryFs()
+      const original = Object.assign(new Error("ENOSPC: backend stat unavailable"), { code: "ENOSPC" })
+      fs.writeFileHook = (path) => { if (path.endsWith("/.applied.json")) throw original }
+      const result = await applyWith(fs, {
+        lock: async () => ({ status: "unlocked" }),
+        statAfterRename: mode === "throws"
+          ? () => { throw new Error("backend stat invalidated by rename") }
+          : () => ({ header: { id: "someone-else" }, location: { kind: "jsonl", path: ARTIFACT } }),
+      })
+      // The rollback must still reverse the rename; a live stat that throws or
+      // returns a different header may never turn a successful rollback into
+      // ROLLBACK_FAILED (the old code did exactly that).
+      expect(result.failed).toHaveLength(1)
+      expect(result.failed[0].code).toBe("JOURNAL_FAILED")
+      expect(result.applied).toEqual([])
+      expect(fs.dirs.has(SESSION_DIR)).toBe(true)
+      expect(fs.renameCalls).toHaveLength(2)
+      expect(fs.renameCalls[0][1]).toBe(fs.renameCalls[1][0])
     }
   })
 

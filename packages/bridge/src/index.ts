@@ -1789,6 +1789,39 @@ function resolvePruneDshHome(ctx: BridgeContext, config: unknown): string {
   return process.env.DSH_HOME || join(homedir(), '.dsh')
 }
 
+/**
+ * §2 — the REAL host policy surface for `retentionDays`: the profile's own
+ * `config.json`, discovered through the host 0.2.2-rc.5 `profileContext` service
+ * (`dsh-app-boot/lib/types/profile-context.d.ts`: `name`, `dir`, `home`). The
+ * `settingsController`/`ctx.settings` surface (dsh-api-settings-controller,
+ * dsh-settings 0.2.2-rc.5) exposes redacted *settings namespaces* and does NOT
+ * carry the top-level `retentionDays` preference; `ctx.get('config')` is not a
+ * service the host provides. Reading `profileContext.dir/config.json` is the
+ * one interface that reflects what the user actually configured (the local
+ * `opentui-monday` profile currently holds `retentionDays: 14`).
+ *
+ * This is host-derived: the client's wire params are rejected upstream, and
+ * the plugin `config` passed to `apply(ctx, config)` is a LOWER-priority test
+ * seam — it can no longer impersonate the user's value on a real host.
+ */
+function resolveHostProfileConfig(ctx: BridgeContext): Record<string, unknown> | undefined {
+  try {
+    const profile = typeof ctx.get === 'function' ? ctx.get('profileContext') : undefined
+    const dir = profile !== null && typeof profile === 'object'
+      ? (profile as { dir?: unknown }).dir
+      : undefined
+    if (typeof dir !== 'string' || dir === '') return undefined
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined
+  } catch {
+    // No profileContext service / no config.json: keep the existing fallbacks
+    // (harness tests) rather than fabricating a policy value.
+    return undefined
+  }
+}
+
 /** retention P2 — host-ONLY policy. No wire param reaches these values. */
 function resolveHostPrunePolicy(ctx: BridgeContext, config: unknown, sessionsRoot: string): {
   retentionDays: number
@@ -1808,8 +1841,12 @@ function resolveHostPrunePolicy(ctx: BridgeContext, config: unknown, sessionsRoo
       return {}
     }
   })()
+  const profileConfig = resolveHostProfileConfig(ctx)
   const numberFrom = (key: string, fallback: number, min: number, max: number): number => {
-    for (const source of [fromConfig, hostConfig]) {
+    // Real host profile config is authoritative; injected config is only a
+    // harness fallback, never a way to override the operator's value.
+    for (const source of [profileConfig, hostConfig, fromConfig]) {
+      if (source === undefined) continue
       const value = source[key]
       if (typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max) return value
     }

@@ -237,9 +237,43 @@ async function probeLock(probe: LockProbe | undefined, lockPath: string): Promis
 }
 
 /**
+ * Read and validate the HOST-WRITTEN pre-rename journal (`<journalBase>.pre.json`).
+ * It is created with `wx`/0600 at the last safe point BEFORE the forward rename,
+ * AFTER the live header/location/path gates have passed. A rollback must prove
+ * identity against this frozen artifact (or the trash `.applied.json` manifest),
+ * NOT against a live `persistence.stat` whose record can be invalidated by the
+ * rename itself or by a concurrent writer. No path is ever trusted from the
+ * journal: source/trash are re-derived by the caller and compared by value.
+ */
+async function validateRollbackManifest(
+  fs: ApplyFsLike,
+  journalBase: string,
+  id: string,
+  sourceDir: string,
+  trashPath: string,
+): Promise<void> {
+  let raw: unknown
+  try {
+    raw = JSON.parse(await fs.readFile(`${journalBase}.pre.json`))
+  } catch {
+    fail('BAD_PATH', 'rollback refused: no valid pre-rename journal', { id })
+  }
+  if (raw === null || typeof raw !== 'object') fail('BAD_PATH', 'rollback refused: pre-rename journal is not an object', { id })
+  const proof = raw as Record<string, unknown>
+  if (proof.id !== id || proof.sourceDir !== sourceDir || proof.trashPath !== trashPath) {
+    fail('BAD_PATH', 'rollback refused: pre-rename journal identity mismatch', { id })
+  }
+}
+
+/**
  * Reverse rename used by rollback. Refuses to overwrite an existing source,
- * re-validates the header, and rejects EXDEV. Callers set `skipLock` when the
+ * re-validates identity, and rejects EXDEV. Callers set `skipLock` when the
  * rollback is itself triggered by a held/unknown lock at the trash path.
+ *
+ * When `journalBase` is supplied (every in-apply rollback does so) the identity
+ * proof is the host-written pre-rename journal / trash manifest — the live
+ * backend `stat` is deliberately NOT consulted. The `persistence` seam is kept
+ * only for the standalone public reverse-rename surface, which has no journal.
  */
 export async function restoreFromTrash(
   fs: ApplyFsLike,
@@ -248,6 +282,7 @@ export async function restoreFromTrash(
     readonly trashPath: string
     readonly id: string
     readonly persistence: ApplyPersistenceLike
+    readonly journalBase?: string
     readonly lockProbe?: LockProbe
     readonly skipLock?: boolean
     /** Rollback-only: the object may have flipped to a symlink/non-directory
@@ -258,31 +293,37 @@ export async function restoreFromTrash(
   },
 ): Promise<void> {
   if (await pathExists(fs, options.sourceDir)) {
-    fail('CONFLICT', 'restore refused: source path already exists', { path: options.sourceDir })
+    fail('CONFLICT', 'restore refused: source path already exists', { id: options.id })
   }
   let st: ApplyStatLike
   try {
     st = await fs.lstat(options.trashPath)
   } catch (err) {
-    fail('BAD_PATH', 'restore refused: trash entry is not readable', { path: options.trashPath, code: errorCode(err) })
+    fail('BAD_PATH', 'restore refused: trash entry is not readable', { id: options.id, code: errorCode(err) })
   }
   if (options.flippedAfterRename !== true && (!st.isDirectory() || st.isSymbolicLink?.() === true)) {
-    fail('BAD_PATH', 'restore refused: trash entry is not a real directory', { path: options.trashPath })
+    fail('BAD_PATH', 'restore refused: trash entry is not a real directory', { id: options.id })
   }
-  let snapshot: SessionPruneSnapshot | undefined
-  try {
-    snapshot = await options.persistence.stat(options.id)
-  } catch {
-    snapshot = undefined
-  }
-  if (snapshot?.header?.id !== options.id) {
-    fail('BAD_PATH', 'restore refused: header.id mismatch', { id: options.id })
+  if (options.journalBase !== undefined) {
+    // Forward rename already validated the header; the frozen journal is the
+    // rollback authority. No live backend stat is touched here.
+    await validateRollbackManifest(fs, options.journalBase, options.id, options.sourceDir, options.trashPath)
+  } else {
+    let snapshot: SessionPruneSnapshot | undefined
+    try {
+      snapshot = await options.persistence.stat(options.id)
+    } catch {
+      snapshot = undefined
+    }
+    if (snapshot?.header?.id !== options.id) {
+      fail('BAD_PATH', 'restore refused: header.id mismatch', { id: options.id })
+    }
   }
   if (options.skipLock !== true) await probeLock(options.lockProbe, join(options.trashPath, 'session.lock'))
   try {
     await fs.rename(options.trashPath, options.sourceDir)
   } catch (err) {
-    if (errorCode(err) === 'EXDEV') fail('EXDEV', 'restore refused: cross-device rename', { from: options.trashPath, to: options.sourceDir })
+    if (errorCode(err) === 'EXDEV') fail('EXDEV', 'restore refused: cross-device rename', { id: options.id })
     throw err
   }
 }
@@ -312,6 +353,7 @@ async function rollbackAfterRename(
     await restoreFromTrash(fs, {
       sourceDir: options.sourceDir, trashPath: options.trashPath,
       id: options.id, persistence: deps.persistence,
+      journalBase: options.journalBase,
       lockProbe: deps.lockProbe, skipLock: true,
     })
   } catch (rollbackErr) {
@@ -493,7 +535,7 @@ export async function applyTrashPlan(
         if (!movedSt.isDirectory() || movedSt.isSymbolicLink?.() === true) {
           await restoreFromTrash(fs, {
             sourceDir, trashPath, id, persistence: deps.persistence,
-            lockProbe: deps.lockProbe, skipLock: true, flippedAfterRename: true,
+            journalBase, lockProbe: deps.lockProbe, skipLock: true, flippedAfterRename: true,
           })
           await fs.writeFile(`${journalBase}.rollback.json`, JSON.stringify({
             opId: deps.opId, phase: 'rolled-back', id, sourceDir, trashPath,
@@ -513,7 +555,7 @@ export async function applyTrashPlan(
         if (heldAtTrash) {
           await restoreFromTrash(fs, {
             sourceDir, trashPath, id, persistence: deps.persistence,
-            lockProbe: deps.lockProbe, skipLock: true,
+            journalBase, lockProbe: deps.lockProbe, skipLock: true,
           })
           await fs.writeFile(`${journalBase}.rollback.json`, JSON.stringify({
             opId: deps.opId, phase: 'rolled-back', id, sourceDir, trashPath,

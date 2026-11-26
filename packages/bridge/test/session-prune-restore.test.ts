@@ -40,6 +40,7 @@ class MemoryFs implements RestoreFsLike {
   buffers = new Map<string, Buffer>()
   links = new Set<string>()
   realpathHook?: (path: string) => string
+  lstatHook?: (path: string) => void
   renameCalls: Array<[string, string]> = []
 
   constructor() {
@@ -61,6 +62,7 @@ class MemoryFs implements RestoreFsLike {
     }
   }
   async lstat(path: string) {
+    this.lstatHook?.(path)
     if (this.dirs.has(path) || this.files.has(path) || this.buffers.has(path) || this.links.has(path)) return this.statLike(path)
     throw err("ENOENT")
   }
@@ -167,6 +169,42 @@ describe("session.prune.restore — core", () => {
     const deps = makeDeps()
     delete (deps as { lockProbe?: unknown }).lockProbe
     await expect(restoreTrashEntry(fs, deps, DSH_HOME, ID)).rejects.toMatchObject({ code: "UNSUPPORTED" })
+    expect(fs.renameCalls).toEqual([])
+  })
+
+  test("concurrent purge: an entry vanishing between scan and assessment is skipped, not fatal", async () => {
+    const fs = new MemoryFs()
+    fs.lstatHook = (path) => { if (path === ENTRY) throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${ENTRY}'`), { code: "ENOENT" }) }
+    const list = await listRestoreEntries(fs, DSH_HOME)
+    expect(list.entries).toEqual([])
+    expect(list.rejected).toEqual([])
+    // Restore of a different (still-present) id must not be interrupted either.
+    // Here the vanished entry IS the target, so it reports fixed NOT_FOUND.
+    await expect(restoreTrashEntry(fs, makeDeps(), DSH_HOME, ID)).rejects.toMatchObject({ code: "NOT_FOUND" })
+    expect(fs.renameCalls).toEqual([])
+  })
+
+  test("§4 path leakage negative: raw fs messages and absolute paths never enter list/restore wire data", async () => {
+    const fs = new MemoryFs()
+    const rawMessage = `EACCES: permission denied, scandir '${ENTRY}'`
+    fs.lstatHook = (path) => { if (path === ENTRY) throw Object.assign(new Error(rawMessage), { code: "EACCES" }) }
+
+    const list = await listRestoreEntries(fs, DSH_HOME)
+    const listWire = JSON.stringify(list)
+    for (const leak of [rawMessage, DSH_HOME, ENTRY, RUN, "EACCES", "scandir"]) {
+      expect(listWire).not.toContain(leak)
+    }
+    expect(list.rejected[0]?.code).toBe("BAD_PATH")
+
+    let caught: unknown
+    try { await restoreTrashEntry(fs, makeDeps(), DSH_HOME, ID) } catch (e) { caught = e }
+    expect(caught).toBeInstanceOf(RestoreError)
+    const err = caught as RestoreError
+    // Mirror the RPC projection: code + message + detail are what go onchain.
+    const wire = JSON.stringify({ code: err.code, message: err.message, detail: err.detail })
+    for (const leak of [rawMessage, DSH_HOME, ENTRY, RUN, "EACCES", "scandir"]) {
+      expect(wire).not.toContain(leak)
+    }
     expect(fs.renameCalls).toEqual([])
   })
 

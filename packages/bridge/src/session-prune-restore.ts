@@ -84,6 +84,51 @@ function sameDev(a: unknown, b: unknown): boolean {
   return a !== undefined && b !== undefined && String(a) === String(b)
 }
 
+/**
+ * Fixed, path-free wire messages for host fs failures. Node's `err.message`
+ * embeds the absolute path that failed; `detail` is projected on the wire by
+ * the RPC handler, so neither the message nor the detail may ever carry an
+ * fs error object, its message, or any host path. Callers decide whether a
+ * NOT_FOUND entry is skipped (concurrent purge) or surfaced.
+ */
+const FS_MSG = {
+  vanished: 'trash entry is no longer available',
+  unreadable: 'trash entry could not be read',
+  pathUnreadable: 'path could not be resolved',
+  statUnavailable: 'path metadata is unavailable',
+  rootUnreadable: 'sessions root could not be resolved',
+  destinationUnreadable: 'live destination could not be resolved',
+} as const
+
+/** lstat that maps EVERY fs failure to a fixed RestoreError. ENOENT (an entry
+ *  concurrently purged between scan and assessment) becomes NOT_FOUND so the
+ *  caller can skip it without aborting the whole list/restore. */
+async function lstatGuest(fs: RestoreFsLike, path: string): Promise<RestoreStatLike> {
+  try {
+    return await fs.lstat(path)
+  } catch (err) {
+    fail(isEnoent(err) ? 'NOT_FOUND' : 'BAD_PATH', isEnoent(err) ? FS_MSG.vanished : FS_MSG.unreadable)
+  }
+}
+
+/** realpath that maps EVERY fs failure to a fixed, path-free RestoreError. */
+async function realpathGuest(fs: RestoreFsLike, path: string): Promise<string> {
+  try {
+    return await fs.realpath(path)
+  } catch (err) {
+    fail(isEnoent(err) ? 'NOT_FOUND' : 'BAD_PATH', isEnoent(err) ? FS_MSG.vanished : FS_MSG.pathUnreadable)
+  }
+}
+
+/** stat that maps EVERY fs failure to a fixed, path-free RestoreError. */
+async function statGuest(fs: RestoreFsLike, path: string): Promise<RestoreStatLike> {
+  try {
+    return await fs.stat(path)
+  } catch (err) {
+    fail(isEnoent(err) ? 'NOT_FOUND' : 'BAD_PATH', isEnoent(err) ? FS_MSG.vanished : FS_MSG.statUnavailable)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Injectable seams.
 // ---------------------------------------------------------------------------
@@ -228,15 +273,17 @@ async function readAppliedManifest(fs: RestoreFsLike, dir: string): Promise<Appl
 }
 
 async function probeLockForRestore(lockProbe: LockProbe | undefined, lockPath: string): Promise<void> {
-  if (lockProbe === undefined) fail('UNSUPPORTED', 'lockProbe capability unavailable; restore refuses to assume unlocked', { lockPath })
+  if (lockProbe === undefined) fail('UNSUPPORTED', 'lockProbe capability unavailable; restore refuses to assume unlocked')
   let result: LockProbeResult
   try {
     result = await lockProbe(lockPath)
   } catch {
-    fail('LOCKED', 'lock probe threw; refusing to restore', { lockPath })
+    fail('LOCKED', 'lock probe threw; refusing to restore')
   }
   if (result.status === 'lock-held' || result.status === 'unknown') {
-    fail('LOCKED', 'session.lock probe is not unlocked', { lockPath, status: result.status })
+    // status is a fixed enum; lockPath is an absolute host path and MUST NOT
+    // be projected into detail (the RPC handler forwards detail verbatim).
+    fail('LOCKED', 'session.lock probe is not unlocked', { status: result.status })
   }
 }
 
@@ -246,7 +293,7 @@ async function pathExists(fs: RestoreFsLike, path: string): Promise<boolean> {
     return true
   } catch (err) {
     if (isEnoent(err)) return false
-    throw err
+    fail('BAD_PATH', FS_MSG.unreadable)
   }
 }
 
@@ -260,7 +307,7 @@ async function assessEntry(
 ): Promise<ScannedEntry> {
   if (!RUN_NAME_RE.test(run)) fail('BAD_PATH', 'trash run directory name is not a UTC stamp')
   const entryPath = join(trashSessionsRoot(dshHome), run, encoded)
-  const st = await fs.lstat(entryPath)
+  const st = await lstatGuest(fs, entryPath)
   if (!st.isDirectory() || st.isSymbolicLink?.() === true) fail('BAD_PATH', 'trash entry is not a real directory')
   const manifest = await readAppliedManifest(fs, entryPath)
   if (encodeSegment(manifest.id) !== encoded || basename(entryPath) !== encoded) {
@@ -274,8 +321,8 @@ async function assessEntry(
   if (toRel !== expectedRel && toRel !== expectedRel.split(sep).join('/')) {
     fail('BAD_MANIFEST', 'applied manifest to does not match the scanned entry')
   }
-  const trashReal = await fs.realpath(trashSessionsRoot(dshHome))
-  const real = await fs.realpath(entryPath)
+  const trashReal = await realpathGuest(fs, trashSessionsRoot(dshHome))
+  const real = await realpathGuest(fs, entryPath)
   if (!isInside(trashReal, real) || relative(trashReal, real) !== expectedRel) {
     fail('BAD_PATH', 'trash entry realpath escaped the sessions trash root')
   }
@@ -297,7 +344,7 @@ export async function listRestoreEntries(
     runs = await fs.readdir(root)
   } catch (err) {
     if (isEnoent(err)) return { entries: [], rejected: [] }
-    throw err
+    fail('BAD_PATH', FS_MSG.rootUnreadable)
   }
   const entries: RestoreEntry[] = []
   const rejected: RestoreRejection[] = []
@@ -325,9 +372,13 @@ export async function listRestoreEntries(
           ...(size !== undefined ? { size } : {}),
         })
       } catch (err) {
+        // A concurrent purge may delete an entry between the run scan and the
+        // per-entry assessment: skip it silently, never abort the whole list.
+        if (err instanceof RestoreError && err.code === 'NOT_FOUND') continue
         rejected.push({
           code: err instanceof RestoreError ? err.code : 'INTERNAL',
-          message: err instanceof Error ? err.message : String(err),
+          // Fixed projection: never err.message (Node embeds absolute paths).
+          message: err instanceof RestoreError ? err.message : 'trash entry could not be assessed',
         })
       }
     }
@@ -392,13 +443,7 @@ async function liveDestination(
   // canonicalise inside the live sessions root.
   if (await pathExists(fs, destination)) fail('CONFLICT', 'restore refused: live destination already exists')
   const parent = join(destination, '..')
-  let parentReal: string
-  try {
-    parentReal = await fs.realpath(parent)
-  } catch (err) {
-    if (isEnoent(err)) fail('BAD_PATH', 'restore refused: live destination parent is missing')
-    throw err
-  }
+  const parentReal = await realpathGuest(fs, parent)
   if (!isInside(rootReal, parentReal)) fail('BAD_PATH', 'restore refused: live destination escaped sessions root')
   return destination
 }
@@ -421,14 +466,14 @@ export async function restoreTrashEntry(
     if (live === 'LIVE_AGENT') fail('LIVE_AGENT', 'restore refused: a live agent still owns this session id')
     if (live === 'CONFLICT') fail('CONFLICT', 'restore refused: session id already exists outside trash')
 
-    const rootReal = await fs.realpath(deps.sessionsRoot)
+    const rootReal = await realpathGuest(fs, deps.sessionsRoot)
     const root = trashSessionsRoot(dshHome)
     let runs: string[]
     try {
       runs = await fs.readdir(root)
     } catch (err) {
       if (isEnoent(err)) fail('NOT_FOUND', 'restore refused: no such trash entry')
-      throw err
+      fail('BAD_PATH', FS_MSG.rootUnreadable)
     }
     const matches: ScannedEntry[] = []
     for (const run of runs) {
@@ -436,8 +481,9 @@ export async function restoreTrashEntry(
       try {
         leaves = await fs.readdir(join(root, run))
       } catch (err) {
+        // Concurrent purge removed the run: skip it, do not abort restore.
         if (isEnoent(err)) continue
-        throw err
+        fail('BAD_PATH', FS_MSG.rootUnreadable)
       }
       for (const encoded of leaves) {
         if (encoded.startsWith('.')) continue
@@ -445,10 +491,11 @@ export async function restoreTrashEntry(
           const scanned = await assessEntry(fs, dshHome, run, encoded)
           if (scanned.id === id) matches.push(scanned)
         } catch (err) {
-          // A malformed sibling must not make a valid target unreachable; it
-          // is simply not a candidate.
+          // A malformed OR concurrently purged sibling must not make a valid
+          // target unreachable; it is simply not a candidate. All fs failures
+          // are already fixed-message RestoreError (never a raw Node error).
           if (err instanceof RestoreError) continue
-          throw err
+          fail('INTERNAL', 'trash entry could not be assessed')
         }
       }
     }
@@ -457,13 +504,15 @@ export async function restoreTrashEntry(
     const scanned = matches[0]
 
     const destination = await liveDestination(fs, deps, scanned, rootReal)
-    const trashStat = await fs.stat(scanned.path)
-    const parentStat = await fs.stat(join(destination, '..'))
+    const trashStat = await statGuest(fs, scanned.path)
+    const parentStat = await statGuest(fs, join(destination, '..'))
     if (!sameDev(trashStat.dev, parentStat.dev)) fail('EXDEV', 'restore refused: cross-device rename')
 
     // Second gate at the last safe point before the rename: both sides must
     // still be the validated objects and the destination must still be free.
-    const recheckSt = await fs.lstat(scanned.path)
+    // An ENOENT here means a concurrent purge just removed our target: report
+    // a fixed NOT_FOUND instead of leaking the fs error/path.
+    const recheckSt = await lstatGuest(fs, scanned.path)
     if (!recheckSt.isDirectory() || recheckSt.isSymbolicLink?.() === true) {
       fail('BAD_PATH', 'restore refused: trash entry flipped to symlink/non-directory')
     }

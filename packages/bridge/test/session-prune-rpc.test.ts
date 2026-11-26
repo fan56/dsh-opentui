@@ -11,8 +11,8 @@
  * reproduces the real host layout rather than a raw-id directory name.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { apply } from "../src/index"
 import { setFlockTryLockExclusiveForTest } from "../src/prune-lock-probe"
@@ -218,6 +218,36 @@ describe("session.prune.plan — read-only RPC", () => {
       retentionDays: 30, blankGraceDays: 7, lockGraceMs: 1_000,
       freshMtimeGraceMs: 0, sessionsRoot: FIXTURE_ROOT,
     }))
+  })
+
+  test("§2 real profile config.json is authoritative; apply(ctx,config) cannot spoof retentionDays", async () => {
+    // Investigated surfaces (host 0.2.2-rc.5): settingsController exposes only
+    // redacted settings namespaces (no top-level retentionDays); ctx.get('config')
+    // is not a provided service. The real surface is profileContext.dir/config.json.
+    const profileDir = mkdtempSync(join(tmpdir(), "dsh-prune-profile-"))
+    cleanups.push(() => rmSync(profileDir, { recursive: true, force: true }))
+    writeFileSync(join(profileDir, "config.json"), JSON.stringify({ retentionDays: 14, theme: "carbonfox" }))
+    const h = makeHarness({
+      sessionController: controller([{ sessionId: FIXTURE_ID, updatedAt: OLD_UPDATED, agentAvailable: false, running: false, blank: false }]),
+      sessionPersistence: statCapable,
+      profileContext: { name: "opentui-monday", dir: profileDir, home: profileDir },
+    }, { sessionsRoot: FIXTURE_ROOT, freshMtimeGraceMs: 0, retentionDays: 90 })
+    h.send({ id: 42, method: "session.prune.plan", params: {} })
+    const reply = await h.waitFor(42)
+    expect(reply.ok).toBe(true)
+    expect(reply.result.retentionDays).toBe(14)
+    expect(reply.result.configFingerprint).toBe(computeConfigFingerprint({
+      retentionDays: 14, blankGraceDays: 30, lockGraceMs: 300_000,
+      freshMtimeGraceMs: 0, sessionsRoot: FIXTURE_ROOT,
+    }))
+  })
+
+  test("§2 local profile config.json currently declares retentionDays=14", () => {
+    const configPath = join(homedir(), ".dsh", "profiles", "opentui-monday", "config.json")
+    if (!existsSync(configPath)) return
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"))
+    expect(typeof parsed.retentionDays).toBe("number")
+    expect(parsed.retentionDays).toBe(14)
   })
 
   test("B1 real-host probe: artifact file + encoded dir basename prunes, not always skip", async () => {
