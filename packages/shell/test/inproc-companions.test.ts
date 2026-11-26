@@ -85,7 +85,7 @@ describe('inproc companion catalog', () => {
     expect(registry?.short).toBe('registry')
     expect(registry?.reason).toContain('use_agent')
     // The guard range must admit the shipped latest but stop the next 0.x minor.
-    expect(registry?.declaredRange).toBe('^0.21.0')
+    expect(registry?.declaredRange).toBe('^0.22.0')
   })
 })
 
