@@ -69,7 +69,7 @@ import { useRenderer } from "@opentui/solid"
 import { useTerminalSize } from "./terminal-size"
 import { measureEditText, RenderableEvents, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
-import { ComposerController, type ComposerDelivery, type ComposerFlushResult, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
+import { ComposerController, type ComposerDelivery, type ComposerFlushResult, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause, type ComposerSendSource } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
 import { activePanel, composerInteraction } from "./pane-focus"
@@ -123,8 +123,10 @@ export const COMPOSER_FOOTER_HINT = "enter send · while streaming enter steers 
 export type SessionComposerProps = {
 	/** Seam used for steering a running turn. */
 	seam: SessionSeam
-	/** Starts a turn; page wiring passes the transcript projection's `send`. */
-	send: (text: string) => Promise<void>
+	/** Starts a turn; page wiring passes the transcript projection's `send`.
+	 *  `source` is forwarded verbatim so the page can distinguish an explicit
+	 *  user submit from a line pumped out of the delivery queue. */
+	send: (text: string, source?: ComposerSendSource) => Promise<void>
 	/** Busy surface for the status/powerline batch. */
 	onBusyChange?: (busy: boolean) => void
 	/** Busy-submit chooser (steer vs queue) — the page opens it on the dialog
@@ -139,6 +141,10 @@ export type SessionComposerProps = {
 	/** Page-owned abort flag (esc/ctrl+c); abort resolves the seam turn
 	 * without an error, so the controller needs this signal. */
 	isTurnAborted?: () => boolean
+	/** Page-owned failure flag (a turn-scoped session.error arrived). A failed
+	 * turn also resolves the seam without rejecting `send`, so the controller
+	 * needs this signal to pause the queue / drop steer receipts. */
+	isTurnFailed?: () => boolean
 	/** Injectable history (tests / persistence later). */
 	history?: ComposerHistory
 	/** Textarea line cap (content-driven height grows up to this). */
@@ -252,13 +258,27 @@ export function SessionComposer(props: SessionComposerProps) {
 	}
 
 	const controller = new ComposerController({
-		send: (text) => props.send(text),
+		send: (text, source) => props.send(text, source),
 		steer: (text) => props.seam.steer(text),
+		// A refused steer is never dropped silently: the sync submit path has
+		// already cleared the buffer, so put the exact text back unless the user
+		// typed something new meanwhile. No auto-send fallback (would duplicate
+		// a turn the caller did not agree to).
+		onSteerRejected: ({ text }) => {
+			if (disposed || textarea === undefined || textarea.isDestroyed) return
+			const current = textarea.plainText
+			if (current !== "" && current !== text) return
+			if (current !== text) {
+				textarea.setText(text)
+				traceSet("failure-refill", text)
+			}
+		},
 		history: props.history,
 		chooseDelivery: props.chooseDelivery,
 		onPendingChange: props.onPendingChange,
 		onQueuePaused: props.onQueuePaused,
 		isTurnAborted: props.isTurnAborted,
+		isTurnFailed: props.isTurnFailed,
 		disabled: props.disabled,
 		onBusyChange: (value) => {
 			if (disposed) return

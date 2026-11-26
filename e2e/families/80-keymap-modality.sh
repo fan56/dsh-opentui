@@ -55,18 +55,41 @@ grep -q 'keymap-probe' "$OUT/basic.log" && fpass "keymap:basic composer input (.
 clear_composer
 
 tmux send-keys -t "$SESS" C-c; sleep 1; snap 'modal'
-grep -qiE 'quit|退出|╭|┌' "$OUT/modal.log" && fpass "keymap:modal quit dialog (.ans)" || ffail "keymap:modal quit dialog"
-tmux send-keys -t "$SESS" Escape; sleep 0.5; clear_composer
+grep -qiE 'quit|退出|继续' "$OUT/modal.log" && fpass "keymap:modal quit dialog (.ans)" || ffail "keymap:modal quit dialog"
+# Esc must actually dismiss the quit dialog — assert the dialog text is gone,
+# not merely that a frame was captured.
+tmux send-keys -t "$SESS" Escape; sleep 0.5; snap 'esc-after-modal'
+if [ -s "$OUT/esc-after-modal.log" ] && ! grep -qE '退出 dsh-opentui|quit dsh-opentui' "$OUT/esc-after-modal.log"; then
+  fpass "keymap:esc dismisses quit dialog (.ans)"
+else
+  ffail "keymap:esc did not dismiss quit dialog (.ans)"
+fi
+clear_composer
 
 tmux send-keys -t "$SESS" '/agents'; sleep 0.5; tmux send-keys -t "$SESS" Enter; sleep 2
 tmux send-keys -t "$SESS" Next; sleep 1; snap 'paging'
-grep -qiE 'agents|agent|╭|┌' "$OUT/paging.log" && fpass "keymap:paging panel frame (.ans)" || ffail "keymap:paging panel frame"
+# /agents CONTENT assertion: require the panel's own title AND one of its
+# column headers / action hints. A box-drawing char (╭/┌) matches ANY modal and
+# is not evidence that this panel rendered.
+if grep -qF 'Agents' "$OUT/paging.log" \
+   && grep -qE 'l 限制|l limits|enter 打开|enter open|名称.*THINK|NAME.*THINK' "$OUT/paging.log"; then
+  fpass "keymap:paging /agents panel title + column/hint text (.ans)"
+else
+  ffail "keymap:paging /agents panel text absent (box lines alone are not evidence)"
+fi
 tmux send-keys -t "$SESS" Escape; sleep 0.5; clear_composer
 
 snap 'esc'
 # Honest gap: a busy-turn Esc arm→confirm chain needs a live session controller;
-# the scratch profile has no account model to drive a real turn. Record the
-# resting frame, do NOT claim the full chain.
-fpass "keymap:esc resting frame captured (.ans; full arm→confirm needs live turn)"
+# the scratch profile has no account model to drive a real turn. Do NOT claim
+# the full chain. What IS machine-judged here is the concrete modality result:
+# Escape closed the /agents panel and the panel printed its exit summary.
+if [ -s "$OUT/esc.log" ] \
+   && grep -qE 'Agents (未变|已更新|unchanged|updated)' "$OUT/esc.log" \
+   && ! grep -qE '退出 dsh-opentui|quit dsh-opentui' "$OUT/esc.log"; then
+  fpass "keymap:esc /agents panel closed, exit summary rendered (.ans; full arm→confirm needs live turn)"
+else
+  ffail "keymap:esc /agents panel not closed by Escape / no exit summary (.ans)"
+fi
 
 family_summary

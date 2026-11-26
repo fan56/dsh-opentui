@@ -34,7 +34,7 @@ import { createComponent, createElement, render, spread, useRenderer } from "@op
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
 import { ComposerContext } from "../src/routes/session/composer-context"
-import type { ComposerPendingRow } from "../src/routes/session/composer-state"
+import { TurnOutcomeTracker, type ComposerPendingRow, type ComposerSendSource } from "../src/routes/session/composer-state"
 import { openDeliveryChoice } from "../src/routes/session/delivery-choice"
 import { parseLaunchArgs, runAutoResume } from "../src/routes/session/auto-resume"
 import { WelcomeHero } from "../src/routes/welcome-hero"
@@ -318,8 +318,18 @@ function V2SessionPageBody(props: {
 		"bridge.recovery.locked",
 		"bridge.recovery.failed",
 	])
+	// P1-1 / oldfox 终审: the seam resolves the awaited turn on a turn.error or
+	// an abort WITHOUT rejecting `send`, so the composer cannot tell failure
+	// from success on its own. The tracker classifies ONLY the active turn: it
+	// arms the id from `session.updated{turn:"starting"}` and accepts a terminal
+	// `session.error` / `bridge.turn.interrupted` only for THAT same id — a late
+	// event from a previous turn cannot poison the new one. Plain (non-reactive)
+	// state: read at turn settle through the composer getters, written from this
+	// ONE merged subscription, reset by beginTurn() at each send (see below).
+	const turnTracker = new TurnOutcomeTracker()
 	onCleanup(
 		seam.onSessionEvent?.((event: { type: string; details: unknown }) => {
+			turnTracker.onEvent(event)
 			if (!recoveryEvents.has(event?.type)) return
 			recovery.handleEvent(event)
 		}) ?? (() => {}),
@@ -495,17 +505,23 @@ function V2SessionPageBody(props: {
 	// the awaited turn without an error, so the controller cannot distinguish
 	// abort from success on its own. Each send clears it; esc/ctrl+c sets it.
 	let turnAborted = false
-	const send = (text: string) => {
+	const send = (text: string, source?: ComposerSendSource) => {
 		turnAborted = false
+		// P1-1: a new turn starts with a clean outcome record — disarm the old
+		// turn id and clear its failed/aborted terminal state. Only turn-scoped
+		// events arriving after this point can classify this turn.
+		turnTracker.beginTurn()
 		setTurnBusy(true)
 		setLastRequest(text)
-		// Away-hint (transcript-scroll-hints): a USER submit always lands on
-		// the newest row. This is the composer's user-facing submit path only —
-		// passive streaming / row appends never scroll, so the away hint can
-		// still appear while the reader is browsing scrollback. The transcript
-		// owns `scrollRef`, so this is the same scrollbox whose `change` event
-		// drives `syncAway()`; returning to the bottom hides the hint.
-		transcriptScroll?.scrollTo(Infinity)
+		// Away-hint (transcript-scroll-hints): only a USER submit (Enter or a
+		// /flush queue head) returns to the newest row. A queued line pumped on
+		// turn end carries source="queue" and MUST NOT yank the reader out of
+		// scrollback — passive streaming/row appends never scroll either. The
+		// transcript owns `scrollRef`, so this is the same scrollbox whose
+		// `change` event drives `syncAway()`; a user scroll hides the hint.
+		if (source !== "queue") {
+			transcriptScroll?.scrollTo(Infinity)
+		}
 		const done = projection.send(text)
 		void done.finally(() => setTurnBusy(false))
 		return done
@@ -1467,7 +1483,13 @@ function V2SessionPageBody(props: {
 									`队列已保留 ${info.remaining} 条:本回合${info.reason === "failed" ? "失败" : "已中止"},下回合结束后继续发送`,
 									8000,
 								),
-							isTurnAborted: () => turnAborted,
+							// P1-1: page esc/ctrl+c OR a classified abort turn
+							// (ABORTED / SESSION_CLOSED / FORKED / INTERRUPTED /
+							// TURN_ABORT_NOOP) pauses the queue as "aborted", never a
+							// false failure; any other turn-scoped error is genuine.
+							// Both getters read the SAME tracker's terminal state.
+							isTurnAborted: () => turnAborted || turnTracker.isAborted(),
+							isTurnFailed: () => turnTracker.isFailed(),
 							slashKeyFilter: slash.slashKeyFilter,
 							slashSync: (buffer: string) => slash.controller.sync(buffer, slash.commands),
 							interceptSubmit: slash.interceptSubmit,

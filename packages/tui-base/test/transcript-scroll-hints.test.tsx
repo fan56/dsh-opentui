@@ -174,14 +174,53 @@ describe("wiring shape", () => {
 		expect(readSessionScrollbar({ session: { scrollbar: false } })).toBe(false)
 	})
 
-	test("user submit scrolls to bottom before projection.send", () => {
+	test("only a user submit scrolls to bottom; a pumped queue line never does", () => {
 		const v2 = src("examples/v2-entry.tsx")
-		const send = v2.match(/const send = \(text: string\) => \{[\s\S]*?\n\t\}/)?.[0] ?? ""
+		const send = v2.match(/const send = \(text: string, source\?: ComposerSendSource\) => \{[\s\S]*?\n\t\}/)?.[0] ?? ""
 		expect(send).toContain("transcriptScroll?.scrollTo(Infinity)")
 		expect(send.indexOf("scrollTo(Infinity)")).toBeLessThan(send.indexOf("projection.send(text)"))
-		// passive paths never scroll: the only scrollTo in the user submit path
-		// is the one above; streaming/appends own no scroll call here.
+		// The scroll call is INSIDE the explicit queue guard: source="queue"
+		// (a queued line pumped at turn end) leaves the reader's scrollback
+		// untouched. No second unguarded scroll path exists in send().
+		expect(send).toMatch(/if \(source !== "queue"\) \{\s*transcriptScroll\?\.scrollTo\(Infinity\)\s*\}/)
 		expect([...send.matchAll(/scrollTo\(/g)].length).toBe(1)
+		expect(send).not.toMatch(/transcriptScroll\?\.scrollTo\(Infinity\)(?!\s*\})/)
+		expect([...send.matchAll(/source !== "queue"/g)].length).toBe(1)
+	})
+
+	test("v2 entry classifies turn outcomes through TurnOutcomeTracker, not a local error holder", () => {
+		const v2 = src("examples/v2-entry.tsx")
+
+		// One renderer-free tracker owns turn-scoped classification. The single
+		// merged onSessionEvent listener feeds it EVERY seam event (starting,
+		// error, interrupted) before the recovery dispatch — not just a filtered
+		// session.error branch — so the tracker can arm ids and see aborts.
+		expect(v2).toMatch(/const turnTracker = new TurnOutcomeTracker\(\)/)
+		expect(v2).toMatch(/import \{ TurnOutcomeTracker,[^\n]*\} from "\.\.\/src\/routes\/session\/composer-state"/)
+		const listener = v2.match(/seam\.onSessionEvent\?\.\(\(event[\s\S]*?\}\) \?\? \(\(\) => \{\}\)/)?.[0] ?? ""
+		expect(listener).toContain("turnTracker.onEvent(event)")
+		expect(listener.indexOf("turnTracker.onEvent(event)")).toBeLessThan(
+			listener.indexOf("if (!recoveryEvents.has"),
+		)
+		// The page no longer keeps a hand-rolled holder or classifies codes:
+		// turnId scoping and the abort-code set live in the tracker itself.
+		expect(v2).not.toContain("lastTurnError")
+		expect(v2).not.toContain("isAbortTurnCode(")
+
+		// Every send resets the tracker BEFORE the seam turn starts, so a stale
+		// error/interruption from the previous turn cannot classify this one.
+		const send = v2.match(/const send = \(text: string, source\?: ComposerSendSource\) => \{[\s\S]*?\n\t\}/)?.[0] ?? ""
+		expect(send).toContain("turnTracker.beginTurn()")
+		expect(send.indexOf("turnTracker.beginTurn()")).toBeLessThan(send.indexOf("setTurnBusy(true)"))
+		expect(send.indexOf("turnTracker.beginTurn()")).toBeLessThan(send.indexOf("projection.send(text)"))
+
+		// The composer receives LIVE getters over the SAME tracker's terminal
+		// state, not mount-time booleans: local esc-abort or a classified abort
+		// turn pauses the queue as aborted (never a false failure); any other
+		// turn-scoped error is a genuine failure.
+		const composer = v2.match(/createComponent\(SessionComposer, \{[\s\S]*?isTurnFailed:[^\n]*\n/)?.[0] ?? ""
+		expect(composer).toMatch(/isTurnAborted: \(\) => turnAborted \|\| turnTracker\.isAborted\(\)/)
+		expect(composer).toMatch(/isTurnFailed: \(\) => turnTracker\.isFailed\(\)/)
 	})
 
 	test("passive scrollbar listener, no stickyScroll write, no resident timer", () => {

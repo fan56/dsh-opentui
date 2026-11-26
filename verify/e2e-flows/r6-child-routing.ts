@@ -60,6 +60,7 @@ import {
   ACTIVE_PROFILE, bootIdle, decideApprovalKey, hasPaneContent, idleText as idle,
   isApprovalCard, makeCleanup, noticeParentFromJournal, scanAlwaysGrant, stripAnsi,
 } from './r6-harness-lib.mjs'
+import { run029ProtocolChecks } from './r6-029-lib.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
@@ -529,6 +530,15 @@ check('E6 sessionInfo zero-new (user/assistant counts unchanged by the child not
   `${countUserAssistant(withoutChild)}/${countUserAssistant(infoWithChild)}`)
 plog(`btw-submits=${submittedTexts.filter((t) => t.includes('/btw')).length} sessioninfo-user-assistant=${countUserAssistant(infoWithChild)}`)
 
+// --- 6b. 0.29 protocol/harness coverage ------------------------------------
+// The default-50 / round-50 wrap-up / grace-0-never-hard-stop rules and the
+// 500-line/64 KiB transcript cap + multi-line tool output are proven against
+// the SHIPPED pure functions (r6-029-lib.mjs). They ride the already-wired R6
+// scenario so they are not left uncovered while the dedicated UI smoke driver
+// (r6-029-driver.ts) awaits its own run-flows scenario entry.
+const protocol029 = await run029ProtocolChecks()
+for (const c of protocol029) check(c.label, c.ok, c.expected, c.actual)
+
 // --- 7. harness audit + cleanup ---------------------------------------------
 const audit = [
   `driver=${join(HERE, 'r6-child-routing.ts')}`,
@@ -540,6 +550,7 @@ const audit = [
   `registry-direct-call=false appendPluginRecord-mock=false synthetic-child-id=false always-grant=false`,
   `profile=${PROFILE} (source: profile-name.mjs DEFAULT_PROFILE)`,
   `e8-always-grant-scan-hits=${escalationHits.length}`,
+  `029-protocol-checks=${protocol029.length} (default-50/grace-0/transcript-cap at shipped seams)`,
   `frames-observed=${framesObserved} card-closed-observed=${cardClosed}`,
   `frame-decisions=${decisions.map((x) => `#${x.step}:${x.key}`).join(' ')}`,
 ].join('\n') + '\n'

@@ -2,7 +2,7 @@
 // Local OpenAI-compatible fake model for the e2e flow suite.
 //
 //   node fake-model.mjs --port 0 --log /tmp/requests.jsonl
-//     [--chunk-ms 45] [--slow-ticks 16] [--slow-ms 700]
+//     [--chunk-ms 45] [--slow-ticks 16] [--slow-ms 700] [--todo-delay-ms 6500]
 //
 // Prints `FAKE_PORT=<port>` on stdout once listening, then serves
 // POST /v1/chat/completions (streaming SSE or a complete JSON body for
@@ -20,6 +20,9 @@
 //                    (`echo E2E-TOOL-RESULT-OK`); after the tool message
 //                    round-trips: `E2E-TOOL-DONE`
 //   E2E_SINGLE     — a short streamed reply
+//   E2E_LONG       — a multi-line reply that fills the transcript (scroll probes)
+//   E2E_TODO       — first request: one real todo_write-family tool_call;
+//                    after the tool message round-trips: `E2E-TODO-DONE`
 //   anything else  — `E2E-ACK:<last user line>` (stray/title/probe traffic)
 //
 // Tool arguments are calibrated from the `tools` array the HOST sends; the
@@ -37,6 +40,10 @@ const LOG = arg('log', '')
 const CHUNK_MS = Number(arg('chunk-ms', '45'))
 const SLOW_TICKS = Number(arg('slow-ticks', '16'))
 const SLOW_MS = Number(arg('slow-ms', '700'))
+// Give the todo-write-scroll harness time to scroll away AFTER the tool call
+// but BEFORE the final reply row is appended, so a real new-row hint appears.
+const TODO_DELAY_MS = Math.max(0, Number(arg('todo-delay-ms', '6500')) || 0)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const logReq = (entry) => {
   if (!LOG) return
@@ -116,12 +123,31 @@ const lastMarker = (messages, markers) => {
   return undefined
 }
 
+const toolNamesOf = (tools = []) => tools.map((t) => t?.function?.name ?? t?.name ?? '').filter(Boolean)
+const pickBashTool = (tools = []) => (Array.isArray(tools) ? tools : [])
+  .find((t) => /bash|shell|command|exec|terminal|pwsh/i.test(t?.function?.name ?? t?.name ?? ''))
 const pickBash = (tools = []) => {
-  const names = tools.map((t) => t?.function?.name ?? t?.name ?? '').filter(Boolean)
-  return names.find((n) => /bash|shell|command|exec|terminal|pwsh/i.test(n))
+  const t = pickBashTool(tools)
+  return t?.function?.name ?? t?.name
+}
+const pickTodo = (tools = []) => toolNamesOf(tools).find((n) => /todo/i.test(n))
+
+/**
+ * Calibrate the bash arguments from the HOST's tool schema, not a hardcoded
+ * spelling: rc.5 hosts declare `{description, command}`, older hosts declare
+ * `{cmd}`. The command emits E2E_TOOL_RESULT_OK via tr, a marker that does NOT
+ * appear in the tool-call arguments, so a result-row assertion cannot be
+ * satisfied by the assistant's own tool-call parameter text.
+ */
+const bashArgs = (tool) => {
+  const props = tool?.function?.parameters?.properties ?? tool?.parameters?.properties ?? {}
+  const keys = Object.keys(props)
+  const command = 'echo E2E-TOOL-RESULT-OK | tr \'[:punct:]\' \'_\''
+  if (keys.includes('command')) return { description: 'e2e echo probe', command }
+  return { cmd: command }
 }
 
-const MARKERS = ['E2E_SLOW', 'E2E_STEER_TEXT', 'E2E_QUEUE_TEXT', 'E2E_FLUSH_TEXT', 'E2E_TOOL', 'E2E_SINGLE']
+const MARKERS = ['E2E_SLOW', 'E2E_STEER_TEXT', 'E2E_QUEUE_TEXT', 'E2E_FLUSH_TEXT', 'E2E_TOOL', 'E2E_SINGLE', 'E2E_LONG', 'E2E_TODO']
 
 const server = createServer((req, res) => {
   if (req.url === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }).end('ok'); return }
@@ -172,7 +198,8 @@ const server = createServer((req, res) => {
         await streamText(res, id, model, 'E2E-TOOL-DONE — the bash tool ran and its result came back.')
         return
       }
-      const bash = pickBash(payload.tools)
+      const bashTool = pickBashTool(payload.tools)
+      const bash = bashTool?.function?.name ?? bashTool?.name
       if (!bash) {
         await streamText(res, id, model, 'E2E-TOOL-NO-BASH — the host sent no bash-family tool.')
         return
@@ -180,7 +207,7 @@ const server = createServer((req, res) => {
       await streamToolCall(res, id, model, {
         id: 'call_e2e_tool_1',
         name: bash,
-        args: { command: 'echo E2E-TOOL-RESULT-OK', description: 'e2e echo probe' },
+        args: bashArgs(bashTool),
       })
       return
     }
@@ -196,6 +223,40 @@ const server = createServer((req, res) => {
 
     if (phase === 'E2E_SINGLE') {
       await streamText(res, id, model, 'E2E-SINGLE-REPLY — streamed by the local fake model in chunks.')
+      return
+    }
+
+    if (phase === 'E2E_LONG') {
+      // Enough real rows to push the transcript past the viewport so PgUp can
+      // leave the bottom. Streamed naturally through the same SSE path.
+      const lines = Array.from({ length: 40 }, (_, i) => `E2E-LONG-LINE-${String(i + 1).padStart(2, '0')} scrollback filler row`)
+      await streamText(res, id, model, lines.join('\n') + '\nE2E-LONG-DONE', { intervalMs: 25 })
+      return
+    }
+
+    if (phase === 'E2E_TODO') {
+      if (hasToolResult) {
+        // Delay the final reply so PgUp happens while no new row exists yet;
+        // the arriving reply then genuinely produces the N-new-messages hint.
+        if (TODO_DELAY_MS > 0) await sleep(TODO_DELAY_MS)
+        await streamText(res, id, model, 'E2E-TODO-DONE — the todo_write tool ran and the reply arrived.')
+        return
+      }
+      const todo = pickTodo(payload.tools)
+      if (!todo) {
+        await streamText(res, id, model, 'E2E-TODO-NO-TOOL — the host sent no todo-family tool.')
+        return
+      }
+      await streamToolCall(res, id, model, {
+        id: 'call_e2e_todo_1',
+        name: todo,
+        args: {
+          todos: [
+            { content: 'E2E-TODO-STEP-ONE', status: 'completed' },
+            { content: 'E2E-TODO-STEP-TWO', status: 'in_progress' },
+          ],
+        },
+      })
       return
     }
 

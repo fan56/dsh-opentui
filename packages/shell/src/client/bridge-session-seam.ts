@@ -65,6 +65,7 @@ import type {
 	SeamSettingsMutateResult,
 	SeamSettingsOp,
 	SeamSettingsSource,
+	SeamSteerResult,
 	SeamStatus,
 	SeamSubagentView,
 	SubagentTranscriptStatus,
@@ -717,6 +718,17 @@ export function projectBridgePruneRestore(value: unknown): SessionPruneRestoreRe
 	}
 	return { id: record.id, restored: true, opId: record.opId }
 }
+
+/** Bridge codes that are ordinary steer refusals (not transport failures).
+ *  Everything else propagates unchanged — a rejected steer is never retried. */
+const STEER_REJECTION_CODES = new Set([
+	"STEER_IDLE",
+	"STEER_ENDED",
+	"STEER_ABORTING",
+	"SESSION_NOT_OPEN",
+	"BAD_PARAMS",
+	"UNSUPPORTED",
+])
 
 /** Build the honest UNSUPPORTED rejection for an absent async capability. */
 function unsupported(capability: string): never {
@@ -3206,7 +3218,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		// P1-1: starting a fresh session abandons the DEAD session entirely —
 		// settle any turn() the dead frame left suspended (busy wedge escape),
 		// and drop the death snapshot so a later recovery cannot revive it.
-		this.#settleSuspendedTurn()
+		// P1-2: this is a silent settle, so the helper emits a LOCAL interrupted
+		// terminal tagged SESSION_CLOSED / "session changed" before resolving.
+		this.#settleSuspendedTurn({ code: "SESSION_CLOSED", reason: "session changed" })
 		this.#deadInFlight = undefined
 		this.#inFlightPartial = ""
 	}
@@ -3448,8 +3462,9 @@ export class BridgeSessionSeam implements SessionSeam {
 				// P1-1: settle the suspended turn() waiter — its generation-
 				// guarded finally sweep finalizes the live rows and clears the
 				// busy/spinner state. Without this the busy flag wedged forever
-				// and the next turn() threw TURN_REENTRANT.
-				this.#settleSuspendedTurn()
+				// and the next turn() threw TURN_REENTRANT. The journal terminal
+				// event above already announced the outcome — no local duplicate.
+				this.#settleSuspendedTurn({ terminalEmitted: true })
 			} else {
 				emit({
 					type: "bridge.turn.interrupted",
@@ -3466,8 +3481,9 @@ export class BridgeSessionSeam implements SessionSeam {
 				// P1-1: the journal stayed silent → the dead turn is a LOCAL
 				// INTERRUPTED terminal. Settle turn() the same way as the journal
 				// terminal arm (resolve), so busy returns to zero and the next
-				// submission is accepted; the event above carries the reason.
-				this.#settleSuspendedTurn()
+				// submission is accepted; the event above carries the reason
+				// (already emitted — no local duplicate).
+				this.#settleSuspendedTurn({ terminalEmitted: true })
 			}
 		}
 
@@ -5248,14 +5264,39 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * local INTERRUPTED, failed/locked recovery, and newSession(). Resolving
 	 * (not rejecting) matches the journal-terminal arm above and lets seam-rows'
 	 * .finally() finalize the partial text; the view learns the interrupted
-	 * reason from the bridge.turn.interrupted event emitted at that site.
+	 * reason from the LOCAL bridge.turn.interrupted emitted below.
 	 *
 	 * Clear the slots BEFORE resolving so turn()'s own finally sees a different
 	 * generation and cannot double-settle or race a newer turn's state.
+	 *
+	 * P1-2: a suspended turn must never settle SILENTLY. Unless the caller already
+	 * emitted its own terminal (journal `bridge.turn.terminal` / local
+	 * `bridge.turn.interrupted`, signalled with `terminalEmitted: true`), this
+	 * emits a LOCAL `bridge.turn.interrupted` SYNCHRONOUSLY to listeners before
+	 * resolving the waiter, carrying the ended turn id, session id and source.
+	 * resolve (not reject) semantics are unchanged.
 	 */
-	#settleSuspendedTurn(): void {
+	#settleSuspendedTurn(options?: {
+		terminalEmitted?: boolean
+		code?: string
+		reason?: string
+	}): void {
 		const done = this.#turnDone
 		const endedTurnId = this.#inFlightTurnId
+		if (!(options?.terminalEmitted ?? false) && done !== undefined) {
+			this.#emitEvent({
+				type: "bridge.turn.interrupted",
+				details: {
+					sessionID: this.#currentSessionId ?? "",
+					turnId: endedTurnId,
+					partial: this.#inFlightPartial,
+					reason: options?.reason ?? "turn interrupted before a terminal event",
+					code: options?.code ?? "INTERRUPTED",
+					seq: null,
+					source: "local",
+				},
+			})
+		}
 		this.#turnDone = undefined
 		this.#activeCallbacks = undefined
 		this.#inFlightTurnId = undefined
@@ -5531,8 +5572,34 @@ export class BridgeSessionSeam implements SessionSeam {
 		return unsupported("renameSession")
 	}
 
-	steer(_text: string): void {
-		this.#degrade("steer", "no session.steer frame; steer is a no-op")
+	/** 029 A — steer the running turn through the bridge's own frame.
+	 * Capability-gated: an old bridge (no `session.steer` in hello/ping) gets a
+	 * local UNSUPPORTED rejection, never a speculative frame. Typed rejections
+	 * from the bridge become `{accepted:false, reason}`; unknown errors are
+	 * propagated verbatim — never retried, never painted as delivered. */
+	async steer(text: string): Promise<SeamSteerResult> {
+		if (!this.hasBridgeCapability("session.steer")) {
+			return { accepted: false, reason: "UNSUPPORTED" }
+		}
+		let reply: unknown
+		try {
+			reply = await this.#transport.request("session.steer", { text })
+		} catch (err) {
+			if (err instanceof BridgeProtocolError && STEER_REJECTION_CODES.has(err.code)) {
+				const detail = asRecord(err.detail)
+				return {
+					accepted: false,
+					reason: err.code,
+					...(typeof detail.turnId === "string" ? { turnId: detail.turnId } : {}),
+				}
+			}
+			throw err // unknown error: no retry, no fake result
+		}
+		const result = asRecord(reply)
+		if (result.accepted !== true || typeof result.turnId !== "string") {
+			throw new BridgeProtocolError("INTERNAL", "session.steer reply has no accepted:true turnId")
+		}
+		return { accepted: true, turnId: result.turnId }
 	}
 
 	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void {

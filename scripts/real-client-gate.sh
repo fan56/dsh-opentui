@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 024 real-client gate — ONE repeatable recipe for the three slices whose
 # real-machine items were BLOCKED (S1 /model, S2 account, SK keymap) plus the
-# shared verify70 (64-item) gate.
+# shared verify70 gate (its item count comes from the run's own summary).
 #
 #   scripts/real-client-gate.sh [--out DIR] [--boot-timeout SEC]
 #                               [--keep] [--only smoke|frames|verify70|all]
@@ -10,7 +10,7 @@
 #
 # Environment self-check (025 wave3 batch1, W5-CE clause 5): before ANY probe
 # or tmux boot, scan for orphan dsh/mock-llm hosts and named tmux sessions
-# that would race the gate (the 025-w1a 3/64 mass-red root cause). PID lists are
+# that would race the gate (the 025-w1a mass-red root cause). PID lists are
 # written to $OUT/env-precheck.log and (after cleanup) $OUT/env-postcheck.log;
 # POST-CHECK filters its own PIDs and re-verifies each PID before listing it
 # (W2-1 C5: never report a bare grep count). An OPTIONAL single PID can be
@@ -57,7 +57,7 @@
 #   5. capture .ans frames (tmux `capture-pane -e -p`, NUMERIC ANSI only — no
 #      PNG, no visual model): S1 /model, S2 account (/settings -> Account),
 #      SK four keymap scenarios (modal / turn-Esc / panel-PgUp-PgDn / basic)
-#   6. run the shared 64-item gate `verify/agents-mount-repro.mjs` (it now
+#   6. run the shared verify70 gate `verify/agents-mount-repro.mjs` (it now
 #      self-provisions its own scratch home with the same recipe)
 #   7. cleanup tmux session + scratch home; every failure dumps diagnostics
 #      (last pane, client stderr, host probe stderr, env snapshot) and exits
@@ -1066,12 +1066,22 @@ if [ "$ONLY" = all ] || [ "$ONLY" = frames ]; then
   fi
 fi
 
-# ------------------------------------------------------- 6. verify70 (70 items)
+# ------------------------------------------------------- 6. verify70 gate
 if [ "$ONLY" = all ] || [ "$ONLY" = verify70 ]; then
   log "running verify70: node verify/agents-mount-repro.mjs"
   ( cd "$REPO" && node verify/agents-mount-repro.mjs ) >"$OUT/verify70.log" 2>&1
   V70_RC=$?
-  if [ "$V70_RC" -eq 0 ]; then pass "verify70: exit 0 (all 64 items)"; else fail "verify70: exit $V70_RC (see $OUT/verify70.log)"; fi
+  # Report the count the run actually printed, never a hardcoded item total.
+  V70_SUMMARY="$(grep -E 'agents-mount: [0-9]+/[0-9]+ checks passed' "$OUT/verify70.log" 2>/dev/null | tail -1 | sed -E 's/.*agents-mount: ([0-9]+\/[0-9]+) checks passed.*/\1/')"
+  if [ "$V70_RC" -eq 0 ]; then
+    if [ -n "$V70_SUMMARY" ]; then
+      pass "verify70: exit 0 (agents-mount: $V70_SUMMARY checks passed)"
+    else
+      pass "verify70: exit 0 (all checks green; no count summary emitted)"
+    fi
+  else
+    fail "verify70: exit $V70_RC (see $OUT/verify70.log)"
+  fi
 fi
 
 # ------------------------------------------- 6b. answer-bearing frame assert

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.1] - 2026-11-26
+
+### Fixed
+
+- **`session.steer` now sends a real bridge request and surfaces a typed
+  rejection.**
+- **Failed, aborted and stopped turns no longer falsely mark a steer
+  `Delivered` or keep pumping the queue.**
+- **Late errors from an old turn no longer contaminate the next turn.**
+- **The queue pump no longer steals the scrollback.**
+
+### Changed
+
+- **The 0.29 E2E suite was expanded to 17 scenarios, and the `NOT RUN` / live
+  contract was corrected.**
+
+### Known Risks
+
+- **An unconsumed steer may remain in the host inbox after an abort or turn
+  error and be consumed on the next turn.** This is accepted: the host has no
+  removal API, so the UI keeps the steer `Injected` and never marks it
+  `Delivered` across turns.
+- **The full-package typecheck still reports 58 pre-existing `tui-base` errors
+  from 0.29.0.** The entry typecheck passes.
+
 ## [0.29.0] - 2026-11-26
 
 ### Added

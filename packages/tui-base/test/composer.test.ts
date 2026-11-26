@@ -22,7 +22,10 @@ function setup() {
 			turn = deferred()
 			return turn.promise
 		},
-		steer: (text) => steered.push(text),
+		steer: async (text) => {
+			steered.push(text)
+			return { accepted: true as const, turnId: "t-test" }
+		},
 		onBusyChange: (value) => busy.push(value),
 	})
 	return { controller, sent, steered, busy, turn: () => turn }

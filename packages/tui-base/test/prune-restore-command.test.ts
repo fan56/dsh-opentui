@@ -106,16 +106,16 @@ describe("B4/C7 locale + ledger", () => {
     }
   })
 
-  test("ledger registers the 14th protocol frame with a first-hand source line", () => {
+  test("ledger registers all 15 protocol frames with aligned source lines", () => {
     const ledger = JSON.parse(readFileSync(resolve(ROOT, "ledger/ledger.json"), "utf8"))
     const wp = ledger.dimensions.wired_protocol
-    expect(wp.count).toBe(14)
-    expect(wp.methods.length).toBe(14)
-    const restore = wp.methods.find((w: any) => w.method === "session.prune.restore")
-    expect(restore).toBeDefined()
-    expect(restore.capir_id).toBeNull()
-    expect(restore.source_line).toBeGreaterThan(0)
+    expect(wp.count).toBe(15)
+    expect(wp.methods.length).toBe(15)
     const source = readFileSync(resolve(ROOT, "packages/bridge/src/index.ts"), "utf8").split("\n")
-    expect(source[restore.source_line - 1]).toContain("session.prune.restore")
+    for (const frame of wp.methods) {
+      expect(frame.capir_id).toBeNull()
+      expect(frame.source_line).toBeGreaterThan(0)
+      expect(source[frame.source_line - 1]).toContain(frame.method)
+    }
   })
 })

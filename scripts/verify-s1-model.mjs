@@ -48,7 +48,7 @@ try { execFileSync("ln", ["-sfn", BUNDLE_DIR, BRIDGE_LINK]) }
 catch (e) { fail(`cannot repoint scratch bridge symlink: ${e.message}`); process.exit(1) }
 
 const child = spawn(DSH_BIN, ["--profile", DEFAULT_PROFILE], {
-  env: { ...process.env, DSH_HOME, DSH_OPENTUI_BRIDGE_STDIO: "1", DSH_OPENTUI_CAP_SMOKE: "1" },
+  env: { ...process.env, DSH_HOME, DSH_OPENTUI_BRIDGE_STDIO: "1", DSH_OPENTUI_CAP_SMOKE: "1", ZAI_CODING_CN_API_KEY: "offline-e2e-dummy" },
   stdio: ["pipe", "pipe", "pipe"],
 })
 let stderr = ""

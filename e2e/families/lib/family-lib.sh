@@ -41,6 +41,36 @@ make_scratch_home() {
   printf '%s\n' "$h"
 }
 
+# Provision a fresh scratch home for the cap-smoke verify-* runners
+# (verify-s1-model.mjs / verify-s2-credentials.mjs). Those runners repoint a
+# BRIDGE SYMLINK under the active profile (DEFAULT_PROFILE, today
+# opentui-monday) at dist/bridge, boot the REAL dsh host with
+# DSH_OPENTUI_CAP_SMOKE=1, then restore the link. The modern provisioner
+# materializes a REAL DIRECTORY at that path, so after provisioning we replace
+# it with a symlink to the shipped bundle — the exact shape the runners expect.
+# Every call builds its own isolated home: the legacy shared
+# /private/tmp/dsh-probe-home-024 is never read or rewritten, and HOME is
+# redirected so ~/.dsh is never touched. Prints the home path on success.
+make_cap_smoke_home() {
+  local h profile
+  h="$(mktemp -d "${TMPDIR:-/tmp}/e2e-capsmoke-home-XXXXXX")" || return 1
+  chmod 700 "$h"
+  mkdir -p "$h/profiles"
+  DSH_HOME="$h" HOME="$h" DSH_OPENTUI_COMPANION_LATEST=off node "$PROVISIONER" --repair >"$h/provision.log" 2>&1 || { printf '%s\n' "$h"; return 1; }
+  grep -q '^dsh-opentui(inproc): PASS' "$h/provision.log" || { printf '%s\n' "$h"; return 1; }
+  profile="$(node -e 'import(process.argv[1]).then((m) => process.stdout.write(m.DEFAULT_PROFILE))' "$REPO/packages/shell/scripts/lib/profile-name.mjs")"
+  [ -n "$profile" ] || { printf '%s\n' "$h"; return 1; }
+  DSH_HOME="$h" PROFILE="$profile" BUNDLE="$REPO/packages/shell/dist/bridge" node -e '
+    const { lstatSync, rmSync, symlinkSync } = require("node:fs")
+    const link = `${process.env.DSH_HOME}/profiles/${process.env.PROFILE}/node_modules/@aiwayds/dsh-opentui-bridge`
+    const st = lstatSync(link)
+    if (st.isSymbolicLink()) process.exit(0)
+    rmSync(link, { recursive: true, force: true })
+    symlinkSync(process.env.BUNDLE, link)
+  ' >"$h/bridge-link.log" 2>&1 || { printf '%s\n' "$h"; return 1; }
+  printf '%s\n' "$h"
+}
+
 family_summary() {
   printf 'summary: PASS=%d/%d\n' "$FAMILY_PASS" $((FAMILY_PASS + FAMILY_FAIL))
   [ "$FAMILY_FAIL" -eq 0 ]

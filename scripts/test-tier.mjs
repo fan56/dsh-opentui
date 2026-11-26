@@ -10,33 +10,40 @@
 //
 // ui/e2e preflight: a missing prerequisite is an ENVIRONMENT ERROR (exit 2)
 // with a named list. It never silently skips and never reports green.
+//
+// e2e legs: run-flows + steer-queue-repro are OFFLINE (local fake/mock model)
+// and always run. The real-model legs (verify/remote-live-smoke.mjs,
+// queue-flush-repro.mjs) are opt-in via DSH_E2E_LIVE=1; the /agents bun gate is
+// opt-in via DSH_AGENTS_E2E=1. Every leg that does not run is printed as NOT
+// RUN and tallied, so the final summary never calls a partial run a PASS.
 import { spawnSync } from "node:child_process"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { DEFAULT_PROFILE } from "../packages/shell/scripts/lib/profile-name.mjs"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const PKGS = join(ROOT, "packages")
 const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), ".dsh")
-const PROFILE = process.env.DSH_UI_PROFILE || DEFAULT_PROFILE
 const LAUNCHER = join(ROOT, "dsh-opentui")
 const SHELL_SDK = join(ROOT, "packages/shell/node_modules/@deepseek-ai/dsh-client-connection")
 const NODE = process.env.NODE || process.execPath
 const BUN = process.env.BUN || "bun"
 
-// Env-gated real-host tests. They skip without their env flag, so they must
-// not be counted by unit/ft (a skip is not a pass); the e2e tier runs them
-// with the flag set, where a missing prerequisite becomes a failure.
-const LIVE_TESTS = new Set(["agents-mount-client.test.ts", "remote-live-smoke.test.ts"])
+// Env-gated real-host bun test. It self-skips without DSH_AGENTS_E2E, so it
+// must not be counted by unit/ft (a skip is not a pass); runE2e() wires it
+// explicitly. The former second entry, remote-live-smoke.test.ts, never
+// existed — the live harness is verify/remote-live-smoke.mjs (a script leg).
+const E2E_GATED_TESTS = new Set(["agents-mount-client.test.ts"])
 
 // The live (real model / real provider key) e2e legs are OPT-IN: the default
-// `bun run test:e2e` is deterministic and key-free (the local e2e-flows fake
-// model + the container suite's mock model). An invalid, expired or
+// `bun run test:e2e` is deterministic and key-free (the e2e-flows fake model
+// + the steer-queue mock LLM). An invalid, expired or
 // rate-limited provider key must not turn the whole tier red for a reason
 // that is not a product regression. DSH_E2E_LIVE=1 includes the real-model
-// legs, where they hard-fail.
+// legs (verify/remote-live-smoke.mjs + verify/queue-flush-repro.mjs); a
+// provider 401/429/5xx/timeout there is an ENVIRONMENT result, reported as
+// NOT RUN and never as a product pass.
 const LIVE_ENABLED = process.env.DSH_E2E_LIVE === "1"
 
 const FT_NAME = /-ft\.test\.tsx?$/
@@ -76,7 +83,7 @@ const classify = () => {
 	const tiers = { unit: [], ft: [], e2e: [] }
 	for (const pkg of packageDirs()) {
 		for (const file of walk(pkg)) {
-			if (LIVE_TESTS.has(basename(file))) tiers.e2e.push(file)
+			if (E2E_GATED_TESTS.has(basename(file))) tiers.e2e.push(file)
 			else if (isFt(file)) tiers.ft.push(file)
 			else tiers.unit.push(file)
 		}
@@ -86,6 +93,15 @@ const classify = () => {
 
 const banner = (text) => console.log(`\n== ${text} ==`)
 
+// A leg that does not run is explicitly NOT RUN, never a silent green. The
+// tally is printed in the final summary so a partial run cannot be reported
+// as a plain PASS.
+const notRunLegs = []
+const markNotRun = (label, reason) => {
+	notRunLegs.push(label)
+	console.log(`SKIP ${label} — NOT RUN: ${reason}`)
+}
+
 const run = (cmd, args, opts = {}) => {
 	const result = spawnSync(cmd, args, { stdio: "inherit", ...opts })
 	if (result.error) {
@@ -94,6 +110,12 @@ const run = (cmd, args, opts = {}) => {
 	}
 	return result.status ?? 1
 }
+
+// Combine a leg status into the running `failed` value. The status argument is
+// ALWAYS evaluated (every leg runs), and the FIRST nonzero wins: a later exit 2
+// (environment / NOT RUN) must not overwrite an earlier product FAIL (exit 1).
+// Do not use `failed || run(...)` — that would short-circuit and skip legs.
+const keepFirst = (current, status) => (current !== 0 ? current : status)
 
 const runBunTier = (name, files) => {
 	banner(`test:${name} (${files.length} files)`)
@@ -116,7 +138,9 @@ const runBunTier = (name, files) => {
 		const rels = byPackage.get(pkg).sort()
 		console.log(`\n$ bun test ${rels.join(" ")}    (cwd: ${relative(ROOT, pkg)})`)
 		const status = run(BUN, ["test", ...rels], { cwd: pkg })
-		if (status !== 0) failed = status
+		// Keep the FIRST nonzero (a product FAIL) as the aggregate result: a
+		// later exit 2 (environment / NOT RUN) must not overwrite it.
+		if (status !== 0 && failed === 0) failed = status
 	}
 	return failed
 }
@@ -163,12 +187,12 @@ const runUi = () => {
 	requireEnv("ui")
 	banner("test:ui — UI layer (tmux capture + ANSI/geometry)")
 	let failed = 0
-	failed = run(NODE, ["verify/ui-matrix.mjs"], { cwd: ROOT }) || failed
-	failed = run(NODE, ["verify/agents-mount-repro.mjs"], { cwd: ROOT }) || failed
+	failed = keepFirst(failed, run(NODE, ["verify/ui-matrix.mjs"], { cwd: ROOT }))
+	failed = keepFirst(failed, run(NODE, ["verify/agents-mount-repro.mjs"], { cwd: ROOT }))
 	// Locale text-leak audit: every UI string on real-client frames (en + zh-CN
 	// boots, five faces each) is checked against the locale dictionaries — the
 	// gate that catches the `t()` fail-open key-on-screen bug shape.
-	failed = run(NODE, ["verify/text-leak-audit.mjs"], { cwd: ROOT }) || failed
+	failed = keepFirst(failed, run(NODE, ["verify/text-leak-audit.mjs"], { cwd: ROOT }))
 	return failed
 }
 
@@ -176,36 +200,59 @@ const runE2e = () => {
 	requireEnv("e2e")
 	let failed = 0
 
-	// Default leg: local flows — real client + real resident host + a local
-	// fake model in a per-scenario scratch DSH_HOME. No provider key, no
-	// network, so it is the deterministic e2e baseline for every default run.
-	banner("test:e2e — local flows (real client + real host + local fake model)")
-	failed = run(NODE, ["verify/e2e-flows/run-flows.mjs"], { cwd: ROOT }) || failed
+	// Offline legs: real client + real resident host, LOCAL fake/mock model.
+	// They run on every e2e invocation; DSH_E2E_LIVE never gates them.
+	banner("test:e2e — offline legs (real client + real host, local model)")
+	failed = keepFirst(failed, run(NODE, ["verify/e2e-flows/run-flows.mjs"], { cwd: ROOT }))
+	// steer/queue-repro uses e2e/lib/mock-llm.mjs (no key, no network). It was
+	// wrongly hidden behind DSH_E2E_LIVE; it is an offline leg and now always
+	// runs here. queue-flush-repro stays on the live leg below.
+	failed = keepFirst(failed, run(NODE, ["verify/steer-queue-repro.mjs"], { cwd: ROOT }))
 
+	// Real-model legs are opt-in. Exit 2 from these legs means ENVIRONMENT /
+	// NOT RUN (bad key, 401/429/5xx, timeout): never count it as a pass.
+	// With the default (live NOT requested) it does not turn the deterministic
+	// tier red for a non-product reason. With DSH_E2E_LIVE=1 the user ASKED for
+	// the live legs, so a leg that did not run is a non-green outcome: propagate
+	// exit 2 instead of settling for INCOMPLETE/exit 0.
+	const runLiveLeg = (label, cmd, args, opts) => {
+		const status = run(cmd, args, opts)
+		if (status === 2) {
+			markNotRun(label, "environment/provider error (exit 2) — see leg output")
+			if (LIVE_ENABLED) failed = keepFirst(failed, status)
+		} else if (status !== 0 && failed === 0) failed = status
+	}
 	if (LIVE_ENABLED) {
 		banner("test:e2e — live real model (opt-in: DSH_E2E_LIVE=1)")
-		failed =
-			run(BUN, ["test", "test/remote-live-smoke.test.ts"], {
-				cwd: join(ROOT, "packages/shell"),
-				env: { ...process.env, DSH_REMOTE_SMOKE: "1", DSH_SMOKE_PROFILE: process.env.DSH_SMOKE_PROFILE || PROFILE },
-			}) || failed
-		failed = run(NODE, ["verify/steer-queue-repro.mjs"], { cwd: ROOT }) || failed
-		failed = run(NODE, ["verify/queue-flush-repro.mjs"], { cwd: ROOT }) || failed
+		runLiveLeg("verify/remote-live-smoke.mjs", NODE, ["verify/remote-live-smoke.mjs"], { cwd: ROOT })
+		runLiveLeg("verify/queue-flush-repro.mjs", NODE, ["verify/queue-flush-repro.mjs"], { cwd: ROOT })
 	} else {
-		banner("test:e2e — live real model: SKIPPED (opt-in)")
-		console.log("SKIP live real-model legs — explicitly NOT RUN, not counted as passed:")
-		console.log("  - packages/shell/test/remote-live-smoke.test.ts (host lifecycle, model catalog, real turns)")
-		console.log("  - verify/steer-queue-repro.mjs (busy Enter steer/queue + abort)")
-		console.log("  - verify/queue-flush-repro.mjs (/flush delivery order)")
-		console.log("  reason: opt-in via DSH_E2E_LIVE=1 (needs a valid provider key; the default run stays deterministic)")
+		markNotRun("verify/remote-live-smoke.mjs", "opt-in via DSH_E2E_LIVE=1 (real provider key)")
+		markNotRun("verify/queue-flush-repro.mjs", "opt-in via DSH_E2E_LIVE=1 (real provider key)")
 	}
 
-	// 025-w3-2: the container suite leg is retired (old e2e/scenarios/ podman
+	// The bun wrapper for the /agents mount gate is wired here, not left as a
+	// matrix-only entry. It self-skips without its own flag; print NOT RUN
+	// ourselves so the skip is never a silent green.
+	if (process.env.DSH_AGENTS_E2E === "1") {
+		banner("test:e2e — real-client /agents gate (DSH_AGENTS_E2E=1)")
+		const status = run(BUN, ["test", "test/agents-mount-client.test.ts"], { cwd: join(ROOT, "packages/shell") })
+		if (status === 2) {
+			markNotRun("agents-mount-client.test.ts", "environment error (exit 2)")
+			// The user opted in (DSH_AGENTS_E2E=1): an exit 2 means NOT RUN, so it
+			// must make the tier nonzero too — never a silent green.
+			if (failed === 0) failed = status
+		} else if (status !== 0 && failed === 0) failed = status
+	} else {
+		markNotRun("agents-mount-client.test.ts", "opt-in via DSH_AGENTS_E2E=1 (CI self-hosted gate)")
+	}
+
+	// 025-w3-2: the container suite is retired (old e2e/scenarios/ podman
 	// layer). Its still-valid coverage is taken over by the host families /
 	// verify70 / unit gates and the CI pack-cold-start job — see
 	// .proof/025-w3-2/01-legacy-retirement/takeover-table.md. NOT RUN here is
-	// NOT a pass and is not counted; the local-flows leg above is the e2e tier.
-	console.log("SKIP retired container suite (025-w3-2: legacy e2e/scenarios offlined) — NOT RUN, not counted as passed")
+	// NOT a pass and is not counted.
+	markNotRun("retired container suite", "025-w3-2: legacy e2e/scenarios offlined (no podman leg)")
 	return failed
 }
 
@@ -215,12 +262,22 @@ const printMatrix = () => {
 		const files =
 			name === "ui"
 				? ["verify/ui-matrix.mjs", "verify/agents-mount-repro.mjs", "verify/text-leak-audit.mjs"]
-				: name === "e2e"
-					? ["verify/e2e-flows/run-flows.mjs", ...tiers.e2e, "verify/steer-queue-repro.mjs", "verify/queue-flush-repro.mjs"]
-					: tiers[name]
-		console.log(`\n# ${name} (${files.length})`)
-		for (const file of files.sort()) console.log(`  ${relative(ROOT, file)}`)
-	}
+					: name === "e2e"
+						? [
+								"verify/e2e-flows/run-flows.mjs", // offline: local fake model
+								"verify/steer-queue-repro.mjs", // offline: local mock LLM
+								...tiers.e2e, // agents-mount-client.test.ts (DSH_AGENTS_E2E=1)
+								"verify/remote-live-smoke.mjs", // live: DSH_E2E_LIVE=1
+								"verify/queue-flush-repro.mjs", // live: DSH_E2E_LIVE=1
+							]
+						: tiers[name]
+			console.log(`\n# ${name} (${files.length})`)
+			for (const file of files.sort()) console.log(`  ${relative(ROOT, file)}`)
+		}
+	console.log("\n# e2e leg flags (unset legs are NOT RUN, not passes)")
+	console.log("  offline (always): run-flows.mjs (all in-tree scenarios), steer-queue-repro.mjs (mock LLM)")
+	console.log("  DSH_E2E_LIVE=1:   verify/remote-live-smoke.mjs, verify/queue-flush-repro.mjs")
+	console.log("  DSH_AGENTS_E2E=1: packages/shell/test/agents-mount-client.test.ts")
 }
 
 const main = () => {
@@ -228,17 +285,24 @@ const main = () => {
 	if (tier === "list") return printMatrix(), 0
 	const tiers = classify()
 	let failed = 0
-	if (tier === "unit" || tier === "all") failed = runBunTier("unit", tiers.unit) || failed
-	if (tier === "ft" || tier === "all") failed = runBunTier("ft", tiers.ft) || failed
-	if (tier === "ui" || tier === "all") failed = runUi() || failed
-	if (tier === "e2e" || tier === "all") failed = runE2e() || failed
+	if (tier === "unit" || tier === "all") failed = keepFirst(failed, runBunTier("unit", tiers.unit))
+	if (tier === "ft" || tier === "all") failed = keepFirst(failed, runBunTier("ft", tiers.ft))
+	if (tier === "ui" || tier === "all") failed = keepFirst(failed, runUi())
+	if (tier === "e2e" || tier === "all") failed = keepFirst(failed, runE2e())
 	if (!["unit", "ft", "ui", "e2e", "all"].includes(tier)) {
 		console.error(`test-tier: unknown tier '${tier}' (unit|ft|ui|e2e|all|list)`)
 		return 2
 	}
 	if (failed) {
-		console.error(`\ntest:${tier}: FAILED`)
+		console.error(`\ntest:${tier}: FAILED${notRunLegs.length ? ` (${notRunLegs.length} leg(s) NOT RUN)` : ""}`)
 		return failed
+	}
+	if (notRunLegs.length) {
+		// Opt-in / retired legs are explicitly not run: say so in the summary.
+		// Exit 0 keeps the default deterministic tier green, but the banner is
+		// deliberately NOT "PASS" — a partial run is not a full pass.
+		console.log(`\ntest:${tier}: INCOMPLETE — ${notRunLegs.length} leg(s) NOT RUN (see SKIP lines); NOT a full PASS`)
+		return 0
 	}
 	console.log(`\ntest:${tier}: PASS`)
 	return 0

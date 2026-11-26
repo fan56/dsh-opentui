@@ -134,9 +134,11 @@ try {
     `cap.event frames with sessionId+seq=${evWithSid.length} ` +
     `(types=[${[...new Set(evWithSid.map((e) => e.eventType))].join(',')}])`)
 
-  // 5. model domain — model.currentSelection must not crash the bridge.
+  // 5. model domain — model.currentSelection must SUCCEED, not merely answer.
+  //    A framed ok=false (unsupported / not-wired / error) is a real failure:
+  //    answering with an error is not evidence the capability works.
   const model = await waitReply(send('model.currentSelection'))
-  check('model', 'currentSelection', model !== undefined && typeof model.ok === 'boolean',
+  check('model', 'currentSelection', model?.ok === true,
     `model.currentSelection framed reply ok=${model?.ok} result=${JSON.stringify(model?.result ?? null).slice(0, 120)}`)
 
   // 6. handshake negative / degrade — an inflated (never-wired) CapIR id must

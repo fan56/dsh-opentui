@@ -11,17 +11,24 @@
 //      that turn is aborted (the documented failure/abort policy);
 //   3. /flush restarts the paused pump: the head is delivered NOW
 //      ("queue flushed — 1 prompt(s) sending now, 1 still queued"), the rest
-//      follow at the turn end, in submission order.
+//      follow at the turn end, in submission order. The order check REQUIRES
+//      two observed queue rows (#1/#2) and two distinct transcript user rows
+//      in submission order — an empty queue can never satisfy it.
+//
+// Real model leg: credentials are REFERENCED, never copied into argv, logs or
+// scratch plaintext — the real ~/.dsh/.credentials.yaml is linked BY PATH into
+// the scratch home (same contract as verify/remote-live-smoke.mjs). Missing
+// credentials / prerequisite = exit 2 = NOT RUN (ENV), never a pass.
 //
 // Exit 0 = every check passed; exit 1 = at least one failed (pane captures are
-// kept under verify/queue-flush-out/); exit 2 = environment problem.
+// kept under verify/queue-flush-out/); exit 2 = environment problem / NOT RUN.
 //
 // Isolation: uniquely named tmux session, killed individually; the scratch
 // host is reaped through its scratch lock file.
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_PROFILE } from '../packages/shell/scripts/lib/profile-name.mjs'
@@ -29,6 +36,8 @@ import { provisionScratchProfile } from './lib/scratch-profile.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
+const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
+const CREDENTIALS = join(REAL_HOME, '.credentials.yaml')
 const PROFILE = DEFAULT_PROFILE
 const IDLE = '提问，回车发送'
 const PLACEHOLDER = 'Type a message'
@@ -50,6 +59,14 @@ const tmuxOut = (...a) => (tmux(...a).status === 0 ? tmux(...a).stdout : '')
 const flat = (s) => String(s).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '')
 const has = (out, marker) => flat(out).includes(flat(marker))
 const hasAny = (out, markers) => markers.some((m) => has(out, m))
+/** Never persist a copied secret into a snapshot or summary. */
+const scrub = (text) =>
+  String(text ?? '')
+    .replace(/(sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|api[_-]?key["':= ]+[^\s"',}]{6,})/gi, '<redacted>')
+const notRun = (reason) => {
+  console.error(`queue-flush: NOT RUN (ENV) ${reason}`)
+  process.exit(2)
+}
 
 for (const cmd of ['tmux', 'bun'])
 	if (sh('which', [cmd]).status !== 0) {
@@ -60,17 +77,40 @@ if (!existsSync(LAUNCHER)) {
 	console.error(`queue-flush: launcher missing: ${LAUNCHER}`)
 	process.exit(2)
 }
+if (!existsSync(CREDENTIALS) || statSync(CREDENTIALS).size === 0)
+	notRun('no provider credentials in the real DSH_HOME (referenced by path, contents never read into logs)')
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 
 // --- scratch home (same isolation as steer-queue-repro) ---
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-queue-flush-home-'))
 chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-queue-flush-ws-'))
+let profileDir
 try {
-  provisionScratchProfile({ home: HOME, repo: REPO })
+  profileDir = provisionScratchProfile({ home: HOME, repo: REPO })
 } catch (error) {
-  console.error(`queue-flush: ${error.message}`)
-  process.exit(2)
+  notRun(`scratch profile provisioning failed: ${scrub(error.message)}`)
+}
+// Pin the scratch UI language to en: every assertion below matches the English
+// copy ("steer or queue", "Queued", "Paused", "queue flushed"), so a host
+// default of zh-CN would make the run fail for a locale reason, not a product one.
+try {
+  const cfgPath = join(profileDir, 'config.json')
+  const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : {}
+  cfg.lang = 'en'
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
+} catch (error) {
+  notRun(`scratch config pin failed: ${scrub(error.message)}`)
+}
+// Reference the REAL credential FILE BY PATH (symlink), never copy its value
+// into argv, a log or scratch plaintext. No fabricated placeholder key: a
+// missing/invalid key stays an honest ENV NOT RUN.
+try {
+  const scratchCreds = join(HOME, '.credentials.yaml')
+  rmSync(scratchCreds, { force: true })
+  symlinkSync(CREDENTIALS, scratchCreds, 'file')
+} catch (error) {
+  notRun(`scratch credential link failed: ${scrub(error.message)}`)
 }
 
 const LOCK = join(HOME, `opentui-host.${PROFILE}.json`)
@@ -151,7 +191,8 @@ const waitPane = async (session, pred, timeoutMs, everyMs = 300) => {
 	return { ok: false, out: last }
 }
 const snap = (name, session = SESS) => {
-	writeFileSync(join(OUT, `${name}.ans`), capture(session, true))
+	const esc = capture(session, true)
+	writeFileSync(join(OUT, `${name}.ans`), scrub(esc))
 	console.log(`  snapshot: verify/queue-flush-out/${name}.ans`)
 	return capture(session)
 }
@@ -209,7 +250,14 @@ try {
 		[queued1.ok ? '⏸ #1 visible' : 'q1 row not visible', queued2.ok ? '⏸ #2 visible' : 'q2 row not visible'])
 
 	// ---------------- 3. abort keeps the queue (paused) ----------------
+	// U6 stop contract (turn-cancel.tsx): the first Esc only ARMS, a second Esc
+	// inside the window opens `Stop everything?`, and Enter confirms it. A bare
+	// Esc leaves the turn running, so the queue would never enter Paused.
 	sendKeys(SESS, 'Escape')
+	await sleep(150)
+	sendKeys(SESS, 'Escape')
+	await sleep(350)
+	sendKeys(SESS, 'Enter')
 	const paused = await waitPane(SESS, (o) => has(o, 'Paused') && has(o, '#1'), 10_000)
 	snap('04-paused')
 	record('abort keeps the queue and marks it paused', paused.ok,
@@ -224,14 +272,38 @@ try {
 	record('/flush delivers the paused head immediately', flushed.ok,
 		[flushed.ok ? 'queue flushed — 1 sending now, 1 still queued visible' : 'flush receipt not visible'])
 
-	// The rest follows at the turn end: both prompt texts reach the transcript
-	// as real user messages (the queue wait rows are gone).
+	// The rest follows at the turn end: BOTH queued prompts must land as real
+	// transcript user rows, in submission order, with no wait rows left.
+	// This is not a vacuous check: it requires the #1/#2 queue rows observed in
+	// step 2, and it ignores wait rows / the composer so a stale or empty
+	// queue can never satisfy it.
+	const Q1 = 'first queued prompt'
+	const Q2 = 'second queued prompt'
+	// A delivered line is a REAL user row, painted with ❯ — require it
+	// positively (a bare marker could also be composer text or a tool echo).
+	// Still exclude the wait rows Queued/Paused and their #1/#2 numbering.
+	// Use RAW includes for #1/#2: `has()` flattens away the '#', so has(line,
+	// '#1') matches any stray '1' on a real transcript row and wrongly drops it.
+	const rowIndex = (out, marker) =>
+		String(out)
+			.split('\n')
+			.findIndex((line) =>
+				has(line, marker) &&
+				line.includes('❯') &&
+				!has(line, 'Queued') && !has(line, 'Paused') &&
+				!line.includes('#1') && !line.includes('#2'))
 	const delivered = await waitPane(SESS,
-		(o) => has(o, 'first queued prompt') && has(o, 'second queued prompt') && !has(o, 'Queued'), 90_000, 500)
+		(o) => rowIndex(o, Q1) >= 0 && rowIndex(o, Q2) > rowIndex(o, Q1) && !has(o, 'Queued'),
+		90_000, 500)
 	snap('06-delivered')
-	record('the flushed queue drains in order, one per turn end',
-		delivered.ok && !has(delivered.out, 'Queued'),
-		[delivered.ok ? 'both prompts in the transcript, no wait rows' : 'tail prompt not delivered'])
+	const i1 = rowIndex(delivered.out, Q1)
+	const i2 = rowIndex(delivered.out, Q2)
+	// queued1/queued2 are folded into the order assertion below only — not
+	// recorded a second time, which would inflate the check count.
+	const queueWasReal = queued1.ok && queued2.ok
+	record('the flushed queue drains both prompts in submission order',
+		queueWasReal && delivered.ok && i1 >= 0 && i2 > i1 && !has(delivered.out, 'Queued'),
+		[`transcript rows ${i1}/${i2} (#1/#2)`, delivered.ok ? 'no wait rows' : 'tail not delivered or out of order'])
 
 	const err = capture(SESS)
 	const crash = /TypeError|ReferenceError|Cannot read propert|Unhandled error|panic/.exec(err)
@@ -242,8 +314,13 @@ try {
 } finally {
 	if (!KEEP) killSession(SESS)
 	reapHost()
+	// The client may echo an env value into its stderr log; scrub on disk too.
 	try {
-		writeFileSync(join(OUT, 'summary.json'), JSON.stringify({ results, crashed: crashed ? String(crashed) : null }, null, 2))
+		const errPath = join(OUT, `${SESS}.err.log`)
+		if (existsSync(errPath)) writeFileSync(errPath, scrub(readFileSync(errPath, 'utf8')))
+	} catch {}
+	try {
+		writeFileSync(join(OUT, 'summary.json'), JSON.stringify({ results, crashed: crashed ? scrub(String(crashed)) : null }, null, 2))
 	} catch {}
 	if (!KEEP) {
 		try {

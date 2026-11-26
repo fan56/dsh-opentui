@@ -21,8 +21,11 @@
  *     per-session state, never carried across).
  *
  * Steer contract: the injected line gets a `⤵` receipt row that flips to
- * `✓` (delivered) when the turn settles. The transcript paints both states
- * from `pendingRows`; nothing here animates.
+ * `✓` (delivered) ONLY when the SAME turn that accepted it settles cleanly.
+ * Each accepted steer is tagged with the turn generation that owns it; a
+ * failed/aborted turn leaves its rows "injected", and the next generation
+ * never promotes those stale rows. The transcript paints both states from
+ * `pendingRows` (the row shape is unchanged); nothing here animates.
  *
  * History recall is shell-style, aligned with the pi editor
  * (`dsh-tui-pi` pi-tui `navigateHistory`) and the mini composer
@@ -42,7 +45,103 @@
  * to recall once the user had typed a draft (the reported "↑ does nothing
  * when I typed something" gap).
  */
+import type { SeamSessionEvent, SeamSteerResult } from "../../seams/session"
+
 export const MAX_HISTORY_ENTRIES = 50
+
+/** Turn-error codes that mean an abort / closed session rather than a genuine
+ *  turn failure. The bridge emits these as `turn.error` (relayed to the page as
+ *  `session.error`); abort/close resolves the awaited turn WITHOUT a send
+ *  rejection, so the controller needs the code to classify them. The terminal
+ *  stop shapes include an explicit abort, a user abort, a closed/resumed/forked
+ *  session, an interrupted turn, and an abort with no live turn to cancel. Any
+ *  other code (INTERNAL, BLOCKED, …) is a failure. */
+export function isAbortTurnCode(code: string | undefined): boolean {
+	return (
+		code === "ABORTED" ||
+		code === "USER_ABORT" ||
+		code === "SESSION_CLOSED" ||
+		code === "FORKED" ||
+		code === "INTERRUPTED" ||
+		code === "TURN_ABORT_NOOP"
+	)
+}
+
+/**
+ * Turn outcome tracker — the page's renderer-free classification of the seam
+ * turn that just settled (oldfox 终审收口).
+ *
+ * The bridge resolves the awaited `session.send` on `turn.error` / abort
+ * WITHOUT rejecting the send promise, so `ComposerController` cannot tell a
+ * failed or aborted turn from a successful one on its own. This tracker reads
+ * the seam's event stream instead:
+ *
+ *   `session.updated{ turn: "starting", turnId }` → arm that turn id
+ *   `session.error{ turnId, code }`               → terminal failed / aborted
+ *   `bridge.turn.terminal{ turnId, terminalType, reason }`
+ *       `terminalType:"turn/error"`               → failed / aborted by reason.code
+ *       `terminalType:"turn/end"`                 → clean end (no failure)
+ *   `bridge.turn.interrupted{ turnId }`           → terminal aborted
+ *
+ * A terminal event counts ONLY when its `turnId` equals the armed id: a late
+ * error from a prior turn must not poison the new one. `beginTurn()` (called
+ * at each send) disarms the id and clears the terminal outcome. Plain,
+ * non-reactive state — both getters are read at turn settle by the controller,
+ * so no signal is needed. Unit-testable with plain `{ type, details }` events.
+ */
+export class TurnOutcomeTracker {
+	/** The turn id armed by `session.updated{turn:"starting"}` for this send. */
+	private activeTurnId: string | undefined
+	/** Terminal classification of the armed turn (unset while it runs). */
+	private outcome: "failed" | "aborted" | undefined
+
+	/** A new send: forget the previous turn id AND its terminal outcome. */
+	beginTurn(): void {
+		this.activeTurnId = undefined
+		this.outcome = undefined
+	}
+
+	/** Feed one seam event. Only turn-scoped events for the armed id classify. */
+	onEvent(event: SeamSessionEvent): void {
+		const details = (event?.details ?? {}) as Record<string, unknown>
+		if (event?.type === "session.updated" && details.turn === "starting") {
+			const id = details.turnId
+			if (typeof id === "string" && id !== "") this.activeTurnId = id
+			return
+		}
+		if (this.activeTurnId === undefined) return
+		if (event?.type === "session.error") {
+			if (details.turnId !== this.activeTurnId) return
+			const code = typeof details.code === "string" ? details.code : "INTERNAL"
+			this.outcome = isAbortTurnCode(code) ? "aborted" : "failed"
+			return
+		}
+		if (event?.type === "bridge.turn.terminal") {
+			if (details.turnId !== this.activeTurnId) return
+			// A journal terminal: turn/error classifies exactly like session.error,
+			// while turn/end is a clean settle and must NOT mark a failure.
+			if (details.terminalType === "turn/error") {
+				const reason = (details.reason ?? {}) as Record<string, unknown>
+				const code = typeof reason.code === "string" ? reason.code : "INTERNAL"
+				this.outcome = isAbortTurnCode(code) ? "aborted" : "failed"
+			}
+			return
+		}
+		if (event?.type === "bridge.turn.interrupted" && details.turnId === this.activeTurnId) {
+			this.outcome = "aborted"
+		}
+	}
+
+	/** The armed turn ended with a genuine error. */
+	isFailed(): boolean {
+		return this.outcome === "failed"
+	}
+
+	/** The armed turn was aborted / interrupted / closed. */
+	isAborted(): boolean {
+		return this.outcome === "aborted"
+	}
+}
 
 /** Busy-submit delivery choice. The view asks through the dialog stack; the
  * controller only consumes the answer, so the decision core stays
@@ -100,11 +199,22 @@ export type ComposerHistoryStep = {
  * cursor offset (pi's `historyDraft = structuredClone(this.state)`). */
 type HistoryDraft = { text: string; cursor: number }
 
+/** Who caused a turn to start. `user` = an explicit Enter / /flush head:
+ *  the page may scroll the transcript to the newest row. `queue` = a queued
+ *  line pumped on turn end (or a popup answer that landed after settle):
+ *  the reader must not be yanked away from scrollback. */
+export type ComposerSendSource = "user" | "queue"
+
 export type ComposerControllerOptions = {
-	/** Starts a turn (page wiring: the transcript projection's `send`). */
-	send: (text: string) => Promise<void>
-	/** Steers the running turn (page wiring: `seam.steer`). */
-	steer: (text: string) => void
+	/** Starts a turn (page wiring: the transcript projection's `send`).
+	 *  The source is optional for simple callers and defaults to `user`. */
+	send: (text: string, source?: ComposerSendSource) => Promise<void>
+	/** Steers the running turn (page wiring: `seam.steer`); resolution is the
+	 * acceptance receipt — the controller paints nothing before `accepted`. */
+	steer: (text: string) => Promise<SeamSteerResult>
+	/** A steer was refused (idle / ending / aborting / unsupported). Safe
+	 * default: no receipt row, no auto-send; the page restores the draft. */
+	onSteerRejected?: (info: { text: string; reason: string }) => void
 	/** Busy changes are pushed here (status/powerline batch consumes). */
 	onBusyChange?: (busy: boolean) => void
 	/** Injectable history for tests; defaults to a fresh in-memory one. */
@@ -117,10 +227,15 @@ export type ComposerControllerOptions = {
 	onPendingChange?: (rows: readonly ComposerPendingRow[]) => void
 	/** A failed/aborted turn paused a non-empty queue (page shows a notice). */
 	onQueuePaused?: (info: ComposerQueuePause) => void
-	/** Page-owned abort flag (esc/ctrl+c interrupt). Abort resolves the seam
-	 * turn without an error, so the controller cannot tell it from success
-	 * on its own. */
+	/** Page-owned abort flag (esc/ctrl+c interrupt or a classified abort turn).
+	 * Abort resolves the seam turn without an error, so the controller cannot
+	 * tell it from success on its own. */
 	isTurnAborted?: () => boolean
+	/** Page-owned failure flag (a `session.error` for the active turn classified
+	 * it as failed). A failed turn also resolves the seam without a send
+	 * rejection, so the controller needs this signal to pause the queue / drop
+	 * steer receipts. Read as a getter; the page resets it on each send. */
+	isTurnFailed?: () => boolean
 	/** A disabled composer refuses every submit (bridge RECOVERING, blocky
 	 * §2.5). The caller keeps the typed draft: "ignored" never clears it and
 	 * never appends history. Read as a getter so the page can flip it live. */
@@ -200,11 +315,13 @@ export class ComposerController {
 	readonly history: ComposerHistory
 	private readonly send: ComposerControllerOptions["send"]
 	private readonly steer: ComposerControllerOptions["steer"]
+	private readonly onSteerRejected: ComposerControllerOptions["onSteerRejected"]
 	private readonly onBusyChange: ComposerControllerOptions["onBusyChange"]
 	private readonly chooseDelivery: ComposerControllerOptions["chooseDelivery"]
 	private readonly onPendingChange: ComposerControllerOptions["onPendingChange"]
 	private readonly onQueuePaused: ComposerControllerOptions["onQueuePaused"]
 	private readonly isTurnAborted: ComposerControllerOptions["isTurnAborted"]
+	private readonly isTurnFailed: ComposerControllerOptions["isTurnFailed"]
 	private readonly disabled: ComposerControllerOptions["disabled"]
 	private busyState = false
 	private pendingTurn: Promise<void> | undefined
@@ -217,15 +334,23 @@ export class ComposerController {
 	/** Session-switch epoch: a popup answer that lands after a switch is
 	 * discarded (the queue belongs to the old session). */
 	private deliveryEpoch = 0
+	/** Turn generation: bumped on every startTurn (including pumped queue
+	 * lines). A steer receipt belongs to the generation that accepted it; a
+	 * later turn cannot promote an injected row left by a failed/aborted turn. */
+	private turnGeneration = 0
+	/** Accepted steer row id → the generation that accepted it. */
+	private readonly steerTurnById = new Map<number, number>()
 
 	constructor(options: ComposerControllerOptions) {
 		this.send = options.send
 		this.steer = options.steer
+		this.onSteerRejected = options.onSteerRejected
 		this.onBusyChange = options.onBusyChange
 		this.chooseDelivery = options.chooseDelivery
 		this.onPendingChange = options.onPendingChange
 		this.onQueuePaused = options.onQueuePaused
 		this.isTurnAborted = options.isTurnAborted
+		this.isTurnFailed = options.isTurnFailed
 		this.disabled = options.disabled
 		this.history = options.history ?? new ComposerHistory()
 	}
@@ -265,7 +390,11 @@ export class ComposerController {
 		// whatever its delivery — steered lines are recallable too.
 		this.history.append(prompt)
 		if (this.busyState) {
-			this.injectSteer(prompt)
+			// Sync entry: the result is optimistic ("steered" names the chosen
+			// delivery, not an accepted receipt). injectSteer paints nothing
+			// until the seam accepts; a rejection restores the draft via the
+			// page callback.
+			void this.injectSteer(prompt)
 			return "steered"
 		}
 		this.startTurn(prompt)
@@ -292,16 +421,22 @@ export class ComposerController {
 		// queue belongs to the old session and must not leak into the new one.
 		if (epoch !== this.deliveryEpoch) return "cancelled"
 		if (delivery === undefined) return "cancelled"
-		this.history.append(prompt)
 		if (!this.busyState) {
-			this.startTurn(prompt)
+			// The turn settled while the popup was open: the answer is a
+			// deferred delivery, not a fresh user submit — no scroll-to-bottom.
+			this.history.append(prompt)
+			this.startTurn(prompt, "queue")
 			return "sent"
 		}
 		if (delivery === "queue") {
+			this.history.append(prompt)
 			this.enqueue(prompt)
 			return "queued"
 		}
-		this.injectSteer(prompt)
+		// A refused steer keeps the text (no history entry, no receipt, no
+		// silent send); "cancelled" tells the page to keep the editor buffer.
+		if (!(await this.injectSteer(prompt))) return "cancelled"
+		this.history.append(prompt)
 		return "steered"
 	}
 
@@ -311,6 +446,8 @@ export class ComposerController {
 		this.deliveryEpoch += 1
 		this.queueItems = []
 		this.pendingRows = []
+		// Every receipt row is gone; drop its generation tag with it.
+		this.steerTurnById.clear()
 		this.emitPending()
 	}
 
@@ -360,19 +497,29 @@ export class ComposerController {
 	/** Start one turn and own its settle: successful settle pumps the next
 	 * queued line (staying busy across the boundary — no idle flicker);
 	 * failure/abort pauses a non-empty queue and keeps it. */
-	private startTurn(prompt: string): void {
+	private startTurn(prompt: string, source: ComposerSendSource = "user"): void {
+		// New generation: receipts accepted by an earlier turn (left injected by
+		// a failure/abort) never become delivered on this turn's clean settle.
+		const generation = ++this.turnGeneration
 		this.setBusy(true)
-		let failed = false
-		const turn = (async () => this.send(prompt))().then(
+		let sendRejected = false
+		const turn = (async () => this.send(prompt, source))().then(
 			() => undefined,
 			() => {
-				failed = true
+				sendRejected = true
 			},
 		)
 		this.pendingTurn = turn.finally(() => {
 			this.pendingTurn = undefined
+			// A turn failure also resolves the seam without rejecting send: the
+			// page records `session.error` (with a turn id) and exposes it here.
+			const failed = sendRejected || (this.isTurnFailed?.() ?? false)
 			const aborted = !failed && (this.isTurnAborted?.() ?? false)
-			this.markSteerDelivered()
+			// Only a cleanly settled turn proves ITS steers were consumed.
+			// A failed/aborted turn leaves its injected rows "injected" — never a
+			// false ✓ receipt on this or any later generation for text the host
+			// may not have consumed.
+			if (!failed && !aborted) this.markSteerDelivered(generation)
 			if (failed || aborted) {
 				this.setBusy(false)
 				if (this.queueItems.length > 0) {
@@ -388,8 +535,9 @@ export class ComposerController {
 			}
 			this.dropQueueRow(next.id)
 			// Busy stays true through the hand-off: the footer/status never
-			// flashes idle between queued turns.
-			this.startTurn(next.text)
+			// flashes idle between queued turns. A pumped line is NOT a user
+			// submit: carry `queue` so the page leaves scrollback untouched.
+			this.startTurn(next.text, "queue")
 		})
 	}
 
@@ -404,20 +552,49 @@ export class ComposerController {
 		this.emitPending()
 	}
 
-	/** Steer the running turn now and paint its `⤵` receipt row. */
-	private injectSteer(prompt: string): void {
+	/** Steer the running turn; paint a `⤵` receipt ONLY on acceptance.
+	 * A rejection keeps the text under the page's control (draft restored via
+	 * `onSteerRejected`) and never starts a surprise normal turn. A thrown
+	 * seam error is a rejection whose reason is the actual err.message — never a fake receipt.
+	 * The generation is captured BEFORE the await: the receipt belongs to the
+	 * turn that was running when the steer was submitted, not to whichever turn
+	 * happens to be current when the host answers. */
+	private async injectSteer(prompt: string): Promise<boolean> {
+		const epoch = this.deliveryEpoch
+		const generation = this.turnGeneration
+		let result: SeamSteerResult
+		try {
+			const awaited = await this.steer(prompt)
+			// A legacy/void seam cannot confirm acceptance. Treat it as an
+			// explicit refusal (never a fake receipt, never a TypeError).
+			result =
+				awaited !== null && typeof awaited === "object" && typeof awaited.accepted === "boolean"
+					? awaited
+					: { accepted: false, reason: "INVALID_STEER_RESULT" }
+		} catch (err) {
+			result = { accepted: false, reason: err instanceof Error ? err.message : String(err) }
+		}
+		if (epoch !== this.deliveryEpoch) return false // session switched while awaiting
+		if (!result.accepted) {
+			this.onSteerRejected?.({ text: prompt, reason: result.reason })
+			return false
+		}
 		const id = ++this.deliverySeq
+		this.steerTurnById.set(id, generation)
+		// Public row shape is unchanged — the generation tag is controller-only.
 		this.pendingRows = [...this.pendingRows, { id, kind: "steer", state: "injected", text: prompt }]
 		this.emitPending()
-		this.steer(prompt)
+		return true
 	}
 
-	/** Turn end: every injected steer line becomes a delivered receipt. */
-	private markSteerDelivered(): void {
-		if (!this.pendingRows.some((row) => row.kind === "steer" && row.state === "injected")) return
-		this.pendingRows = this.pendingRows.map((row) =>
-			row.kind === "steer" && row.state === "injected" ? { ...row, state: "delivered" } : row,
-		)
+	/** Clean turn end: only THIS generation's injected steer rows become
+	 * delivered receipts. Rows left by a failed/aborted generation stay
+	 * "injected" forever — a later successful turn must not vouch for them. */
+	private markSteerDelivered(generation: number): void {
+		const isMine = (row: ComposerPendingRow) =>
+			row.kind === "steer" && row.state === "injected" && this.steerTurnById.get(row.id) === generation
+		if (!this.pendingRows.some(isMine)) return
+		this.pendingRows = this.pendingRows.map((row) => (isMine(row) ? { ...row, state: "delivered" } : row))
 		this.emitPending()
 	}
 

@@ -20,7 +20,7 @@ file → tier matrix: `bun run test:list`.
 | **unit** | Pure logic / state machines / hand-built ctx | `bun run test:unit` | bun + installed deps only |
 | **ft** | **Real renderer** (`testRender` / `@opentui/core/testing`) or real assembly (`verify:` entry→host contracts); no network, no tmux | `bun run test:ft` | bun only |
 | **ui** | Visual/geometry numbers: tmux capture + ANSI/geometry assertions | `bun run test:ui` | tmux, bun, `dsh`, provisioned profile |
-| **e2e** | Real client + real host + full user flows (fake/local model by default; live model opt-in) | `bun run test:e2e` | tmux, dsh, podman; live legs opt-in via `DSH_E2E_LIVE=1` |
+| **e2e** | Real client + real host + full user flows (local fake/mock model by default; real model opt-in) | `bun run test:e2e` | tmux, dsh, profile; live legs opt-in via `DSH_E2E_LIVE=1`, `/agents` gate via `DSH_AGENTS_E2E=1` (no podman — retired) |
 
 **ft** means "fixture/renderer test": the test drives the real OpenTUI
 renderer in-process through `@opentui/core/testing` and asserts on captured
@@ -35,17 +35,25 @@ A test file is **ft** if any of these hold:
 3. it calls `testRender(` or `createTestRenderer(`;
 4. a test name carries the `verify:` prefix (assembly contracts).
 
-Two env-gated files are forced to **e2e** (a skip is not a pass, so they are
+One env-gated bun file is forced to **e2e** (a skip is not a pass, so it is
 excluded from unit/ft counts): `packages/shell/test/agents-mount-client.test.ts`
-(`DSH_AGENTS_E2E`) and `packages/shell/test/remote-live-smoke.test.ts`
-(`DSH_REMOTE_SMOKE`). Everything else is **unit**.
+(`DSH_AGENTS_E2E`). It is now explicitly wired by `runE2e()` — flag absent
+prints `NOT RUN`, flag present runs the test. The old
+`packages/shell/test/remote-live-smoke.test.ts` entry was a dead reference to
+a file that never existed; remove it from any list you see. The real live
+harness is the script `verify/remote-live-smoke.mjs`. Everything else is **unit**.
 
-`ui` is two tmux scripts (`verify/ui-matrix.mjs`, `verify/agents-mount-repro.mjs`);
-`e2e` additionally owns `verify/e2e-flows/run-flows.mjs` and two opt-in live
-scripts (`verify/steer-queue-repro.mjs`, `verify/queue-flush-repro.mjs`).
-The former podman container suite (`e2e/run-e2e.sh` + `e2e/scenarios/`) was
-retired in 025-w3-2 (A.5 takeover evidence in
-`.proof/025-w3-2/01-legacy-retirement/`); it is NOT RUN, not a green tier.
+`ui` is two tmux scripts (`verify/ui-matrix.mjs`, `verify/agents-mount-repro.mjs`).
+`e2e` owns two OFFLINE legs that always run (`verify/e2e-flows/run-flows.mjs`,
+17 scenarios — 13 baseline + prune/scroll/todo/r6-029 — with the local fake model; `verify/steer-queue-repro.mjs`, local
+mock LLM) and two REAL-model legs opt-in via `DSH_E2E_LIVE=1`
+(`verify/remote-live-smoke.mjs`, `verify/queue-flush-repro.mjs`). The former
+podman container suite (`e2e/run-e2e.sh` + `e2e/scenarios/`) was retired in
+025-w3-2 (A.5 takeover evidence in `.proof/025-w3-2/01-legacy-retirement/`);
+it is NOT RUN, not a green tier. Any leg not run is printed as NOT RUN and the
+final banner is `INCOMPLETE` — never a plain `PASS`. Exit 2 from a live leg
+(provider 401/429/5xx/timeout) is an ENVIRONMENT result recorded as NOT RUN,
+not a product failure and not a product pass.
 
 ### Current counts (measured, `bun run test:list`, 2026-11-14)
 
@@ -54,7 +62,7 @@ retired in 025-w3-2 (A.5 takeover evidence in
 | unit | 77 | panel-kit 4, runtime 1, shell 27, tui-base 45 |
 | ft | 32 | panel-kit 10, shell 6, tui-base 16 |
 | ui | 2 scripts | geometry matrix over 5 geometries + agents-mount suite |
-| e2e | 5 entries | 2 bun files + 3 scripts (container suite retired 025-w3-2) |
+| e2e | 5 entries | 1 env-gated bun wrapper + 4 scripts (2 offline, 2 live; container suite retired 025-w3-2) |
 
 The shell ft files (the renderer pilot): `solid-reactivity-canary-ft` (3 cases,
 the false-green canary), `shell-render-smoke-ft` (4), `shell-render-regression-ft`
@@ -330,6 +338,9 @@ runner labelled `dsh-profile` AND event = `workflow_dispatch` or same-repo PR
 (fork PRs are excluded — the gate runs with real credentials). It runs
 `DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts` (tmux capture of
 /agents mount + slash palette) and uploads captures. Default state: skipped.
+Local `scripts/test-tier.mjs` runs the same bun wrapper from the e2e tier when
+`DSH_AGENTS_E2E=1`; without the flag it prints `NOT RUN` instead of a silent
+skip, so the matrix entry is not a dead classification.
 
 ### CI stub equivalence
 

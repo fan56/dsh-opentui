@@ -1274,9 +1274,16 @@ try {
   // Same launcher, workspace = the repo checkout (a real git worktree): the
   // branch must appear as its own segment after the directory (` · ` join)
   // inside the composer's top border — on screen `┏━ ~/repo/dsh-opentui ·
-  // main ━━…┓` (space-led text, no dash prefix). The expected name is read
-  // straight from git, so a branch rename cannot make this pass by accident.
-  const expectedBranch = sh('git', ['-C', REPO, 'rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
+  // main ━━…┓` (space-led text, no dash prefix). Resolve the expected segment
+  // exactly like the product's probeGitBranchOrSha: a branch name on a normal
+  // checkout, or the short SHA on a detached HEAD. The literal `HEAD` is never
+  // a valid expectation (a detached-tag checkout paints `· acb576e`, which
+  // used to false-red this item); reading it from git still prevents a rename
+  // from making the check pass by accident.
+  let expectedBranch = sh('git', ['-C', REPO, 'rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
+  if (expectedBranch === 'HEAD') {
+    expectedBranch = sh('git', ['-C', REPO, 'rev-parse', '--short', 'HEAD']).stdout.trim()
+  }
   launch(SESSGIT, COLS, ROWS, REPO)
   const bootGit = await waitPane(SESSGIT, (o) => o.includes('🧠') || idle(o), 90_000, 500)
   if (!bootGit.out.includes('🧠') && !idle(bootGit.out)) {
