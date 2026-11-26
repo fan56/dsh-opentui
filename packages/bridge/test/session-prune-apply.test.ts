@@ -259,10 +259,12 @@ describe("session.prune.apply — trash core", () => {
       const result = await applyWith(fs, { lock: async () => ({ status: "unlocked" }) })
       expect(result.applied).toEqual([])
       expect(result.failed).toHaveLength(1)
-      // JOURNAL_FAILED is distinct from a rename/LOCKED failure, and the
-      // ORIGINAL write error (not the rollback) is what reaches `failed`.
+      // JOURNAL_FAILED is distinct from a rename/LOCKED failure. Its wire
+      // message is fixed: a raw fs error may embed the absolute source path,
+      // so it is kept out of `failed[].message`.
       expect(result.failed[0].code).toBe("JOURNAL_FAILED")
-      expect(result.failed[0].message).toBe(original.message)
+      expect(result.failed[0].message).toBe("apply reversed the rename after a journal write failed")
+      expect(result.failed[0].message).not.toContain(DSH_HOME)
       // The session is back at its live source; the trash entry is gone.
       expect(fs.dirs.has(SESSION_DIR)).toBe(true)
       // No committed-applied marker may travel back with the rolled-back dir:

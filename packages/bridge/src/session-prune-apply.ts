@@ -43,8 +43,8 @@ export type ApplyErrorCode =
   | 'LOCKED'
   | 'ROLLED_BACK'
   | 'ROLLBACK_FAILED'
-  /** A write AFTER a successful rename failed; the rename was reversed and
-   *  the ORIGINAL write error is carried in the message. */
+  /** A write AFTER a successful rename failed; the rename was reversed. The
+   *  wire message is fixed; the original cause is kept in `detail` only. */
   | 'JOURNAL_FAILED'
   | 'NO_RECOVERY'
 
@@ -223,6 +223,65 @@ async function pathExists(fs: ApplyFsLike, path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Fixed, path-free wire wording for `failed[].message`. Node's `err.message`
+ * embeds the absolute path that failed (e.g. `EACCES: lstat '/home/…'`), and
+ * `ApplyResult.failed` is forwarded to the client verbatim. Nothing dynamic —
+ * especially a raw fs error — may ever reach that field.
+ */
+const APPLY_WIRE_MSG: Record<ApplyErrorCode | 'INTERNAL', string> = {
+  STALE_PLAN: 'apply refused: the plan is stale',
+  BAD_PARAMS: 'apply refused: invalid parameters',
+  BAD_PATH: 'apply refused: an unsafe path was rejected',
+  EXDEV: 'apply refused: cross-device rename',
+  CONFLICT: 'apply refused: destination already exists',
+  LOCKED: 'apply refused: session.lock is held or unknown',
+  ROLLED_BACK: 'apply reversed the rename because session.lock was held at trash',
+  ROLLBACK_FAILED: 'apply failed and the reverse rename also failed',
+  JOURNAL_FAILED: 'apply reversed the rename after a journal write failed',
+  NO_RECOVERY: 'apply refused: no recovery path is available',
+  INTERNAL: 'apply failed: internal error',
+}
+
+function applyWireMessage(err: unknown): string {
+  const code = err instanceof ApplyError ? err.code : 'INTERNAL'
+  return APPLY_WIRE_MSG[code]
+}
+
+/**
+ * Idempotent `.applied.json` create. A normalize-restore-normalize cycle (or a
+ * crash/retry inside one run) can leave a marker at the destination. `wx` then
+ * returns EEXIST; if that marker already attests the SAME `{id,to}` it is the
+ * apply we are trying to record, so the write is a no-op success. A marker with
+ * any other identity is a conflict and must fail the entry — never overwrite.
+ */
+async function writeAppliedMarker(
+  fs: ApplyFsLike,
+  path: string,
+  record: { id: string; to: string; [key: string]: unknown },
+): Promise<void> {
+  const data = JSON.stringify(record)
+  try {
+    await fs.writeFile(path, data, { flag: 'wx', mode: 0o600 })
+    return
+  } catch (err) {
+    if (errorCode(err) !== 'EEXIST') throw err
+  }
+  let existing: unknown
+  try {
+    existing = JSON.parse(await fs.readFile(path))
+  } catch {
+    fail('JOURNAL_FAILED', 'existing applied marker is not readable JSON', { id: record.id })
+  }
+  if (existing === null || typeof existing !== 'object') {
+    fail('JOURNAL_FAILED', 'existing applied marker is not an object', { id: record.id })
+  }
+  const marker = existing as { id?: unknown; to?: unknown }
+  if (marker.id !== record.id || marker.to !== record.to) {
+    fail('JOURNAL_FAILED', 'existing applied marker identity mismatch', { id: record.id })
+  }
+}
+
 async function probeLock(probe: LockProbe | undefined, lockPath: string): Promise<void> {
   if (probe === undefined) return
   let result
@@ -332,8 +391,8 @@ export async function restoreFromTrash(
  * Reverse a rename that already succeeded when a POST-rename journal write
  * (`.applied.json`, `.post.json`, `manifest.jsonl`) fails. The session is moved
  * back to its source; a rollback journal records why. A failed reverse rename
- * is reported as ROLLBACK_FAILED with the original write error preserved in
- * both the message and `detail` — never swallowed.
+ * is reported as ROLLBACK_FAILED with a fixed wire message; the original write
+ * error and the rollback error are preserved in `detail` — never swallowed.
  */
 async function rollbackAfterRename(
   fs: ApplyFsLike,
@@ -348,7 +407,19 @@ async function rollbackAfterRename(
     readonly reason: string
   },
 ): Promise<void> {
-  const causeMessage = options.cause instanceof Error ? options.cause.message : String(options.cause)
+  // A marker that was actually created just before a write reported failure
+  // (or left by an earlier attempt in the same run) must not travel back into
+  // the live session dir. Retire it to the journal first, outside the entry.
+  const markerPath = join(options.trashPath, '.applied.json')
+  if (await pathExists(fs, markerPath)) {
+    try {
+      await fs.rename(markerPath, `${options.journalBase}.discarded.json`)
+    } catch {
+      fail('ROLLBACK_FAILED', APPLY_WIRE_MSG.ROLLBACK_FAILED, {
+        id: options.id, reason: options.reason, cause: 'applied-marker-retire-failed',
+      })
+    }
+  }
   try {
     await restoreFromTrash(fs, {
       sourceDir: options.sourceDir, trashPath: options.trashPath,
@@ -357,8 +428,12 @@ async function rollbackAfterRename(
       lockProbe: deps.lockProbe, skipLock: true,
     })
   } catch (rollbackErr) {
+    // The wire message is fixed (see APPLY_WIRE_MSG): a raw cause or rollback
+    // fs error can embed an absolute dshHome path. Keep diagnostics internal to
+    // `detail`, which apply never projects onto the wire.
+    const causeMessage = options.cause instanceof Error ? options.cause.message : String(options.cause)
     const rollbackMessage = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
-    fail('ROLLBACK_FAILED', `reverse rename after journal failure failed (original: ${causeMessage})`, {
+    fail('ROLLBACK_FAILED', APPLY_WIRE_MSG.ROLLBACK_FAILED, {
       id: options.id, reason: options.reason, cause: causeMessage, rollback: rollbackMessage,
     })
   }
@@ -452,7 +527,7 @@ export async function applyTrashPlan(
       // A broken root is a per-run failure, not a thrown rejection: the wire
       // caller always receives an ApplyResult with structured `failed` rows.
       const code = err instanceof ApplyError ? err.code : 'INTERNAL'
-      const message = err instanceof Error ? err.message : String(err)
+      const message = applyWireMessage(err)
       const ids = plan.entries.filter((entry) => entry.decision === 'prune').map((entry) => entry.sessionId)
       for (const id of ids.length > 0 ? ids : ['<root>']) failed.push({ id, code, message })
       return { opId: deps.opId, runDir, applied, failed, markedOrphans: [] }
@@ -568,9 +643,9 @@ export async function applyTrashPlan(
         // Every write here happens after the single mutation. If ANY of them
         // fails the rename MUST be reversed: a trashed session without a valid
         // applied marker is an orphan, not a successfully applied prune. The
-        // ORIGINAL write error is reported as JOURNAL_FAILED; a failed reverse
-        // rename is reported separately as ROLLBACK_FAILED (with the original
-        // error preserved). Siblings still proceed.
+        // failure is reported as JOURNAL_FAILED with a path-free wire message;
+        // a failed reverse rename is reported separately as ROLLBACK_FAILED.
+        // Siblings still proceed.
         const appliedRecord = {
           opId: deps.opId, phase: 'applied', id, from: sourceDir, to: trashPath,
           planFingerprint: config.planFingerprint, appliedAt: deps.now,
@@ -586,21 +661,21 @@ export async function applyTrashPlan(
           // a rolled-back entry is always marker-free at its source.
           await fs.writeFile(`${journalBase}.post.json`, JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
           await fs.appendFile(join(runDir, 'manifest.jsonl'), JSON.stringify(appliedRecord) + '\n')
-          await fs.writeFile(join(trashPath, '.applied.json'), JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
+          await writeAppliedMarker(fs, join(trashPath, '.applied.json'), appliedRecord)
         } catch (journalErr) {
           await rollbackAfterRename(fs, deps, {
             sourceDir, trashPath, id, journalBase,
             planFingerprint: config.planFingerprint,
             cause: journalErr, reason: 'post-rename-journal-write-failed',
           })
-          fail('JOURNAL_FAILED', journalErr instanceof Error ? journalErr.message : String(journalErr), {
+          fail('JOURNAL_FAILED', APPLY_WIRE_MSG.JOURNAL_FAILED, {
             id, cause: journalErr instanceof Error ? journalErr.message : String(journalErr),
           })
         }
         applied.push({ id, from: sourceDir, to: trashPath })
       } catch (err) {
         const code = err instanceof ApplyError ? err.code : 'INTERNAL'
-        const message = err instanceof Error ? err.message : String(err)
+        const message = applyWireMessage(err)
         failed.push({ id, code, message })
       }
     }

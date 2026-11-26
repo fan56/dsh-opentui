@@ -17,6 +17,11 @@
  *    recheck) + read-only flock probe + st_dev equality.
  *  - restore is refuse-if-exists: a live row or an existing destination path
  *    is a CONFLICT, never an overwrite.
+ *  - before the reverse rename the in-place `.applied.json` is moved to
+ *    `<trash>/journal/<opId>-<encoded>.restored.json`; a failure refuses the
+ *    restore, and the live session dir is never left with a stale marker.
+ *  - when the in-place marker is missing, the same-run `manifest.jsonl` applied
+ *    row is the identity authority (cross-checked by all the gates above).
  */
 
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
@@ -30,10 +35,28 @@ import {
   type SessionListerLike,
   type SessionPruneSnapshot,
 } from './session-prune'
-import { trashSessionsRoot } from './session-prune-apply'
+import { trashJournalRoot, trashSessionsRoot } from './session-prune-apply'
 
 const RUN_NAME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
 const ARTIFACT_FILENAME = 'session.v4.jsonl.zstd'
+const APPLIED_MARKER = '.applied.json'
+/** Apply's same-run manifest is a FILE inside the run dir, not a trash entry. */
+const RUN_MANIFEST_FILENAME = 'manifest.jsonl'
+
+/** Same-run apply manifest. A trashed entry can legitimately have no in-place
+ *  `.applied.json` (a restore that retired the marker then failed its reverse
+ *  rename, or a crash after the manifest append). The manifest row is written
+ *  by the same host apply, before the in-place marker, so it is the identity
+ *  authority for restore/purge when the in-place marker is absent. */
+function runManifestPath(dshHome: string, run: string): string {
+  return join(trashSessionsRoot(dshHome), run, RUN_MANIFEST_FILENAME)
+}
+
+/** Journal record for a retired applied marker. Kept OUTSIDE the trash entry so
+ *  the session moved back into the live root can never carry a stale marker. */
+export function restoredMarkerPath(dshHome: string, opId: string, encoded: string): string {
+  return join(trashJournalRoot(dshHome), `${opId}-${encoded}.restored.json`)
+}
 
 /** Host-owned error codes, frozen for the wire. */
 export type RestoreErrorCode =
@@ -246,13 +269,7 @@ async function readTrashArtifactHeaderId(fs: RestoreFsLike, dir: string): Promis
   return id
 }
 
-async function readAppliedManifest(fs: RestoreFsLike, dir: string): Promise<AppliedManifest> {
-  let text: string
-  try {
-    text = await fs.readFile(join(dir, '.applied.json'))
-  } catch (err) {
-    fail('BAD_MANIFEST', 'trash entry has no readable .applied.json', { code: errorCode(err) })
-  }
+function parseAppliedManifest(text: string): AppliedManifest {
   let raw: unknown
   try {
     raw = JSON.parse(text)
@@ -270,6 +287,44 @@ async function readAppliedManifest(fs: RestoreFsLike, dir: string): Promise<Appl
     ...(typeof m.from === 'string' && m.from !== '' ? { from: m.from } : {}),
     appliedAt: m.appliedAt,
   }
+}
+
+/** Fall back to the same-run `manifest.jsonl` row when the in-place marker is
+ *  absent. The row must be an `applied` record whose `to` is exactly this entry
+ *  path; the caller's existing gates then cross-check id, encoding, realpath
+ *  and the artifact header against it. */
+async function readRunManifestRow(fs: RestoreFsLike, manifestPath: string, entryPath: string): Promise<AppliedManifest> {
+  let text: string
+  try {
+    text = await fs.readFile(manifestPath)
+  } catch {
+    fail('BAD_MANIFEST', 'trash entry has no in-place marker or same-run manifest')
+  }
+  for (const line of text.split('\n')) {
+    if (line === '') continue
+    let row: unknown
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (row === null || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    if (r.phase !== 'applied' || r.to !== entryPath) continue
+    return parseAppliedManifest(line)
+  }
+  fail('BAD_MANIFEST', 'no same-run manifest row matches this trash entry')
+}
+
+async function readAppliedManifest(fs: RestoreFsLike, dir: string, runManifest?: string): Promise<AppliedManifest> {
+  let text: string
+  try {
+    text = await fs.readFile(join(dir, APPLIED_MARKER))
+  } catch (err) {
+    if (isEnoent(err) && runManifest !== undefined) return readRunManifestRow(fs, runManifest, dir)
+    fail('BAD_MANIFEST', 'trash entry has no readable .applied.json', { code: errorCode(err) })
+  }
+  return parseAppliedManifest(text)
 }
 
 async function probeLockForRestore(lockProbe: LockProbe | undefined, lockPath: string): Promise<void> {
@@ -309,7 +364,7 @@ async function assessEntry(
   const entryPath = join(trashSessionsRoot(dshHome), run, encoded)
   const st = await lstatGuest(fs, entryPath)
   if (!st.isDirectory() || st.isSymbolicLink?.() === true) fail('BAD_PATH', 'trash entry is not a real directory')
-  const manifest = await readAppliedManifest(fs, entryPath)
+  const manifest = await readAppliedManifest(fs, entryPath, runManifestPath(dshHome, run))
   if (encodeSegment(manifest.id) !== encoded || basename(entryPath) !== encoded) {
     fail('BAD_MANIFEST', 'manifest id does not encode to the entry basename')
   }
@@ -358,7 +413,7 @@ export async function listRestoreEntries(
       continue
     }
     for (const encoded of leaves) {
-      if (encoded.startsWith('.')) continue
+      if (encoded.startsWith('.') || encoded === RUN_MANIFEST_FILENAME) continue
       try {
         const scanned = await assessEntry(fs, dshHome, run, encoded)
         let size: number | undefined
@@ -486,7 +541,7 @@ export async function restoreTrashEntry(
         fail('BAD_PATH', FS_MSG.rootUnreadable)
       }
       for (const encoded of leaves) {
-        if (encoded.startsWith('.')) continue
+        if (encoded.startsWith('.') || encoded === RUN_MANIFEST_FILENAME) continue
         try {
           const scanned = await assessEntry(fs, dshHome, run, encoded)
           if (scanned.id === id) matches.push(scanned)
@@ -519,6 +574,29 @@ export async function restoreTrashEntry(
     if (await pathExists(fs, destination)) fail('CONFLICT', 'restore refused: live destination already exists')
 
     await probeLockForRestore(deps.lockProbe, join(scanned.path, 'session.lock'))
+
+    // Retire the in-place marker BEFORE the reverse rename. If the marker
+    // travelled back into the live session dir it would poison every later
+    // apply of that session (EEXIST -> permanent JOURNAL_FAILED). A missing
+    // marker is fine: the same-run manifest row above already proved identity,
+    // and the live dir is marker-free by definition. Any failure here refuses
+    // the restore; the raw fs error is never projected onto the wire.
+    const markerPath = join(scanned.path, APPLIED_MARKER)
+    if (await pathExists(fs, markerPath)) {
+      const retiredPath = restoredMarkerPath(dshHome, deps.opId, scanned.encoded)
+      if (await pathExists(fs, retiredPath)) {
+        fail('RESTORE_FAILED', 'restore refused: retired marker journal already exists')
+      }
+      try {
+        await fs.rename(markerPath, retiredPath)
+      } catch {
+        fail('RESTORE_FAILED', 'restore refused: could not retire the applied marker')
+      }
+      if (await pathExists(fs, markerPath)) {
+        fail('RESTORE_FAILED', 'restore refused: applied marker still present after retirement')
+      }
+    }
+
     try {
       await fs.rename(scanned.path, destination)
     } catch (err) {

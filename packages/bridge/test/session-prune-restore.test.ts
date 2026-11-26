@@ -11,6 +11,7 @@ import {
   RestoreError,
   listRestoreEntries,
   restoreTrashEntry,
+  restoredMarkerPath,
   type RestoreDeps,
   type RestoreFsLike,
   type RestoreStatLike,
@@ -92,8 +93,22 @@ class MemoryFs implements RestoreFsLike {
   }
   async rename(from: string, to: string) {
     this.renameCalls.push([from, to])
-    this.dirs.delete(from)
-    this.dirs.add(to)
+    if (this.dirs.delete(from)) this.dirs.add(to)
+    for (const [key, value] of [...this.files]) {
+      if (key === from || key.startsWith(from + "/")) {
+        this.files.delete(key)
+        this.files.set(key.replace(from, to), value)
+      }
+    }
+    for (const [key, value] of [...this.buffers]) {
+      if (key === from || key.startsWith(from + "/")) {
+        this.buffers.delete(key)
+        this.buffers.set(key.replace(from, to), value)
+      }
+    }
+    for (const link of [...this.links]) {
+      if (link === from) { this.links.delete(link); this.links.add(to) }
+    }
   }
 }
 
@@ -123,13 +138,44 @@ describe("session.prune.restore — core", () => {
     expect(list.rejected.length).toBe(0)
   })
 
-  test("restore by id performs one rename back to the manifest from-path", async () => {
+  test("restore retires the in-place marker to the journal, then renames back marker-free", async () => {
     const fs = new MemoryFs()
     const result = await restoreTrashEntry(fs, makeDeps(), DSH_HOME, ID)
     expect(result).toEqual({ id: ID, restored: true, opId: "op-restore" })
-    expect(fs.renameCalls).toEqual([[ENTRY, DEST]])
+    const retired = restoredMarkerPath(DSH_HOME, "op-restore", ENCODED)
+    expect(fs.renameCalls).toEqual([
+      [join(ENTRY, ".applied.json"), retired],
+      [ENTRY, DEST],
+    ])
+    expect(fs.files.has(retired)).toBe(true)
     expect(fs.dirs.has(DEST)).toBe(true)
     expect(fs.dirs.has(ENTRY)).toBe(false)
+    // The live session dir must never carry a stale applied marker.
+    expect(fs.files.has(join(DEST, ".applied.json"))).toBe(false)
+  })
+
+  test("marker-retire failure refuses restore before the reverse rename", async () => {
+    const fs = new MemoryFs()
+    const retired = restoredMarkerPath(DSH_HOME, "op-restore", ENCODED)
+    fs.files.set(retired, "prior record")
+    await expect(restoreTrashEntry(fs, makeDeps(), DSH_HOME, ID)).rejects.toMatchObject({ code: "RESTORE_FAILED" })
+    expect(fs.dirs.has(ENTRY)).toBe(true)
+    expect(fs.dirs.has(DEST)).toBe(false)
+  })
+
+  test("missing in-place marker falls back to the same-run manifest row", async () => {
+    const fs = new MemoryFs()
+    fs.files.delete(join(ENTRY, ".applied.json"))
+    fs.files.set(join(join(TRASH, RUN), "manifest.jsonl"), JSON.stringify({
+      id: ID, to: ENTRY, from: DEST, opId: "apply-1", appliedAt: APPLIED_AT, phase: "applied",
+    }) + "\n")
+    const list = await listRestoreEntries(fs, DSH_HOME)
+    expect(list.entries).toEqual([{ id: ID, movedAt: APPLIED_AT, size: expect.any(Number) }])
+    expect(list.rejected).toEqual([])
+    const result = await restoreTrashEntry(fs, makeDeps(), DSH_HOME, ID)
+    expect(result).toEqual({ id: ID, restored: true, opId: "op-restore" })
+    expect(fs.dirs.has(DEST)).toBe(true)
+    expect(fs.files.has(join(DEST, ".applied.json"))).toBe(false)
   })
 
   test("refuse-if-exists: a live destination is a CONFLICT, no rename", async () => {

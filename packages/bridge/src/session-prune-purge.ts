@@ -76,6 +76,12 @@ function fail(code: PurgeErrorCode, message: string, detail?: unknown): never {
   throw new PurgeError(code, message, detail)
 }
 
+/** Fixed wire wording for per-entry rejection/failure rows. All `PurgeError`
+ *  messages are already fixed literals; a raw fs error is never projected. */
+function purgeWireMessage(err: unknown): string {
+  return err instanceof PurgeError ? err.message : 'purge entry could not be processed'
+}
+
 function errorCode(err: unknown): string | undefined {
   if (err === null || typeof err !== 'object') return undefined
   const code = (err as { code?: unknown }).code
@@ -254,7 +260,7 @@ export async function resolvePurgeSecret(fs: PurgeFsLike, dshHome: string, newSe
   try {
     const value = (await fs.readFile(path)).trim()
     if (value !== '') return value
-    fail('INTERNAL', 'purge secret file is empty', { path })
+    fail('INTERNAL', 'purge secret file is empty')
   } catch (err) {
     if (err instanceof PurgeError) throw err
     if (errorCode(err) !== 'ENOENT') throw err
@@ -266,7 +272,7 @@ export async function resolvePurgeSecret(fs: PurgeFsLike, dshHome: string, newSe
     if (errorCode(err) !== 'EEXIST') throw err
   }
   const value = (await fs.readFile(path)).trim()
-  if (value === '') fail('INTERNAL', 'purge secret file is empty', { path })
+  if (value === '') fail('INTERNAL', 'purge secret file is empty')
   return value
 }
 
@@ -282,6 +288,8 @@ function readLocationPath(location: SessionPruneSnapshot['location']): string | 
 
 const RUN_NAME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
 const ARTIFACT_FILENAME = 'session.v4.jsonl.zstd'
+/** Apply's same-run manifest is a FILE inside the run dir, not a trash entry. */
+const RUN_MANIFEST_FILENAME = 'manifest.jsonl'
 
 type ZstdDecompress = (frame: Buffer) => Buffer
 
@@ -304,55 +312,47 @@ async function readTrashArtifactHeaderId(fs: PurgeFsLike, dir: string): Promise<
   let frame: Buffer
   try {
     frame = await fs.readFileBuffer(artifact)
-  } catch (err) {
-    fail('BAD_MANIFEST', 'trash entry has no readable session artifact', { artifact, code: errorCode(err) })
+  } catch {
+    fail('BAD_MANIFEST', 'trash entry has no readable session artifact')
   }
-  if (frame.length === 0) fail('BAD_MANIFEST', 'trash session artifact is empty', { artifact })
+  if (frame.length === 0) fail('BAD_MANIFEST', 'trash session artifact is empty')
   let text: string
   try {
     text = zstdDecompress(frame).toString('utf8')
-  } catch (err) {
-    fail('BAD_MANIFEST', 'trash session artifact is not a valid zstd frame', {
-      artifact, message: err instanceof Error ? err.message : String(err),
-    })
+  } catch {
+    fail('BAD_MANIFEST', 'trash session artifact is not a valid zstd frame')
   }
   const firstLine = text.split('\n', 1)[0] ?? ''
   let header: unknown
   try {
     header = JSON.parse(firstLine)
   } catch {
-    fail('BAD_MANIFEST', 'trash session artifact header is not JSON', { artifact })
+    fail('BAD_MANIFEST', 'trash session artifact header is not JSON')
   }
   if (header === null || typeof header !== 'object') {
-    fail('BAD_MANIFEST', 'trash session artifact header is not an object', { artifact })
+    fail('BAD_MANIFEST', 'trash session artifact header is not an object')
   }
   const id = (header as { id?: unknown }).id
   if (typeof id !== 'string' || id === '') {
-    fail('BAD_MANIFEST', 'trash session artifact header.id is missing', { artifact })
+    fail('BAD_MANIFEST', 'trash artifact header.id is missing')
   }
   return id
 }
 
-async function readAppliedManifest(fs: PurgeFsLike, dir: string): Promise<AppliedManifest> {
-  let text: string
-  try {
-    text = await fs.readFile(join(dir, '.applied.json'))
-  } catch (err) {
-    fail('BAD_MANIFEST', 'trash entry has no readable .applied.json', { dir, code: errorCode(err) })
-  }
+function parseAppliedManifest(text: string): AppliedManifest {
   let raw: unknown
   try {
     raw = JSON.parse(text)
   } catch {
-    fail('BAD_MANIFEST', 'trash entry .applied.json is not JSON', { dir })
+    fail('BAD_MANIFEST', 'trash entry .applied.json is not JSON')
   }
-  if (raw === null || typeof raw !== 'object') fail('BAD_MANIFEST', 'trash entry .applied.json is not an object', { dir })
+  if (raw === null || typeof raw !== 'object') fail('BAD_MANIFEST', 'trash entry .applied.json is not an object')
   const m = raw as Record<string, unknown>
-  if (typeof m.id !== 'string' || m.id === '') fail('BAD_MANIFEST', 'applied manifest id is missing', { dir })
-  if (typeof m.to !== 'string' || m.to === '') fail('BAD_MANIFEST', 'applied manifest to is missing', { dir })
-  if (typeof m.opId !== 'string' || m.opId === '') fail('BAD_MANIFEST', 'applied manifest opId is missing', { dir })
+  if (typeof m.id !== 'string' || m.id === '') fail('BAD_MANIFEST', 'applied manifest id is missing')
+  if (typeof m.to !== 'string' || m.to === '') fail('BAD_MANIFEST', 'applied manifest to is missing')
+  if (typeof m.opId !== 'string' || m.opId === '') fail('BAD_MANIFEST', 'applied manifest opId is missing')
   if (typeof m.appliedAt !== 'number' || !Number.isFinite(m.appliedAt)) {
-    fail('BAD_MANIFEST', 'applied manifest appliedAt is invalid', { dir })
+    fail('BAD_MANIFEST', 'applied manifest appliedAt is invalid')
   }
   return {
     id: m.id,
@@ -363,16 +363,60 @@ async function readAppliedManifest(fs: PurgeFsLike, dir: string): Promise<Applie
   }
 }
 
+/** Identity fallback when the in-place `.applied.json` is absent (a restore
+ *  that retired it but failed its reverse rename, or a crash after the apply
+ *  manifest append). The row must be the host's `applied` record for THIS entry
+ *  path; every other gate still cross-checks id, encoding, realpath and header. */
+async function readRunManifestRow(fs: PurgeFsLike, manifestPath: string, entryPath: string): Promise<AppliedManifest> {
+  let text: string
+  try {
+    text = await fs.readFile(manifestPath)
+  } catch {
+    fail('BAD_MANIFEST', 'trash entry has no in-place marker or same-run manifest')
+  }
+  for (const line of text.split('\n')) {
+    if (line === '') continue
+    let row: unknown
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (row === null || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    if (r.phase !== 'applied' || r.to !== entryPath) continue
+    return parseAppliedManifest(line)
+  }
+  fail('BAD_MANIFEST', 'no same-run manifest row matches this trash entry')
+}
+
+/**
+ * Read the applied marker. All `detail` payloads are deliberately path-free:
+ * the RPC handler forwards `detail` verbatim, so `dir`/`artifact` (absolute
+ * host paths) and raw fs error messages must never appear here.
+ */
+async function readAppliedManifest(fs: PurgeFsLike, dir: string, runManifest?: string): Promise<AppliedManifest> {
+  let text: string
+  try {
+    text = await fs.readFile(join(dir, '.applied.json'))
+  } catch (err) {
+    if (errorCode(err) === 'ENOENT' && runManifest !== undefined) return readRunManifestRow(fs, runManifest, dir)
+    fail('BAD_MANIFEST', 'trash entry has no readable .applied.json')
+  }
+  return parseAppliedManifest(text)
+}
+
 async function probeLockForPurge(lockProbe: LockProbe | undefined, lockPath: string): Promise<void> {
-  if (lockProbe === undefined) fail('UNSUPPORTED', 'lockProbe capability unavailable; purge refuses to assume unlocked', { lockPath })
+  if (lockProbe === undefined) fail('UNSUPPORTED', 'lockProbe capability unavailable; purge refuses to assume unlocked')
   let result: LockProbeResult
   try {
     result = await lockProbe(lockPath)
   } catch {
-    fail('LOCKED', 'lock probe threw; refusing to purge', { lockPath })
+    fail('LOCKED', 'lock probe threw; refusing to purge')
   }
   if (result.status === 'lock-held' || result.status === 'unknown') {
-    fail('LOCKED', 'session.lock probe is not unlocked', { lockPath, status: result.status })
+    // `status` is a fixed enum; `lockPath` is an absolute host path.
+    fail('LOCKED', 'session.lock probe is not unlocked', { status: result.status })
   }
 }
 
@@ -392,26 +436,26 @@ export async function assessTrashEntry(
   const entryPath = join(trashSessionsRoot(dshHome), run, encoded)
   const st = await fs.lstat(entryPath)
   if (!st.isDirectory() || st.isSymbolicLink?.() === true) {
-    fail('BAD_PATH', 'trash entry is not a real directory', { entryPath })
+    fail('BAD_PATH', 'trash entry is not a real directory')
   }
-  const manifest = await readAppliedManifest(fs, entryPath)
+  const manifest = await readAppliedManifest(fs, entryPath, join(trashSessionsRoot(dshHome), run, RUN_MANIFEST_FILENAME))
   if (encodeSegment(manifest.id) !== encoded || basename(entryPath) !== encoded) {
-    fail('BAD_MANIFEST', 'manifest id does not encode to the entry basename', { entryPath, id: manifest.id })
+    fail('BAD_MANIFEST', 'manifest id does not encode to the entry basename', { id: manifest.id })
   }
   // The manifest `to` must agree with the host-derived location; a `..` or an
   // absolute outside path is rejected before any realpath/delete.
   const toRel = relative(trashSessionsRoot(dshHome), manifest.to)
   if (!isAbsolute(manifest.to) || toRel.startsWith('..') || isAbsolute(toRel)) {
-    fail('BAD_MANIFEST', 'applied manifest to escapes the trash sessions root', { to: manifest.to })
+    fail('BAD_MANIFEST', 'applied manifest to escapes the trash sessions root')
   }
   const expectedRel = join(run, encoded)
   if (toRel !== expectedRel && toRel !== expectedRel.split(sep).join('/')) {
-    fail('BAD_MANIFEST', 'applied manifest to does not match the scanned entry', { to: manifest.to, expectedRel })
+    fail('BAD_MANIFEST', 'applied manifest to does not match the scanned entry', { expectedRel })
   }
   const trashReal = await fs.realpath(trashSessionsRoot(dshHome))
   const real = await fs.realpath(entryPath)
   if (!isInside(trashReal, real) || relative(trashReal, real) !== expectedRel) {
-    fail('BAD_PATH', 'trash entry realpath escaped the sessions trash root', { entryPath, real, trashReal })
+    fail('BAD_PATH', 'trash entry realpath escaped the sessions trash root')
   }
 
   const liveState = liveIds.get(manifest.id)
@@ -447,7 +491,7 @@ export async function assessTrashEntry(
     if (livePath === undefined || livePath === entryPath) continue
     try {
       await fs.lstat(livePath)
-      fail('CONFLICT', 'purge refused: live path for this id exists again', { id: manifest.id, livePath })
+      fail('CONFLICT', 'purge refused: live path for this id exists again', { id: manifest.id })
     } catch (err) {
       if (err instanceof PurgeError) throw err
       if (errorCode(err) !== 'ENOENT') throw err
@@ -519,18 +563,18 @@ export async function scanPurgeCandidates(
       entries = await fs.readdir(join(root, run))
     } catch (err) {
       if (errorCode(err) === 'ENOENT') continue
-      rejected.push({ path: join(root, run), code: 'INTERNAL', message: String(err) })
+      rejected.push({ path: join(root, run), code: 'INTERNAL', message: purgeWireMessage(err) })
       continue
     }
     for (const encoded of entries) {
-      if (encoded.startsWith('.')) continue
+      if (encoded.startsWith('.') || encoded === RUN_MANIFEST_FILENAME) continue
       try {
         candidates.push(await assessTrashEntry(fs, deps, dshHome, run, encoded, liveIds))
       } catch (err) {
         rejected.push({
           path: join(root, run, encoded),
           code: err instanceof PurgeError ? err.code : 'INTERNAL',
-          message: err instanceof Error ? err.message : String(err),
+          message: purgeWireMessage(err),
         })
       }
     }
@@ -551,7 +595,7 @@ async function removeNode(fs: PurgeFsLike, path: string, rootReal: string): Prom
   }
   if (st.isDirectory()) {
     const real = await fs.realpath(path)
-    if (!isInside(rootReal, real)) fail('BAD_PATH', 'delete target escaped the trash session directory', { path, real })
+    if (!isInside(rootReal, real)) fail('BAD_PATH', 'delete target escaped the trash session directory')
     for (const child of await fs.readdir(path)) {
       await removeNode(fs, join(path, child), rootReal)
     }
@@ -565,10 +609,10 @@ async function removeNode(fs: PurgeFsLike, path: string, rootReal: string): Prom
 export async function removeTrashTree(fs: PurgeFsLike, candidate: PurgeCandidate): Promise<void> {
   const st = await fs.lstat(candidate.path)
   if (!st.isDirectory() || st.isSymbolicLink?.() === true) {
-    fail('BAD_PATH', 'delete target flipped to symlink/non-directory', { path: candidate.path })
+    fail('BAD_PATH', 'delete target flipped to symlink/non-directory')
   }
   const real = await fs.realpath(candidate.path)
-  if (real !== candidate.path) fail('BAD_PATH', 'delete target realpath changed', { path: candidate.path, real })
+  if (real !== candidate.path) fail('BAD_PATH', 'delete target realpath changed')
   await removeNode(fs, candidate.path, real)
 }
 
@@ -754,8 +798,10 @@ export async function purgeTrashSessions(
     const scan = await scanPurgeCandidates(fs, deps, dshHome, liveIds)
     const root = await purgeRootForToken(fs, dshHome)
     if (root !== payload.root || payload.retentionDays !== deps.retentionDays) {
+      // `root` / `payload.root` are absolute host paths: keep them out of the
+      // wire `detail` (the RPC handler forwards it verbatim).
       fail('STALE_TOKEN', 'host trash root or retention policy changed since prepare', {
-        root, tokenRoot: payload.root, retentionDays: deps.retentionDays,
+        retentionDays: deps.retentionDays,
       })
     }
     // Delete set is a SUBSET of the token set: only id+path pairs the server
@@ -802,7 +848,7 @@ export async function purgeTrashSessions(
           id: candidate.id,
           path: candidate.path,
           code: err instanceof PurgeError ? err.code : 'DELETE_FAILED',
-          message: err instanceof Error ? err.message : String(err),
+          message: purgeWireMessage(err),
         })
       }
     }

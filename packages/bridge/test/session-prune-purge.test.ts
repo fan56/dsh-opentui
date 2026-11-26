@@ -304,6 +304,22 @@ describe("session.prune.purge — trash-only core", () => {
     expect(DEFAULT_PURGE_RETENTION_DAYS).toBe(7)
   })
 
+  test("marker missing: the same-run manifest.jsonl applied row is identity authority", async () => {
+    const fs = new MemoryFs()
+    seed(fs, ID)
+    const dir = candidateDir(ID)
+    fs.files.delete(`${dir}/.applied.json`)
+    fs.file(`${TRASH}/${RUN}/manifest.jsonl`, JSON.stringify({
+      id: ID, to: dir, opId: `apply-${ID}`, appliedAt: NOW - 8 * DAY, phase: "applied",
+    }) + "\n")
+    expect((await assess(fs, makeDeps(fs), ID)).id).toBe(ID)
+    // A row for a different entry is never accepted as identity.
+    fs.file(`${TRASH}/${RUN}/manifest.jsonl`, JSON.stringify({
+      id: ID, to: candidateDir(ID2), opId: `apply-${ID}`, appliedAt: NOW - 8 * DAY, phase: "applied",
+    }) + "\n")
+    await expectCode("BAD_MANIFEST", async () => assess(fs, makeDeps(fs), ID))
+  })
+
   test("root escape: manifest to outside trash / realpath outside trash", async () => {
     const fs = new MemoryFs()
     seed(fs, ID)
