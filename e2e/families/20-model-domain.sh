@@ -13,7 +13,13 @@ source "$(dirname "$0")/lib/family-lib.sh"
 
 OUT="${1:-/tmp/e2e-family-model}"
 mkdir -p "$OUT"
-( cd "$REPO" && node scripts/verify-s1-model.mjs ) > "$OUT/cap-s1.log" 2>&1
+SCRATCH="$(make_cap_smoke_home)" || { ffail "model domain: scratch provision"; family_summary; exit 1; }
+cleanup() { rm -rf "$SCRATCH" 2>/dev/null || true; }
+trap cleanup EXIT
+# Drive the REAL dsh host against this run's own freshly provisioned scratch
+# home / active profile / bridge symlink. DSH_PROBE_HOME is the runner's seam;
+# the legacy shared /private/tmp/dsh-probe-home-024 is never read or rewritten.
+( cd "$REPO" && HOME="$SCRATCH" DSH_PROBE_HOME="$SCRATCH" node scripts/verify-s1-model.mjs ) > "$OUT/cap-s1.log" 2>&1
 LOG="$OUT/cap-s1.log"
 E3_FAIL="$(grep -c 'FAIL  E3 initializeDefaultModel' "$LOG")"
 OTHER_FAIL="$(grep -E '^FAIL ' "$LOG" | grep -v 'FAIL  E3 initializeDefaultModel' | wc -l | tr -d ' ')"

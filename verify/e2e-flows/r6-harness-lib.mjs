@@ -72,7 +72,7 @@ export function scanAlwaysGrant({ journalRows = [], frames = [], mockOutput = ''
  * (queue-flush-repro, agents-mount-repro, steer-queue-repro,
  * w1a-six-commands, ui-matrix): either idle string means the composer is ready.
  */
-export const IDLE_MARKERS = ['提问，回车发送', 'Type a message']
+export const IDLE_MARKERS = ['提问，回车发送', 'Type a message', '输入消息']
 export const idleText = (out) => IDLE_MARKERS.some((m) => String(out ?? '').includes(m))
 
 /**
@@ -163,3 +163,27 @@ export function makeCleanup({ killMock, killSession, reapHost, endLog } = {}) {
     }
   }
 }
+
+/**
+ * 0.29 Ctrl+G real-UI gates (R6-029 driver). The subagents panel paints one
+ * child row as `<label> · <status> · <rounds>` and the transcript layer paints
+ * the child's buffered log one line per node (multi-line tool output split).
+ * These helpers are shared by the driver and any harness self-test so the
+ * frame predicates cannot drift from the real viewer rendering.
+ */
+/** Strip ANSI and require every needle in the captured pane. */
+export function frameHasAll(frame, needles = []) {
+  const text = stripAnsi(frame)
+  return needles.every((n) => String(text).includes(String(n)))
+}
+
+/** The Ctrl+G panel shows the child's (case-insensitive) label on a row. */
+export function childRowVisible(frame, label) {
+  return stripAnsi(frame).toLowerCase().includes(String(label).toLowerCase())
+}
+
+/** A specific buffered child-log marker is painted on the transcript layer. */
+export const transcriptLineVisible = (frame, marker) => frameHasAll(frame, [marker])
+
+/** The viewer's `⏻` hard-stop marker is ABSENT under grace 0. */
+export const hasHardStopMarker = (frame) => stripAnsi(frame).includes('⏻')

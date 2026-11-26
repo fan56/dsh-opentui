@@ -71,6 +71,9 @@ const cfgPath = join(profileDir, 'config.json')
 const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : {}
 cfg.skinMigration = 1
 cfg.autoResume = 'off'
+// Pin the locale so queue/approval/scroll receipts are deterministic zh-CN
+// strings (the suite asserts those exact markers).
+cfg.lang = 'zh-CN'
 if (typeof cfg.theme !== 'string' || cfg.theme === '') cfg.theme = 'dsh-blue'
 writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
 

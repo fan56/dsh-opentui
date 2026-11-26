@@ -16,6 +16,11 @@ verify/agents-mount-out/
 verify/steer-queue-out/
 # real-client gate artifacts (verify/queue-flush-repro.mjs)
 verify/queue-flush-out/
+# real-client gate artifacts (verify/text-leak-audit.mjs)
+verify/text-leak-out/
+# live smoke artifacts (verify/remote-live-smoke.mjs) — debug output from a
+# process holding REAL credentials; keep it out of git
+verify/remote-live-out/
 # UI-layer capture artifacts (verify/ui-matrix.mjs)
 # geometry × scene visual matrix artifacts (verify/ui-matrix.mjs)
 verify/ui-matrix-out/

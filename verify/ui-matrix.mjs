@@ -81,6 +81,9 @@ const TYPE_GAP_MS = 50
 const THEME = {
   background: '#0a0a0f',
   borderBase: '#3a3f5c',
+  // Product semantic color of an UNFOCUSED panel border: the 50% mix the
+  // renderer paints for the dimmed frame (distinct from the raw border.base).
+  borderUnfocused: '#626573',
   interactive500: '#4d6bfe',
   textMuted: '#8a8a8a',
   textBase: '#eeeeee',
@@ -253,6 +256,37 @@ function looksBlue(hex) {
   return b > r && b >= g && hue >= 190 && hue <= 250
 }
 
+/**
+ * Pure classifier for the 🧠 footer segment — no frame, no tmux, no network.
+ *   none     — no segment before the first billed turn (the live gate asserts
+ *              this exact empty shape; see sceneFooter).
+ *   bare     — `🧠 <used>`, the pre-window degradation. Covered HERE by the
+ *              self-check below so the shape contract stays testable without
+ *              manufacturing a live pre-billing frame.
+ *   compact  — `🧠 <used>/<window>(x.x%)` with no inner spaces.
+ */
+const brainShape = (segment) => {
+  const s = String(segment).trim()
+  if (s === '') return 'none'
+  // Compact MUST be tested before bare: the bare `/^🧠 \S+$/` also matches
+  // `🧠 1.2k/200k(0.6%)` (the `/` is non-space), so testing bare first
+  // misclassifies the compact form and trips the self-check below.
+  if (/\d+(?:\.\d+)?[kM]?\/\d+(?:\.\d+)?[kM]?\(\d+\.\d%/.test(s) && !/\d\s+%|\(\s|\s\)/.test(s)) return 'compact'
+  if (/^🧠 \S+$/.test(s)) return 'bare'
+  return 'unknown'
+}
+if (brainShape('') !== 'none' || brainShape('🧠 1.2k') !== 'bare'
+  || brainShape('🧠 1.2k/200k(0.6%)') !== 'compact' || brainShape('🧠 1.2 k') !== 'unknown') {
+  console.error('ui-matrix: brainShape self-check failed (bare/compact shape contract broken)')
+  process.exit(2)
+}
+
+// Every text state the ask overlay paints while it covers the dock. While ANY
+// of these is visible the composer placeholder is ALSO up, so `idle()` alone
+// cannot tell the overlay apart from a genuinely idle session.
+const ASK_MARKERS = /Question\s*\(|Review answers|Submit answers|Type something\./
+const askOpen = (out) => ASK_MARKERS.test(stripAnsi(out))
+
 // ---------------------------------------------------------------------------
 // scratch home + mock LLM
 // ---------------------------------------------------------------------------
@@ -414,7 +448,10 @@ const composerRows = (out) =>
     .filter((l) => l.trimStart().startsWith('┃'))
     .map((l) => l.trim().replace(/^┃/, '').replace(/┃$/, '').trim())
 const composerEmpty = (out) => composerRows(out).every((l) => l === '' || l.startsWith(PLACEHOLDER))
-const idle = (out) => out.includes(IDLE) || composerEmpty(out)
+// Ask guard: the dialog paints its own text over the dock while the composer
+// still shows the placeholder, so an unguarded idle() reports "idle" mid-ask
+// and every scene after the ask reads a stale, overlay-covered frame.
+const idle = (out) => !askOpen(out) && (out.includes(IDLE) || composerEmpty(out))
 const waitPane = async (session, pred, timeoutMs, everyMs = 250) => {
   const deadline = Date.now() + timeoutMs
   let last = ''
@@ -426,11 +463,73 @@ const waitPane = async (session, pred, timeoutMs, everyMs = 250) => {
   }
   return { ok: false, out: last }
 }
+/**
+ * Drive the ask overlay by the TEXT it paints, then wait until every marker
+ * has LEFT the pane. A fixed key count is not a settle signal: the single-
+ * select questions auto-advance, the multiSelect parks on its review row,
+ * and the review page needs Enter on "⏎ Submit answers". Returning while any
+ * marker is still visible leaves the dock covered and cascades stale frames
+ * into every later scene (the composer placeholder is up during the dialog,
+ * so idle() cannot be trusted). Returns true only on a fully closed dialog.
+ */
+const driveAsk = async (session, timeoutMs = 45_000) => {
+  const deadline = Date.now() + timeoutMs
+  let last = ''
+  let lastQuestion = ''
+  let repeats = 0
+  while (Date.now() < deadline) {
+    const pane = stripAnsi(capture(session))
+    if (pane.trim()) last = pane
+    if (!askOpen(pane)) return { ok: true, out: pane }
+    if (/Submit answers/.test(pane)) {
+      // Review page: End walks to the last row (⏎ Submit answers), Enter commits.
+      sendKeys(session, 'End')
+      await sleep(120)
+      sendKeys(session, 'Enter')
+      await sleep(250)
+    } else if (/Question\s*\(/.test(pane)) {
+      const q = (/Question\s*\(\s*(\d+\/\d+)/.exec(pane) ?? [])[1] ?? '?'
+      if (q === lastQuestion) repeats += 1
+      else { lastQuestion = q; repeats = 0 }
+      if (repeats >= 1) {
+        // multiSelect parked on its question: Enter already toggled an option,
+        // so move the cursor to the review row instead of toggling back.
+        sendKeys(session, 'Down')
+        await sleep(120)
+        sendKeys(session, 'Enter')
+        await sleep(250)
+      } else {
+        // single-select: Enter picks the highlighted option and auto-advances.
+        sendKeys(session, 'Enter')
+        await sleep(250)
+      }
+    } else if (/Review answers/.test(pane)) {
+      sendKeys(session, 'Down')
+      await sleep(120)
+      sendKeys(session, 'Enter')
+      await sleep(250)
+    } else {
+      // `Type something.` inline free-text row owns the keys: Enter commits.
+      sendKeys(session, 'Enter')
+      await sleep(250)
+    }
+  }
+  return { ok: false, out: last }
+}
 const submit = async (session, text) => {
   await typeText(session, text)
   await sleep(250)
   sendKeys(session, 'Enter')
 }
+/**
+ * The busy hint is the U6 stop contract's visible signal (`esc stop` in en,
+ * `esc 停止` in zh). The composer paints its placeholder WHILE a turn runs,
+ * so `idle()` is not a settle signal: it returns true mid-flight and lets the
+ * next scene drive keys into a turn that is still running. Every scene that
+ * ends a turn settles on the HINT LEAVING the pane instead.
+ */
+const busyHintOpen = (out) => has(out, 'esc stop') || has(out, 'esc 停止')
+const turnSettled = (out) => !busyHintOpen(out)
 /** Abort the running turn through the U6 stop contract (turn-cancel.tsx):
  * the first Esc only ARMS ("Press Esc again to stop"), a second Esc inside
  * the double-press window opens the `Stop everything?` confirm, and Enter
@@ -438,15 +537,16 @@ const submit = async (session, text) => {
  * or two Escapes without the confirm leave the turn running — and a left-open
  * confirm dialog makes the next busy submit take the vendored immediate-steer
  * path (delivery-choice: no stacking on an open dialog), so the whole busy
- * ladder below silently degrades. The settle predicate reads the HINT row,
- * not the editor: the composer paints its placeholder while busy too. */
+ * ladder below silently degrades. The settle predicate reads the HINT row
+ * (`esc stop` / `esc 停止`), not the editor: the composer paints its
+ * placeholder while busy too. */
 const abortTurn = async (session, waitMs = 15_000) => {
   sendKeys(session, 'Escape')
   await sleep(150)
   sendKeys(session, 'Escape')
   await sleep(350)
   sendKeys(session, 'Enter')
-  return waitPane(session, (o) => !has(o, 'esc stop'), waitMs)
+  return waitPane(session, turnSettled, waitMs)
 }
 const snap = (name, session = SESS) => {
   writeFileSync(join(OUT, `${name}.ans`), capture(session, true))
@@ -569,15 +669,26 @@ async function sceneContextRow(session, geom) {
   }
 }
 
-/** Footer = the single row carrying the powerline arrows (U+E0B0). */
+/**
+ * Footer = the single powerline row (U+E0B0) that ALSO carries the brand
+ * (`dsh` / `dsh(…)`). The activity tab strip paints 🏠/📋 powerline arrows too
+ * — arrow-only matching mislabels that tab row as the footer. Brand is the
+ * footer's unique signature: the wall clock is deliberately NOT required,
+ * because narrow geometries (45/100 cols) clip it out of the rendered strip.
+ */
+const isFooterRow = (line) =>
+  line.includes('\ue0b0')
+  && /\bdsh(?:\([^)]*\))?/.test(line)
 function footerRow(frame) {
-  return stripAnsi(frame).split('\n').filter((l) => l.includes('\ue0b0'))
+  return stripAnsi(frame).split('\n').filter(isFooterRow)
 }
 
 async function sceneFooter(session, geom, { compact = true } = {}) {
   const frame = capture(session)
   const plainRows = stripAnsi(frame).split('\n')
-  const arrowIdx = plainRows.map((l, i) => (l.includes('\ue0b0') ? i : -1)).filter((i) => i >= 0)
+  // Brand, not just arrows: the activity 🏠/📋 tab row also carries U+E0B0
+  // and would otherwise be counted as a second wrapping footer.
+  const arrowIdx = plainRows.map((l, i) => (isFooterRow(l) ? i : -1)).filter((i) => i >= 0)
   const rows = arrowIdx.map((i) => plainRows[i])
   record('footer', 'the footer is one row and never wraps', rows.length === 1,
     rows.length === 1 ? [`width: ${widthOf(rows[0])}/${geom.cols}`] : failDetail('exactly one powerline row', `${rows.length} rows`, frame, '\ue0b0'))
@@ -603,22 +714,22 @@ async function sceneFooter(session, geom, { compact = true } = {}) {
   const at = row.indexOf('🧠')
   const segment = (at >= 0 ? row.slice(at) : '').split('\ue0b0')[0] ?? ''
   if (!compact) {
-    // Before a turn bills tokens the segment degrades to the bare `🧠 used`
-    // shape (no window → no percent).
-    const bare = /^🧠 \S+$/.test(segment.trim())
-    record('footer', 'the 🧠 segment degrades to the bare `🧠 used` shape with no window',
-      bare, bare ? [`segment: ${JSON.stringify(segment.trim())}`]
-        : failDetail('🧠 <used>', `segment=${JSON.stringify(segment.trim())}`, frame, '🧠'))
+    // Before any turn bills tokens the footer paints NO 🧠 segment at all —
+    // not even the bare `🧠 used` degradation. Strong empty-shape assert;
+    // the bare shape's contract lives in brainShape()'s pure self-check.
+    const none = brainShape(segment) === 'none' && segment === ''
+    record('footer', 'before a turn bills tokens there is no 🧠 segment at all',
+      none, none ? ['segment: ""']
+        : failDetail('empty 🧠 segment (no segment before billing)', `segment=${JSON.stringify(segment.trim())} shape=${brainShape(segment)}`, frame, '🧠'))
     return
   }
   // 🧠 compact form may be clipped at 45 cols; the inner spacing law holds
   // for the visible prefix: `used/window(x.x%)`, no space inside the parens.
-  const compactOk = /\d+(?:\.\d+[kM])?\/\d+(?:\.\d+[kM])?\(\d+\.\d%/.test(segment)
-  const noInnerSpace = !/\d\s+%|\(\s|\s\)/.test(segment)
+  const isCompact = brainShape(segment) === 'compact'
   record('footer', 'the 🧠 segment is the compact `used/window(x.x%)` form with no stray spaces',
-    compactOk && noInnerSpace,
-    (compactOk && noInnerSpace) ? [`segment: ${JSON.stringify(segment.trim())}`]
-      : failDetail('🧠 <used>/<window>(x.x%) with no inner spaces', `segment=${JSON.stringify(segment.trim())}`, frame, '🧠'))
+    isCompact,
+    isCompact ? [`segment: ${JSON.stringify(segment.trim())}`]
+      : failDetail('🧠 <used>/<window>(x.x%) with no inner spaces', `segment=${JSON.stringify(segment.trim())} shape=${brainShape(segment)}`, frame, '🧠'))
 }
 
 function focusFrame(frame) {
@@ -643,16 +754,16 @@ async function sceneFocus(session, geom, ansiCapture) {
     const ruleChar = stripAnsi(ruleLine).trim().charAt(0)
     const fg = ruleLine ? fgAt(sgrRuns(ruleLine), ruleChar) : null
     record('focus', 'compact: the unfocused transcript draws left/right rules only (no top row)',
-      tops.length === 0 && ruleLine !== '' && ruleChar === '│' && fg !== null && colorDistance(fg, THEME.borderBase) < 24,
+      tops.length === 0 && ruleLine !== '' && ruleChar === '│' && fg !== null && colorDistance(fg, THEME.borderUnfocused) < 24,
       ruleLine !== ''
-        ? [`rule: ${JSON.stringify(stripAnsi(ruleLine).trim().slice(0, 3))}`, `fg: ${fg} (border.base ${THEME.borderBase})`]
+        ? [`rule: ${JSON.stringify(stripAnsi(ruleLine).trim().slice(0, 3))}`, `fg: ${fg} (unfocused border ${THEME.borderUnfocused}, 50% mix)`]
         : failDetail('│…│ transcript rule', 'missing', frame, '│'))
   } else {
     const fg = start.light ? fgAt(sgrRuns(startAnsiLines.find((l) => stripAnsi(l).includes(' transcript ')) ?? ''), '─') : null
-    record('focus', 'unfocused transcript: single frame + border.base color',
-      start.light !== '' && start.heavy === '' && fg !== null && colorDistance(fg, THEME.borderBase) < 24,
+    record('focus', 'unfocused transcript: single frame + product unfocused border color',
+      start.light !== '' && start.heavy === '' && fg !== null && colorDistance(fg, THEME.borderUnfocused) < 24,
       start.light !== ''
-        ? [`fg: ${fg} (border.base ${THEME.borderBase})`]
+        ? [`fg: ${fg} (unfocused border ${THEME.borderUnfocused}, 50% mix)`]
         : failDetail('┌─ transcript ─ top border', `light=${!!start.light} heavy=${!!start.heavy}`, frame, 'transcript'))
   }
 
@@ -818,7 +929,7 @@ async function sceneBusy(session, geom) {
   const paused = await waitPane(session, (o) => has(o, 'Paused') && has(o, '#1'), 12_000)
   record('busy', 'aborting the turn keeps the queue and marks it paused', paused.ok,
     paused.ok ? ['⏸ Paused #1 visible'] : failDetail('⏸ Paused #1', 'missing', paused.out, '暂停'))
-  await waitPane(session, idle, 5_000)
+  await waitPane(session, turnSettled, 5_000)
 }
 
 async function sceneSteer(session, geom) {
@@ -839,26 +950,46 @@ async function sceneSteer(session, geom) {
     popup.ok && injected.ok && fg !== null && colorDistance(fg, THEME.textBase) < 24,
     injected.ok ? [`fg: ${fg} (text.action.primary.base ${THEME.textBase})`, `italic: ${italic}`]
       : failDetail('⤵ Injected into the current turn', 'missing', injected.out, '注入'))
-  // Turn end via the confirmed abort (abortTurn): composer-state settles the
-  // seam turn and flips every injected steer row to `✓ Delivered` on BOTH
-  // the success and the abort path — aborting is the deterministic way to
-  // end it (a natural settle re-serves the mock's main-slow phase for every
-  // auxiliary request that carries the trigger marker: 84s+ per turn).
+  // Turn end via the confirmed abort (abortTurn). Per the 0.29.1 contract an
+  // accepted-but-unconsumed steer stays `⤵ Injected` across abort: composer
+  // state never flips it to `✓ Delivered` on the abort path, so a Delivered
+  // row here would be a false receipt. Match the REAL rendered row from the
+  // injection step by its steer text (which wraps onto the next line at
+  // narrow widths), not just the generic `Injected` label.
   await abortTurn(session)
-  const delivered = await waitPane(session, (o) => has(o, 'Delivered'), 25_000)
-  const deliveredAnsi = capture(session, true)
-  const deliveredRow = deliveredAnsi.split('\n').find((l) => stripAnsi(l).includes('Delivered')) ?? ''
-  const deliveredFg = fgAt(sgrRuns(deliveredRow), '✓')
-  record('busy', 'the steer receipt flips to `✓ Delivered` at turn end',
-    delivered.ok && deliveredFg !== null && colorDistance(deliveredFg, THEME.textBase) < 24,
-    delivered.ok ? [`fg: ${deliveredFg}`] : failDetail('✓ Delivered', 'missing', delivered.out, '投递'))
-  await waitPane(session, idle, 20_000)
+  const settled = await waitPane(session, turnSettled, 25_000)
+  const afterAnsi = capture(session, true)
+  const afterPlain = stripAnsi(afterAnsi)
+  const afterLines = afterPlain.split('\n')
+  const injIdx = afterLines.findIndex((l) => l.includes('Injected into the current turn'))
+  const steerText = 'say hello in one word'
+  const steerVisible = injIdx >= 0
+    && flat(afterLines.slice(injIdx, injIdx + 3).join('')).includes(flat(steerText))
+  const injectedRow = afterAnsi.split('\n')[injIdx] ?? ''
+  const injectedFg = fgAt(sgrRuns(injectedRow), '⤵')
+  const stillInjected = injIdx >= 0 && steerVisible && injectedFg !== null
+    && colorDistance(injectedFg, THEME.textBase) < 24
+  const noDelivered = !afterPlain.includes('Delivered')
+  record('busy', 'abort keeps the steer receipt `⤵ Injected` and never flips it to `✓ Delivered`',
+    settled.ok && stillInjected && noDelivered,
+    stillInjected && noDelivered
+      ? [`row: ${JSON.stringify(stripAnsi(injectedRow).trim())}`, 'no Delivered in transcript']
+      : failDetail('⤵ Injected row still present, no Delivered anywhere',
+          `settled=${settled.ok} row=${JSON.stringify(stripAnsi(injectedRow).trim())} fg=${injectedFg} steer=${steerVisible} delivered=${!noDelivered}`,
+          afterPlain, 'Injected'))
+  await waitPane(session, turnSettled, 20_000)
 }
 
 async function sceneActivity(session, geom) {
   // Live turn: assertions must read the busy frame, so poll while it runs.
   await typeFast(session, 'Walk the migration plan one more time. E2E_BTW_MAIN')
   sendKeys(session, 'Enter')
+  // The PREVIOUS turn's activity frame lingers ~2s after it settles. Without
+  // this guard the loop latches onto that dimmed leftover, reads a stale
+  // border, and aborts before the new turn even starts — letting sceneBusy
+  // drive its first submit into a live turn (the 120x34 cascade). Wait for
+  // THIS turn's busy hint first.
+  const running = await waitPane(session, busyHintOpen, 8_000)
   let frameLine = ''
   let frameFg = null
   let ruleLine = ''
@@ -866,10 +997,14 @@ async function sceneActivity(session, geom) {
   while (Date.now() < deadline) {
     const ansi = capture(session, true)
     const lines = ansi.split('\n')
-    const activity = lines.find((l) => /^┏[━]*\s*activity/.test(stripAnsi(l).trim()))
+    // The 0.29 renderer paints the turn activity frame as a LIGHT box whose
+    // title carries the 🧩 glyph (`┌─🧩 activity──…┐`); the old heavy `┏━`
+    // frame is gone. Match the real light frame, keeping the border glyph
+    // requirement so a stray transcript row cannot satisfy the check.
+    const activity = lines.find((l) => /^┌[─]*\s*(?:🧩\s*)?activity/.test(stripAnsi(l).trim()))
     if (activity) {
       frameLine = activity
-      frameFg = fgAt(sgrRuns(activity), '━')
+      frameFg = fgAt(sgrRuns(activity), '─')
     }
     const rule = lines.find((l) => stripAnsi(l).includes('┃ activity'))
     if (rule) ruleLine = rule
@@ -877,13 +1012,20 @@ async function sceneActivity(session, geom) {
     await sleep(120)
   }
   if (geom.rows > 30) {
-    const fg = frameFg ?? (frameLine ? fgAt(sgrRuns(frameLine), '━') : null)
+    const fg = frameFg ?? (frameLine ? fgAt(sgrRuns(frameLine), '─') : null)
     const ratio = fg ? contrast(fg, THEME.background) : 0
-    record('activity', 'the turn activity frame draws a heavy border in the theme blue (contrast ≥ 6:1)',
-      frameLine !== '' && fg !== null && looksBlue(fg) && ratio >= ACTIVITY_MIN_CONTRAST,
+    // Shape is the contract here: the 0.29 renderer draws the live turn board
+    // as a LIGHT `┌─🧩 activity──…┐` frame through the shared panel-focus
+    // skin (single + unfocused border, heavy + accent when the panel is
+    // active). The old bright-blue `activityFrameBorderColor` no longer
+    // drives this box, and the captured border run may carry no explicit
+    // fg SGR at all, so the old blue/contrast ≥ 6 assertion is stale; the
+    // border's skin-color treatment is asserted by sceneFocus.
+    record('activity', 'the turn activity frame draws the real light `┌─🧩 activity` border while busy',
+      running.ok && frameLine !== '',
       frameLine !== ''
-        ? [`fg: ${fg} (dsh-blue blue.200 ${THEME.activityBlue})`, `contrast: ${ratio.toFixed(2)}:1`]
-        : failDetail('┏━ activity frame', 'missing', capture(session), 'activity'))
+        ? [`fg: ${fg}`, `contrast: ${ratio.toFixed(2)}:1`, `busy hint: ${running.ok}`]
+        : failDetail('┌─🧩 activity frame', `missing (busy hint: ${running.ok})`, capture(session), 'activity'))
   } else {
     record('activity', 'compact: the activity frame collapses to a `┃ activity` left rule (zero top rows)',
       ruleLine !== '',
@@ -893,8 +1035,14 @@ async function sceneActivity(session, geom) {
   // Abort through the U6 contract (abortTurn): two bare Escapes would leave
   // the `Stop everything?` confirm open, and the leaked dialog would push the
   // NEXT busy submit onto the vendored immediate-steer path (no dialog).
-  await abortTurn(session)
-  await waitPane(session, idle, 10_000)
+  // Settle on the busy hint leaving the pane — `idle()` sees the composer
+  // placeholder while the turn is still running and lets sceneBusy start
+  // too early (the 120x34 busy/queue/paused cascade). A turn that settled
+  // on its own inside the polling window must NOT be Esc-aborted: Esc/Esc/
+  // Enter on an idle session leaves a dialog open and the next scene's
+  // submit takes the immediate-steer path.
+  if (busyHintOpen(capture(session))) await abortTurn(session)
+  await waitPane(session, turnSettled, 10_000)
 }
 
 async function sceneThink(session, geom) {
@@ -925,7 +1073,11 @@ async function sceneThink(session, geom) {
   record('think', 'the think block text carries the italic treatment',
     hasItalicRun(thinkRuns, '💭') || thinkRuns.some((r) => r.italic),
     [`italic: ${thinkRuns.some((r) => r.italic)}`])
-  await waitPane(session, idle, 25_000)
+  // Settle on the busy hint, NOT `idle()`: the composer shows its placeholder
+  // while the think turn is still running. Returning here used to let
+  // sceneActivity's prompt become a steer into that live turn, which is why
+  // the 120x34 activity frame never mounted and the busy ladder broke.
+  await waitPane(session, turnSettled, 25_000)
 }
 
 async function sceneTool(session, geom) {
@@ -936,26 +1088,16 @@ async function sceneTool(session, geom) {
   await typeFast(session, 'Ask me three questions. E2E_ASK_TRIGGER')
   sendKeys(session, 'Enter')
   const cap = dockLineCap(geom.rows)
-  const ask = await waitPane(session, (o) => /Question \(1\/3\)|Review answers/.test(o), 20_000)
-  if (ask.ok) {
-    for (let i = 0; i < 3; i++) { sendKeys(session, 'Enter'); await sleep(350) }
-    sendKeys(session, 'Down') // from the multiSelect option list to "⏎ Review answers"
-    await sleep(200)
-    sendKeys(session, 'Enter')
-    await sleep(350)
-    // The review page exposes "⏎ Submit answers" as its last row. Settle it
-    // deterministically: keep nudging the selection down + Enter until the
-    // dialog leaves the pane (the old single End+Enter left the overlay up,
-    // hiding the dock row the check reads).
-    for (let i = 0; i < 8; i++) {
-      const pane = stripAnsi(capture(session))
-      if (!/Review answers|Question \(\d\/\d\)/.test(pane)) break
-      sendKeys(session, 'Down')
-      await sleep(120)
-      sendKeys(session, 'Enter')
-      await sleep(350)
-    }
-  }
+  const ask = await waitPane(session, askOpen, 20_000)
+  // Drive the dialog from its OWN text until EVERY marker is gone — Question(,
+  // Review answers, Submit answers and `Type something.` together. A fixed
+  // key count (or idle(), which sees the composer placeholder during the
+  // overlay) used to return with the dock still covered, cascading stale
+  // frames into all later scenes.
+  const settled = ask.ok ? await driveAsk(session) : { ok: false, out: ask.out }
+  record('tool', 'the ask dialog fully closes before the dock/tool row is read', settled.ok,
+    settled.ok ? ['no Question(/Review answers/Submit answers/Type something. left']
+      : failDetail(`no ${ASK_MARKERS.source} left`, 'ask markers still visible', settled.out))
   let toolRows = 0
   let sample = ''
   const deadline = Date.now() + 15_000

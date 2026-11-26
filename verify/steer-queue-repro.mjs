@@ -13,7 +13,8 @@
 //   3. aborting that turn (the U6 stop contract) KEEPS the queue and marks it
 //      paused ("⏸ Paused #1") — the documented failure/abort policy;
 //   4. choosing Steer paints the injection receipt
-//      ("⤵ Injected into the current turn") and it flips to "✓ Delivered" at turn end.
+//      ("⤵ Injected into the current turn"); abort keeps it Injected — abort is
+//      NOT evidence of "✓ Delivered" (host cancel keeps the inbox).
 //
 // The model is the offline mock (e2e/lib/mock-llm.mjs): the scratch profile's
 // apiKeyEnv providers get a baseURL pointing at it and the launch env pins
@@ -303,16 +304,25 @@ try {
   record('Steer paints the injected receipt', steerPopup.ok && injected.ok,
     [steerPopup.ok ? 'choice reopened' : 'choice did not reopen', injected.ok ? '⤵ Injected into the current turn visible' : 'steer receipt not visible'])
 
-  // Turn end via the confirmed abort (abortTurn): composer-state settles the
-  // seam turn and flips every injected steer row to `✓ Delivered` on BOTH
-  // the success and the abort path — aborting is the deterministic way to
-  // end it (a natural settle re-serves the mock's main-slow phase for every
-  // auxiliary request that carries the trigger marker: 84s+ per turn).
+  // End the turn through the same confirmed abort (abortTurn). Abort is NOT
+  // proof that the steer was consumed: host cancel keeps the inbox
+  // (keepInbox:true) and has no inbox-retract API, so the injected message may
+  // remain queued for the NEXT turn. Assert the honest terminal state — the row
+  // still reads Injected and no Delivered receipt appears — instead of
+  // inventing a delivery the bridge cannot prove.
   await abortTurn(SESS)
-  const delivered = await waitPane(SESS, (o) => has(o, 'Delivered'), 25_000)
-  snap('06-steer-delivered')
-  record('the steer receipt flips to delivered at turn end', delivered.ok,
-    [delivered.ok ? '✓ Delivered visible' : 'delivered receipt not visible'])
+  // Gate on the idle/settle wait result: an unsettled turn must NOT be
+  // reported as a verified Injected-without-Delivered terminal state.
+  const settled = await waitPane(SESS, idle, 15_000)
+  const afterAbort = capture(SESS)
+  snap('06-steer-after-abort')
+  const stillInjected = has(afterAbort, 'Injected into the current turn')
+  const noDelivered = !has(afterAbort, 'Delivered')
+  record('abort leaves the steer row injected with no delivered claim',
+    settled.ok && stillInjected && noDelivered,
+    [settled.ok ? 'idle/settle reached' : 'turn did not settle within budget',
+     stillInjected ? '⤵ Injected still visible' : 'injected row not visible',
+     noDelivered ? 'no Delivered receipt' : 'unexpected Delivered receipt'])
 
   const err = capture(SESS)
   const crash = /TypeError|ReferenceError|Cannot read propert|Unhandled error|panic/.exec(err)

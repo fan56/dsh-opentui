@@ -3,8 +3,10 @@
 #
 # Replaces the per-slice proof scramble with ONE test-layer investment. The
 # pack gate is the outermost, always-on family; the capability/handshake/
-# session/exit/keymap families run beneath it; verify70 (64 items, the accurate
-# count) is the gate family via scripts/real-client-gate.sh reuse.
+# session/exit/keymap families run beneath it; the gate family reuses
+# scripts/real-client-gate.sh. "verify70" is a historical SCRIPT NAME, not an
+# item count — counts below are read from the run's own agents-mount summary,
+# and are reported as unavailable when that summary was not produced.
 #
 #   bash e2e/families/run-all.sh [--out DIR] [--skip-container]
 #
@@ -60,14 +62,33 @@ run_family exit-code "$REPO/e2e/families/40-exit-code.sh"
 # Keymap/modality family (FocusRouter layer).
 run_family keymap-modality "$REPO/e2e/families/80-keymap-modality.sh"
 
-# verify70 gate family — real-client-gate.sh reuse. The accurate count is
-# 64/64 (the "70" in that script's banner is stale 0.23 text, not a count).
+# Verify gate family — real-client-gate.sh reuse. Report ONLY the count the
+# gate's own agents-mount log actually printed; never hardcode 64/70/8 here.
+V70_SUMMARY="$OUT/verify-gate/verify70.log"
+v70_counts() {
+  local line
+  line="$(grep -E 'agents-mount: [0-9]+/[0-9]+ checks passed' "$V70_SUMMARY" 2>/dev/null | tail -1)"
+  [ -n "$line" ] || return 0
+  line="${line#agents-mount: }"
+  printf '%s' "${line%% checks passed*}"
+}
 mkdir -p "$OUT/verify-gate"
 log "=== family: verify-gate (real-client-gate.sh reuse) ==="
 if ( cd "$REPO" && scripts/real-client-gate.sh --out "$OUT/verify-gate" ) >"$OUT/verify-gate/unified-invoke.log" 2>&1; then
-  log "FAMILY verify-gate PASS (64/64)"
+  V70_COUNT="$(v70_counts)"
+  if [ -n "$V70_COUNT" ]; then
+    log "FAMILY verify-gate PASS (agents-mount summary: $V70_COUNT checks passed)"
+  else
+    log "FAMILY verify-gate PASS (count unavailable: no agents-mount summary in $V70_SUMMARY; no count claimed)"
+  fi
 else
-  log "FAMILY verify-gate FAIL (see $OUT/verify-gate)"; FAILED=$((FAILED+1))
+  V70_COUNT="$(v70_counts)"
+  if [ -n "$V70_COUNT" ]; then
+    log "FAMILY verify-gate FAIL (agents-mount summary: $V70_COUNT; see $OUT/verify-gate)"
+  else
+    log "FAMILY verify-gate FAIL (see $OUT/verify-gate; no count summary available)"
+  fi
+  FAILED=$((FAILED+1))
 fi
 
 # Container family — RETIRED in 025-w3-2 (the old e2e/scenarios/ podman layer).

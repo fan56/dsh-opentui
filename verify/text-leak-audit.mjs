@@ -211,21 +211,83 @@ const freePort = async () =>
     srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => res(port)) })
     srv.on('error', rej)
   })
+/**
+ * Point EVERY provider block in the scratch patch at the offline mock. The
+ * old guard ("no baseURL anywhere → insert") skipped the whole file when a
+ * migrated profile carried even one stale/real baseURL, so a turn routed to
+ * that provider reached a REAL endpoint. Rewrite line-by-line (the
+ * provisioner's indent shape is fixed; no yaml dep): drop every sibling
+ * `baseURL:` and write exactly one mock baseURL under each provider's
+ * `apiKeyEnv:`.
+ */
+const patchProvidersToMock = (yaml) => {
+  const lines = yaml.split('\n')
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    if (!/^ {6}[a-z][\w-]*: *$/.test(lines[i])) { out.push(lines[i++]); continue }
+    // Buffer the whole 6-space block; only blocks that actually declare an
+    // apiKeyEnv are providers (permission presets / `config:` share the same
+    // indent and MUST stay untouched).
+    const block = [lines[i++]]
+    while (i < lines.length) {
+      const line = lines[i]
+      if (line.trim() !== '' && /^ */.exec(line)[0].length <= 6) break
+      block.push(lines[i++])
+    }
+    if (!block.some((l) => /^ {8}apiKeyEnv:/.test(l))) { out.push(...block); continue }
+    for (const line of block) {
+      if (/^ {8}baseURL:/.test(line)) continue // drop stale / real endpoint
+      out.push(line)
+      if (/^ {8}apiKeyEnv:/.test(line)) out.push(`        baseURL: ${mockBaseUrl()}`)
+    }
+  }
+  return out.join('\n')
+}
+
+/**
+ * Re-pin the scratch profile's default route to the mocked provider. A
+ * migrated legacy config may carry its own `agent-default-model` row pointing
+ * at a REAL provider/model (the template itself defaults to opencode-go /
+ * deepseek-v4.1-flash) — strip EVERY such entry first, then append exactly
+ * one pinned entry (zai-coding-cn / glm-5.3-flash, whose baseURL the patch
+ * above points at the mock). The gate is then immune to operator state.
+ */
+const pinDefaultModel = (yaml) => {
+  const kept = []
+  let skipping = false
+  let blockIndent = 0
+  for (const line of yaml.split('\n')) {
+    if (skipping) {
+      const indent = /^([ \t]*)/.exec(line)[1].length
+      if (line.trim() === '' || indent > blockIndent) continue
+      skipping = false
+    }
+    const m = /^([ \t]*)- id: agent-default-model\s*$/.exec(line)
+    if (m) { skipping = true; blockIndent = m[1].length; continue }
+    kept.push(line)
+  }
+  return kept.join('\n').replace(/\n*$/, '\n') + [
+    '- id: agent-default-model',
+    '  name: "@deepseek-ai/dsh-agent-default-model"',
+    '  config:',
+    '    provider: zai-coding-cn',
+    '    model: glm-5.3-flash',
+    '    reasoningEffort: high',
+    '',
+  ].join('\n')
+}
+
 const startMock = async () => {
   if (!existsSync(MOCK_SERVER)) return null
   if (MOCK_PORT === 0) MOCK_PORT = await freePort()
-  if (existsSync(patchPath)) {
-    const yaml = readFileSync(patchPath, 'utf8')
-    if (!/baseURL:/.test(yaml)) {
-      // Insert under EVERY provider that declares an apiKeyEnv (indentation is
-      // the provision script's fixed shape; a plain string insert, no yaml
-      // dep). The profile's DEFAULT model decides which provider a turn hits —
-      // patching only zai-coding-cn left the opencode-go default on its real
-      // endpoint and the audit's turn reached a real provider.
-      const patched = yaml.replace(/^( +[a-z][\w-]*:\n)( +apiKeyEnv:)/gm, `$1        baseURL: ${mockBaseUrl()}\n$2`)
-      if (patched !== yaml) writeFileSync(patchPath, patched)
-    }
+  if (!existsSync(patchPath)) {
+    console.error('text-leak: scratch provider patch missing — cannot guarantee the mock route; busy/ask faces will FAIL')
+    return null
   }
+  const yaml = readFileSync(patchPath, 'utf8')
+  const patched = pinDefaultModel(patchProvidersToMock(yaml))
+  if (patched !== yaml) writeFileSync(patchPath, patched)
   const child = spawn(process.execPath, [MOCK_SERVER, '--port', String(MOCK_PORT)], { stdio: 'ignore', detached: false })
   child.on('error', () => {})
   for (let i = 0; i < 30; i++) {
@@ -304,11 +366,16 @@ const launch = (session, lang) => {
     `DSH_HOME=${HOME}`,
     `DSH_AGENTS_HOME=${AGENTS_HOME}`,
     'DSH_OPENTUI_DEBUG=1',
-    // Dummy key + mock BASE_URL: the busy/ask faces DO submit turns, but both
-    // the profile patch and this env point at the offline mock — nothing ever
-    // reaches a real provider.
+    // Dummy keys + mock BASE_URL for EVERY provider: the busy/ask faces DO
+    // submit turns, but both the profile patch and this env point at the
+    // offline mock — nothing ever reaches a real provider. The template's
+    // default route used to be opencode-go, whose key/baseURL were absent,
+    // so the turn escaped to a real endpoint; pin both keys here as a belt-
+    // and-braces guard even though the patch re-pins the default model.
     'ZAI_CODING_CN_API_KEY=mock-only-key',
     `ZAI_CODING_CN_BASE_URL=${mockBaseUrl()}`,
+    'OPENCODE_GO_API_KEY=mock-only-key',
+    `OPENCODE_GO_BASE_URL=${mockBaseUrl()}`,
   ]
   const r = tmux('new-session', '-d', '-x', String(COLS), '-y', String(ROWS), '-s', session, '-c', WS,
     `${env.join(' ')} ${LAUNCHER} --client 2>${join(OUT, `${session}.err.log`)}`)
@@ -535,15 +602,17 @@ const driveLang = async (lang) => {
 
     // busy: whatever the mock streams for this turn (its phase selection may
     // see the ask history), the frame only needs the turn IN FLIGHT. Snap the
-    // FIRST frame carrying the turn overlay's status spinner (untranslated
-    // status text: `📝 Writing... 0s` / `Composing... 42s` in both languages)
-    // — poll fast, the scripted stream can complete inside ~1.5s.
+    // FIRST frame carrying the turn overlay's real busy hint (`esc stop` /
+    // `esc 停止`) — the English Writing/Composing/Thinking status copy is no
+    // longer a stable marker. Poll fast; the stream can complete inside ~1.5s.
+    // The captured frame must ALSO carry TPS_TRIGGER, so a stale or idle frame
+    // cannot be mistaken for a mid-turn capture.
     await submit(session, TPS_TRIGGER)
     const busyDeadline = Date.now() + 20_000
     let busySeen = false
     while (Date.now() < busyDeadline) {
       const frame = capture(session)
-      if (/(Writing|Composing|Thinking)\.\.\./.test(frame)) {
+      if (/esc stop|esc\s*停止/.test(stripAnsi(frame))) {
         ansi = capture(session, true)
         busySeen = stripAnsi(ansi).includes(TPS_TRIGGER)
         if (busySeen) writeFileSync(join(OUT, `${lang}-busy.ans`), ansi) // evidence parity with snapFace
