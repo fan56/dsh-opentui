@@ -4,7 +4,7 @@ import type {
 	SessionPruneRestoreResult,
 	SessionPurgeCommitResult,
 	SessionPurgePrepareResult,
-} from "../../../../tui-base/src/seams/session.ts"
+} from "../../../../tui-base/src/seams/session"
 import { BridgeProtocolError } from "./bridge-protocol-error.ts"
 
 function asRecord(value: unknown): Record<string, unknown> {
