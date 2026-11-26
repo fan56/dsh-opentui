@@ -463,4 +463,33 @@ describe("session.prune.apply — wire contract (no mutation exercised)", () => 
     expect(noEcho.error.detail.reason).toBe("plan-fingerprint")
     rmSync(tmpHome, { recursive: true, force: true })
   })
+
+  test("apply-lock throws with dshHome in the message => fixed wire text, no path", async () => {
+    // retentionDays=0 makes the recomputed plan skip every row before the
+    // lock probe, so the echo fingerprint still matches; applyTrashPlan then
+    // takes the host apply lock, which is where the throwing flock surfaces.
+    const home = mkdtempSync(join(tmpdir(), "dsh-prune-apply-lock-"))
+    const config = { sessionsRoot: FIXTURE_ROOT, freshMtimeGraceMs: 0, retentionDays: 0, dshHome: home }
+    const h = makeHarness({ sessionController: controller([row()]), sessionPersistence: statCapable }, config)
+    h.send({ id: 60, method: "session.prune.plan", params: {} })
+    const planned = await h.waitFor(60)
+    expect(planned.ok).toBe(true)
+    expect(planned.result.entries[0].reason).toBe("retention-disabled")
+
+    const secret = `${home}/trash/.apply.lock`
+    setFlockTryLockExclusiveForTest(async () => { throw new Error(`EACCES: cannot lock ${secret}`) })
+    h.send({ id: 61, method: "session.prune.apply", params: {
+      fingerprint: planned.result.fingerprint,
+      configFingerprint: planned.result.configFingerprint,
+      generatedAt: planned.result.generatedAt,
+    } })
+    const applied = await h.waitFor(61)
+    expect(applied.ok).toBe(false)
+    expect(applied.error.code).toBe("INTERNAL")
+    expect(applied.error.message).toBe("session.prune.apply failed")
+    expect(applied.error.detail).toBeUndefined()
+    expect(JSON.stringify(applied)).not.toContain(secret)
+    expect(JSON.stringify(applied)).not.toContain(home)
+    rmSync(home, { recursive: true, force: true })
+  })
 })
