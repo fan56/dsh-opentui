@@ -35,7 +35,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { readFileSync, realpathSync } from 'node:fs'
+import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 // ADR-0011 T3 — ask channel wiring. The registry shape/validators are T1/T2;
 // this module only connects them to dispatch + turn/session lifecycle.
@@ -60,6 +62,52 @@ import {
 // index module owns the Map shape and its build/incremental/reconcile rules;
 // index.ts only wires it to the host firehose and the dispatcher.
 import { getSubagentIndex } from './subagent-index'
+// retention P1 — pure read-only prune planner. The planner module owns all
+// decision rules + path gates and imports NO fs write surface; index.ts only
+// assembles the host's read-only stat capability + node fs read primitives.
+import {
+  DEFAULT_RETENTION_DAYS,
+  hasStatCapability,
+  listAllSessions,
+  planSessionPrune,
+  type PruneFsLike,
+  type PrunePersistenceLike,
+  type SessionListerLike,
+} from './session-prune'
+// retention P2 — read-only flock probe. Resolved dynamically from the host so
+// a host without the addon degrades to UNSUPPORTED, never a fake empty plan.
+// The probe opens `session.lock` with 'r' only; no `open('w')`, no `mkdir`, no
+// SessionWriteLease.acquire and no delete surface is introduced here.
+import { createPruneLockProbe, resolveFlockTryLockExclusive, type TryLockExclusive } from './prune-lock-probe'
+// retention P2 — trash-apply core. The ONLY retention write surface: all fs
+// primitives are injected so the planner/probe modules stay read-only.
+import {
+  ApplyError,
+  applyTrashPlan,
+  computeConfigFingerprint,
+  computePlanFingerprint,
+  trashRoot,
+  utcStamp,
+  type ApplyFsLike,
+} from './session-prune-apply'
+// retention P3 — trash-only purge core. The ONLY deletion surface: server-issued
+// token + host re-validation + full gate re-probe; all fs primitives injected.
+import {
+  DEFAULT_PURGE_RETENTION_DAYS,
+  PurgeError,
+  preparePurge,
+  purgeTrashSessions,
+  resolvePurgeSecret,
+  type PurgeFsLike,
+} from './session-prune-purge'
+// retention B4/C7 — trash restore core. Rename-only: host-derived id scan +
+// manifest/header/root gates + refuse-if-exists; all fs primitives injected.
+import {
+  RestoreError,
+  listRestoreEntries,
+  restoreTrashEntry,
+  type RestoreFsLike,
+} from './session-prune-restore'
 // B1 S1/S2 — inproc host settings adapter. Controller-absent fallback only:
 // resolveSettingsSurface() prefers the real settingsController, then adapts
 // ctx.settings (dsh-settings SettingsForms) via a pure projection module.
@@ -223,9 +271,16 @@ interface PersistenceHandleLike {
   close(): Promise<void>
 }
 
-/** Structural slice of `ctx.sessionPersistence` (dsh-session-persistence). */
+/** Structural slice of `ctx.sessionPersistence` (dsh-session-persistence).
+ *  `stat` is OPTIONAL: it is feature-probed by resolvePrunePersistence, and a
+ *  host without it makes `session.prune.plan` unavailable (never an empty
+ *  plan). Its snapshot is a thin local type; see session-prune.ts. */
 interface PersistenceLike {
   open(id: string, access: 'read' | 'write'): Promise<PersistenceHandleLike>
+  stat?(id: string): Promise<{
+    header: { id: unknown; createdAt?: unknown }
+    location?: { kind: string; path: string } | string | null
+  }>
 }
 
 /** One `SessionSummary` on the `session/list` wire, transcribed from
@@ -1675,6 +1730,189 @@ function resolvePersistence(ctx: BridgeContext): PersistenceLike | undefined {
     : undefined
 }
 
+/** retention P1 — feature probe for the OPTIONAL `stat` capability. A host
+ *  that only implements `open` is a clean "unavailable"; we never fabricate
+ *  an empty prune plan from it. */
+function resolvePrunePersistence(ctx: BridgeContext): (PersistenceLike & PrunePersistenceLike) | undefined {
+  const base = resolvePersistence(ctx)
+  return base !== undefined && hasStatCapability(base)
+    ? base as PersistenceLike & PrunePersistenceLike
+    : undefined
+}
+
+/**
+ * retention P1 — host-derived sessions root (NEVER client-controlled).
+ *
+ * OLD CRITERION (SUPERSEDED, recorded verbatim): "`params.sessionsRoot` from
+ * the wire is the containment root". That let a client point the planner at
+ * any directory. The root now comes ONLY from the host/plugin config
+ * (`sessionsRoot`, or `dshHome` → `<home>/sessions`; tests inject it through
+ * `apply(ctx, config)`), then the host config service if present, then
+ * `DSH_HOME`/`~/.dsh`. A client-supplied `sessionsRoot` is rejected upstream
+ * with BAD_PARAMS.
+ */
+function resolvePruneSessionsRoot(ctx: BridgeContext, config: unknown): string {
+  const fromConfig = config !== null && typeof config === 'object'
+    ? config as { sessionsRoot?: unknown; dshHome?: unknown }
+    : {}
+  if (typeof fromConfig.sessionsRoot === 'string' && fromConfig.sessionsRoot !== '') return fromConfig.sessionsRoot
+  if (typeof fromConfig.dshHome === 'string' && fromConfig.dshHome !== '') return join(fromConfig.dshHome, 'sessions')
+  try {
+    const hostConfig = typeof ctx.get === 'function' ? ctx.get('config') : undefined
+    if (hostConfig !== null && typeof hostConfig === 'object') {
+      const hc = hostConfig as { sessionsRoot?: unknown; dshHome?: unknown }
+      if (typeof hc.sessionsRoot === 'string' && hc.sessionsRoot !== '') return hc.sessionsRoot
+      if (typeof hc.dshHome === 'string' && hc.dshHome !== '') return join(hc.dshHome, 'sessions')
+    }
+  } catch {
+    // No host config service (or it threw): fall through to DSH_HOME.
+  }
+  return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')
+}
+
+/** retention P2 — host-derived DSH home. Trash lives here, OUTSIDE the
+ *  sessions root. The wire may never supply this (see apply handler). */
+function resolvePruneDshHome(ctx: BridgeContext, config: unknown): string {
+  const fromConfig = config !== null && typeof config === 'object'
+    ? config as { dshHome?: unknown }
+    : {}
+  if (typeof fromConfig.dshHome === 'string' && fromConfig.dshHome !== '') return fromConfig.dshHome
+  try {
+    const hostConfig = typeof ctx.get === 'function' ? ctx.get('config') : undefined
+    if (hostConfig !== null && typeof hostConfig === 'object') {
+      const hc = hostConfig as { dshHome?: unknown }
+      if (typeof hc.dshHome === 'string' && hc.dshHome !== '') return hc.dshHome
+    }
+  } catch {
+    // No host config service: fall through to DSH_HOME / ~/.dsh.
+  }
+  return process.env.DSH_HOME || join(homedir(), '.dsh')
+}
+
+/**
+ * §2 — the REAL host policy surface for `retentionDays`: the profile's own
+ * `config.json`, discovered through the host 0.2.2-rc.5 `profileContext` service
+ * (`dsh-app-boot/lib/types/profile-context.d.ts`: `name`, `dir`, `home`). The
+ * `settingsController`/`ctx.settings` surface (dsh-api-settings-controller,
+ * dsh-settings 0.2.2-rc.5) exposes redacted *settings namespaces* and does NOT
+ * carry the top-level `retentionDays` preference; `ctx.get('config')` is not a
+ * service the host provides. Reading `profileContext.dir/config.json` is the
+ * one interface that reflects what the user actually configured (the local
+ * `opentui-monday` profile currently holds `retentionDays: 14`).
+ *
+ * This is host-derived: the client's wire params are rejected upstream, and
+ * the plugin `config` passed to `apply(ctx, config)` is a LOWER-priority test
+ * seam — it can no longer impersonate the user's value on a real host.
+ */
+function resolveHostProfileConfig(ctx: BridgeContext): Record<string, unknown> | undefined {
+  try {
+    const profile = typeof ctx.get === 'function' ? ctx.get('profileContext') : undefined
+    const dir = profile !== null && typeof profile === 'object'
+      ? (profile as { dir?: unknown }).dir
+      : undefined
+    if (typeof dir !== 'string' || dir === '') return undefined
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined
+  } catch {
+    // No profileContext service / no config.json: keep the existing fallbacks
+    // (harness tests) rather than fabricating a policy value.
+    return undefined
+  }
+}
+
+/** retention P2 — host-ONLY policy. No wire param reaches these values. */
+function resolveHostPrunePolicy(ctx: BridgeContext, config: unknown, sessionsRoot: string): {
+  retentionDays: number
+  blankGraceDays: number
+  lockGraceMs: number
+  freshMtimeGraceMs: number
+  sessionsRoot: string
+} {
+  const fromConfig = config !== null && typeof config === 'object'
+    ? config as Record<string, unknown>
+    : {}
+  const hostConfig = (() => {
+    try {
+      const value = typeof ctx.get === 'function' ? ctx.get('config') : undefined
+      return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  })()
+  const profileConfig = resolveHostProfileConfig(ctx)
+  const numberFrom = (key: string, fallback: number, min: number, max: number): number => {
+    // Real host profile config is authoritative; injected config is only a
+    // harness fallback, never a way to override the operator's value.
+    for (const source of [profileConfig, hostConfig, fromConfig]) {
+      if (source === undefined) continue
+      const value = source[key]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max) return value
+    }
+    return fallback
+  }
+  const retentionDays = numberFrom('retentionDays', DEFAULT_RETENTION_DAYS, 0, 3650)
+  const blankGraceDays = numberFrom('blankGraceDays', 30, 0, 3650)
+  const lockGraceMs = numberFrom('lockGraceMs', 300_000, 0, 86_400_000)
+  const freshMtimeGraceMs = numberFrom('freshMtimeGraceMs', lockGraceMs, 0, 86_400_000)
+  return { retentionDays, blankGraceDays, lockGraceMs, freshMtimeGraceMs, sessionsRoot }
+}
+
+/** retention P3 — host-ONLY purge policy. The residence window defaults to 7
+ *  days (NOT the plan/apply 90-day value) and a wire param may never set it. */
+function resolveHostPurgePolicy(ctx: BridgeContext, config: unknown): {
+  retentionDays: number
+  tokenTtlMs: number
+} {
+  const fromConfig = config !== null && typeof config === 'object'
+    ? config as Record<string, unknown>
+    : {}
+  const hostConfig = (() => {
+    try {
+      const value = typeof ctx.get === 'function' ? ctx.get('config') : undefined
+      return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  })()
+  const numberFrom = (key: string, fallback: number, min: number, max: number): number => {
+    for (const source of [fromConfig, hostConfig]) {
+      const value = source[key]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max) return value
+    }
+    return fallback
+  }
+  return {
+    retentionDays: numberFrom('purgeRetentionDays', DEFAULT_PURGE_RETENTION_DAYS, 0, 3650),
+    tokenTtlMs: numberFrom('purgeTokenTtlMs', 120_000, 1, 86_400_000),
+  }
+}
+
+/** retention P2 — host-side APPLICATION lock. This is a dedicated file under
+ *  `<dshHome>/trash/.apply.lock`, NEVER `session.lock` and never a client path.
+ *  A missing/invalid flock capability makes apply UNSUPPORTED (fail closed). */
+async function withHostApplyLock<T>(
+  dshHome: string,
+  tryLockExclusive: TryLockExclusive,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const root = trashRoot(dshHome)
+  await mkdir(root, { recursive: true, mode: 0o700 })
+  const path = join(root, '.apply.lock')
+  const handle = await open(path, 'w', 0o600)
+  try {
+    await tryLockExclusive(handle.fd)
+    return await fn()
+  } finally {
+    try {
+      await handle.close()
+    } catch {
+      // best effort: releasing a descriptor cannot authorise a prune
+    }
+  }
+}
+
 /**
  * ADR-0011 T7 — lazily resolve the host's plugin-record writer.
  *
@@ -2045,6 +2283,28 @@ export function resolveAskDeadlineMs(
   return raw
 }
 
+/**
+ * R3: normalize the profile-patch `maxAskWaitMs` hard-cap override at the same
+ * single construction point as `askDeadlineMs`. A POSITIVE FINITE INTEGER not
+ * above DEFAULT_MAX_ASK_WAIT_MS shrinks the absolute cap; every other value
+ * (non-number, NaN, Infinity, <=0, fractional, above the default) is IGNORED
+ * with ONE warn and the 1h default stays armed. Shrinking the safety cap is
+ * opt-in for scratch harnesses only; raising it is never allowed. `warn` is
+ * injectable so both cases are unit-testable without a live bridge.
+ */
+export function resolveMaxAskWaitMs(
+  raw: unknown,
+  cap: number = DEFAULT_MAX_ASK_WAIT_MS,
+  warn: (format: unknown, ...params: unknown[]) => void = () => {},
+): number {
+  if (raw === undefined || raw === null) return cap
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0 || raw > cap) {
+    warn('[dsh-opentui-bridge] invalid maxAskWaitMs %s ignored (using hard cap %d)', String(raw), cap)
+    return cap
+  }
+  return raw
+}
+
 // ---------------------------------------------------------------------------
 // B3 (batch close) — per-bridge progress residue diagnostic. The progress maps
 // live inside apply()'s closure; this WeakMap lets a test / forensic probe read
@@ -2058,6 +2318,14 @@ const agentProgressResidues = new WeakMap<BridgeContext, () => AgentProgressResi
  *  Wire-neutral; returns undefined for a ctx with no active stdio bridge. */
 export function probeAgentProgressResidue(ctx: BridgeContext): AgentProgressResidue | undefined {
   return agentProgressResidues.get(ctx)?.()
+}
+
+// LIVE TRANSCRIPT: wire-neutral residue probe (same pattern as progress) so a
+// test can prove a settled child leaves no transcript run state behind.
+export type AgentTranscriptResidue = { childTranscripts: number }
+const agentTranscriptResidues = new WeakMap<BridgeContext, () => AgentTranscriptResidue>()
+export function probeAgentTranscriptResidue(ctx: BridgeContext): AgentTranscriptResidue | undefined {
+  return agentTranscriptResidues.get(ctx)?.()
 }
 
 export function apply(ctx: BridgeContext, config: unknown): unknown {
@@ -2622,6 +2890,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     childProgress: childProgress.size,
     progressSentFp: progressSentFp.size,
   }))
+  agentTranscriptResidues.set(ctx, () => ({ childTranscripts: childTranscripts.size }))
 
   /** Stdout write for one throttled progress snapshot, de-duped by fingerprint. */
   function flushProgress(childId: string): void {
@@ -2674,6 +2943,127 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     progressPending.clear()
     progressSentFp.clear()
     childProgress.clear()
+    clearTranscriptState()
+  }
+
+  // ---- LIVE TRANSCRIPT — additive `agent.transcript` frames -----------------
+  //
+  // `agent.progress` carries only rounds/lastLine/elapsedSec (a hot coalesced
+  // snapshot) and MUST NOT be widened. This is a SEPARATE additive frame for the
+  // /subagents transcript: only FINALIZED rows travel — a completed
+  // `assistant/message` (full text, never a streamed delta) and a `tool/call`
+  // paired with its `tool/result`. `agent/assistant-stream` chunks stay in the
+  // progress path; they never produce a transcript row. Rows are whitelisted to
+  // kind 'assistant' | 'tool' (never 'notice' / 'token' / 'delta'), so the shell
+  // can append them through the child-log projection without a second renderer.
+  //
+  // Per child run, `seq` starts at 0 and is strictly monotonic. A pending row is
+  // flushed immediately on the frame boundary and ALWAYS flushed before any
+  // settle terminal, so no transcript frame can land after the child ended.
+  interface AgentTranscriptRow {
+    kind: 'assistant' | 'tool'
+    text: string
+    output?: string
+  }
+  interface ChildTranscriptState {
+    turnId: string
+    seq: number
+    pending: AgentTranscriptRow[]
+    /** finalized call side of a tool pair, keyed by callId (bounded, settle-cleared). */
+    toolCalls: Map<string, string>
+  }
+  const childTranscripts = new Map<string, ChildTranscriptState>()
+  const MAX_PENDING_TOOL_CALLS = 64
+  /**
+   * Stable CHILD-RUN identity per transcript frame. The parent `turnId` is NOT
+   * enough: one parent turn can settle a child and re-spawn it, and the new run
+   * restarts its `seq` at 0. Source the id from the spawn fact — the catalog
+   * `childCreatedAt` (also cached as the SubagentIndex row's `startedAt`) or the
+   * tool-workflow `runId` — so a client can dedupe by (childId, runId, seq).
+   */
+  const childTranscriptRunIds = new Map<string, string>()
+
+  /** Run identity for a child frame = the in-flight turn (same key as progress). */
+  function transcriptTurnId(): string {
+    return inFlightTurnId ?? ''
+  }
+
+  /** Stable child-run id carried on every transcript frame of this run. */
+  function childTranscriptRunId(childId: string): string {
+    const fromSpawn = childTranscriptRunIds.get(childId)
+    if (fromSpawn !== undefined && fromSpawn !== '') return fromSpawn
+    const indexed = getSubagentIndex(ctx).get(childId)
+    return indexed !== undefined && indexed.startedAt > 0 ? `child@${indexed.startedAt}` : ''
+  }
+
+  function childTranscriptState(childId: string): ChildTranscriptState {
+    let st = childTranscripts.get(childId)
+    const turnId = transcriptTurnId()
+    if (st === undefined || st.turnId !== turnId) {
+      st = { turnId, seq: 0, pending: [], toolCalls: new Map() }
+      childTranscripts.set(childId, st)
+    }
+    return st
+  }
+
+  /** Stdout write of one finalized-row batch. Empty pending never emits. */
+  function flushTranscript(childId: string): void {
+    const st = childTranscripts.get(childId)
+    if (st === undefined || st.pending.length === 0 || binding === undefined) return
+    const rows = st.pending.splice(0)
+    emitEvent('agent.transcript', {
+      turnId: st.turnId,
+      sessionId: binding.sessionId,
+      childId,
+      runId: childTranscriptRunId(childId),
+      seq: st.seq,
+      rows,
+    })
+    st.seq += 1
+  }
+
+  /** Flush pending transcript rows immediately and drop this run's pair map. */
+  function flushTranscriptNow(childId: string): void {
+    flushTranscript(childId)
+    const st = childTranscripts.get(childId)
+    if (st !== undefined) st.toolCalls.clear()
+  }
+
+  /** Settle terminal — flush ALL children before the terminal frame. */
+  function flushAllTranscript(): void {
+    for (const childId of [...childTranscripts.keys()]) flushTranscriptNow(childId)
+  }
+
+  /** Binding teardown / roster reset — no live row may survive into a new session. */
+  function clearTranscriptState(): void {
+    childTranscripts.clear()
+    childTranscriptRunIds.clear()
+  }
+
+  /** Settle cleanup for one child: drop its run state entirely. */
+  function clearChildTranscript(childId: string): void {
+    childTranscripts.delete(childId)
+  }
+
+  /** Guard shared by all child transcript observations (same scope as progress). */
+  function noteChildTranscriptRow(childId: string, row: AgentTranscriptRow): void {
+    if (binding === undefined || childId === '' || childId === binding.sessionId) return
+    const indexed = getSubagentIndex(ctx).get(childId)
+    if (indexed === undefined || indexed.parentSessionId !== binding.sessionId || indexed.status === 'settled') return
+    const st = childTranscriptState(childId)
+    st.pending.push(row)
+    flushTranscript(childId)
+  }
+
+  /** Full finalized text of a child `assistant/message` (string or content blocks). */
+  function assistantMessageText(data: Record<string, unknown>): string {
+    const message = data.message !== null && typeof data.message === 'object'
+      ? (data.message as Record<string, unknown>)
+      : undefined
+    const content = (message?.content ?? data.content ?? message?.text ?? data.text)
+    if (typeof content === 'string') return content
+    if (Array.isArray(content)) return contentText(content)
+    return ''
   }
 
   /** Observe one host live fact for a running child of the bound session and
@@ -2841,20 +3231,27 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
 
   // F1-A2: per-ask wall clock, overridable from the profile patch config.
-  // Default stays null (no per-ask deadline) so the 1h maxAskWaitMs hard cap
+  // Default stays null (no per-ask deadline) so the maxAskWaitMs hard cap
   // remains the only fallback — changing the default is out of scope.
-  const askDeadlineMsRaw = config !== null && typeof config === 'object'
-    ? (config as { askDeadlineMs?: unknown }).askDeadlineMs
-    : undefined
+  const configObject = config !== null && typeof config === 'object' ? config as Record<string, unknown> : undefined
+  // R3: a profile patch may SHRINK the absolute hard cap (scratch harnesses use
+  // this to cover it in seconds). Validation is once here, never per ask; an
+  // invalid value is ignored with ONE warn so a bad config can never raise or
+  // zero the safety cap. The registry still arms the cap it actually enforces.
+  const maxAskWaitMs = resolveMaxAskWaitMs(configObject?.maxAskWaitMs, DEFAULT_MAX_ASK_WAIT_MS, (fmt, ...params) =>
+    logger.warn(fmt, ...params),
+  )
+  const askDeadlineMsRaw = configObject?.askDeadlineMs
   // S1: validate once here (never per ask) — invalid/negative → ignored + warn;
-  // above the 1h hard cap → clamped + warn (else the config silently loses to
-  // the cap timer). The registry still owns the cap it actually enforces.
-  const askDeadlineMs = resolveAskDeadlineMs(askDeadlineMsRaw, DEFAULT_MAX_ASK_WAIT_MS, (fmt, ...params) =>
+  // above the EFFECTIVE hard cap → clamped + warn (else the config silently
+  // loses to the cap timer). The registry still owns the cap it actually arms.
+  const askDeadlineMs = resolveAskDeadlineMs(askDeadlineMsRaw, maxAskWaitMs, (fmt, ...params) =>
     logger.warn(fmt, ...params),
   )
 
   const ask = new AskRegistry({
     askDeadlineMs,
+    maxAskWaitMs,
     logger,
     journal: writeAskJournal,
     sink: (frame) => {
@@ -3351,6 +3748,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId,
         typeof data.childCreatedAt === 'number' ? data.childCreatedAt : undefined,
       )
+      // A fresh catalog fact is a NEW child run (it can re-spawn the same
+      // childId inside one parent turn). Anchor its transcript run id to the
+      // host wall clock so seq can restart at 0 without a client dedupe clash.
+      childTranscriptRunIds.set(
+        childId,
+        `catalog:${childId}@${typeof data.childCreatedAt === 'number' ? data.childCreatedAt : ''}`,
+      )
       // F1 trigger (a): catalog frame. Mirror the parent's LIVE policy onto this
       // child (delegation 'never' → 'ask' under normal policy; left 'never' under
       // full access). Parent policy switches are handled by trigger (b) below —
@@ -3392,6 +3796,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       if (type === 'tool-workflow/agent-start') {
         const childId = idString(data.childId)
         if (!childId) return
+        // tool-workflow supplies its own stable per-run id — use it as the
+        // transcript child-run identity (no catalog childCreatedAt here).
+        childTranscriptRunIds.set(childId, idString(data.runId))
         emitEvent('agent.spawn', {
           turnId,
           sessionId: boundId,
@@ -3404,6 +3811,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // B3: settle is the authoritative terminal — flush any pending progress
         // FIRST so no throttled progress frame can land after the terminal.
         flushAllProgress()
+        // LIVE TRANSCRIPT: same terminal ordering — no finalized row may land
+        // after the settle terminal.
+        flushAllTranscript()
         emitEvent('agent.settle', {
           turnId,
           sessionId: boundId,
@@ -3423,6 +3833,50 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // for unknown / foreign / settled children.
     if (type === 'assistant/message' && binding !== undefined && sessionId !== binding.sessionId) {
       noteChildProgress(sessionId, 1, '', assistantMessageLastLine(data))
+      // LIVE TRANSCRIPT: the finalized message (full text), NOT a streamed delta.
+      const text = assistantMessageText(data)
+      if (text !== '') noteChildTranscriptRow(sessionId, { kind: 'assistant', text })
+    }
+
+    // LIVE TRANSCRIPT: a child's tool pair rides the same root-scope firehose but
+    // is dropped by the turn gate below (child != bound session). Stash the call
+    // side and emit ONE finalized tool row when its result arrives — same
+    // call→result pairing rule the journal projector uses. Streaming deltas are
+    // never transcribed here (they only feed agent.progress).
+    if (binding !== undefined && sessionId !== binding.sessionId) {
+      if (type === 'tool/call') {
+        const callId = idString(data.callId)
+        if (callId !== 'undefined' && callId !== '') {
+          const indexed = getSubagentIndex(ctx).get(sessionId)
+          if (indexed !== undefined && indexed.parentSessionId === binding.sessionId && indexed.status !== 'settled') {
+            const st = childTranscriptState(sessionId)
+            const name = typeof data.name === 'string' ? data.name : ''
+            if (!st.toolCalls.has(callId) && st.toolCalls.size >= MAX_PENDING_TOOL_CALLS) {
+              const oldest = st.toolCalls.keys().next().value
+              if (oldest !== undefined) st.toolCalls.delete(oldest)
+            }
+            st.toolCalls.set(callId, name)
+          }
+        }
+      } else if (type === 'tool/result') {
+        const message = data.message !== null && typeof data.message === 'object'
+          ? (data.message as Record<string, unknown>)
+          : undefined
+        const callId = idString(message?.toolCallId)
+        if (callId !== 'undefined' && callId !== '') {
+          const indexed = getSubagentIndex(ctx).get(sessionId)
+          if (indexed !== undefined && indexed.parentSessionId === binding.sessionId && indexed.status !== 'settled') {
+            const state = childTranscripts.get(sessionId)
+            const name = state?.toolCalls.get(callId) ?? ''
+            state?.toolCalls.delete(callId)
+            if (name !== '') noteChildTranscriptRow(sessionId, {
+              kind: 'tool',
+              text: name,
+              ...(contentText(message?.content) !== '' ? { output: contentText(message?.content) } : {}),
+            })
+          }
+        }
+      }
     }
 
     // L1 incremental settle: a child's OWN `turn/end` rides the same root-scope
@@ -3447,8 +3901,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // B3: flush this child's pending progress before its terminal so the
         // final live tail is delivered, then stop folding it (noteSettled below).
         flushProgressNow(sessionId)
+        // LIVE TRANSCRIPT: flush finalized rows BEFORE the settle terminal, then
+        // drop the run state — no transcript frame may land after this point.
+        flushTranscriptNow(sessionId)
         index.noteSettled(sessionId, typeof data.seq === 'number' ? data.seq : undefined)
         clearChildProgress(sessionId)
+        clearChildTranscript(sessionId)
         if (shouldSettle) {
           const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
           emitEvent('agent.settle', {
@@ -4470,6 +4928,528 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  /** retention P1 + P2 gate — `session.prune.plan` — READ-ONLY dry run.
+   *  Enumerates the full `session.list` roster, asks the host's own
+   *  `sessionPersistence.stat` for each backend-resolved location, applies the
+   *  planner's gates, and replies with a decision table. NOTHING is deleted,
+   *  renamed or written: the only fs calls are read-only `stat` on
+   *  `session.lock` and (when the host opts in) the backend artifact, plus a
+   *  P2 read-only flock probe (`open(path, 'r')` -> `tryLockExclusive(fd)` ->
+   *  inode/dev recheck -> `close()`). No `open('w')`, no `mkdir`, no
+   *  `SessionWriteLease.acquire` and no delete surface exists on this path.
+   *  mtime gates are RECENT-WRITE HEURISTICS only — never liveness proofs.
+   *
+   *  - `stat` is an OPTIONAL host capability: missing -> UNSUPPORTED, never a
+   *    fake empty plan. The P2 flock capability is likewise required: a host
+   *    without `@deepseek-ai/node-addon-system/flock#tryLockExclusive` makes
+   *    this method UNSUPPORTED, never a plan that assumes "no lock held".
+   *  - A `session.list` row with `agentAvailable === true` skips outright;
+   *    a missing/non-boolean field is a field anomaly, never "deletable" on
+   *    an older host that never emitted the field.
+   *  - ALL policy (retention / blank / lock / fresh windows and sessions root)
+   *    comes from `resolveHostPrunePolicy` — the SAME resolver apply uses. A
+   *    client policy param is rejected (BAD_PARAMS), never honoured, so the
+   *    /prune summary matches the effective host settings and both sides agree
+   *    on the config fingerprint. `retentionDays=0` -> every row skipped.
+   *  - `stagedIds` is the only client input accepted here, and it is only an
+   *    extra exclusion (a staged row is skipped), never a widening gate.
+   *  - A truncated `session.list` walk aborts the whole plan (BLOCKED): a
+   *    half roster must never be planned. Cursor/reply failures propagate as
+   *    INTERNAL through the catch below.
+   *  - A bad sessions root (realpath fails) maps to INTERNAL, not a plan.
+   */
+  async function handlePlanSessionPrune(req: ParsedRequest): Promise<void> {
+    const persistence = resolvePrunePersistence(ctx)
+    if (persistence === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionPersistence.stat unavailable: session.prune.plan requires stat capability', {
+        capability: 'session.prune.plan',
+        service: 'sessionPersistence',
+      })
+      return
+    }
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.prune.plan requires session.list', {
+        capability: 'session.prune.plan',
+        service: 'sessionController',
+      })
+      return
+    }
+    // P2 capability gate — resolve the host's nonblocking flock primitive.
+    // A host that cannot provide it gets UNSUPPORTED: we never fall back to
+    // "assume no writer holds the lock" and silently produce a prune plan.
+    const tryLockExclusive = resolveFlockTryLockExclusive()
+    if (tryLockExclusive === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'flock capability unavailable: session.prune.plan requires tryLockExclusive', {
+        capability: 'session.prune.plan',
+        service: 'node-addon-system/flock',
+        detail: 'tryLockExclusive',
+      })
+      return
+    }
+    const lockProbe = createPruneLockProbe(tryLockExclusive)
+
+    const params = req.params ?? {}
+    // Every pruning POLICY input — root, retention, blank/lock/fresh windows —
+    // is host-owned. `resolveHostPrunePolicy` is shared by plan and apply so a
+    // wire value can never change a decision or make the two fingerprints
+    // disagree. Reject policy params loudly rather than silently ignoring them.
+    for (const key of ['sessionsRoot', 'retentionDays', 'blankGraceDays', 'lockGraceMs', 'freshMtimeGraceMs']) {
+      if (params[key] !== undefined) {
+        replyError(req.id, 'BAD_PARAMS', `session.prune.plan ${key} is host-derived; clients may not set it`)
+        return
+      }
+    }
+    const stagedIds = new Set<string>()
+    if (params.stagedIds !== undefined) {
+      if (!Array.isArray(params.stagedIds) || params.stagedIds.some((s) => typeof s !== 'string')) {
+        replyError(req.id, 'BAD_PARAMS', 'session.prune.plan stagedIds must be a string array')
+        return
+      }
+      for (const id of params.stagedIds as string[]) stagedIds.add(id)
+    }
+    // Never build a session directory from an id: the root is only used to
+    // CONTAIN the backend-resolved location, and is canonicalised by `realpath`
+    // inside the planner. Derived from host config / DSH_HOME, NOT the wire.
+    const sessionsRoot = resolvePruneSessionsRoot(ctx, config)
+    // The SAME host-only resolver apply uses. No wire value reaches any policy
+    // field, so /prune's summary reports the effective host settings and both
+    // sides derive an identical config fingerprint.
+    const policy = resolveHostPrunePolicy(ctx, config, sessionsRoot)
+    // P2: publish opaque fingerprints so the client can echo them back to
+    // `session.prune.apply`. Age/entrance details remain recomputed server-side.
+    const planConfigFingerprint = computeConfigFingerprint(policy)
+
+    const lister: SessionListerLike = {
+      list: (request) => controller.list(request),
+    }
+    // The lock probe is read-only (open 'r'); it rechecks inode/dev after
+    // locking and closes the descriptor in a finally block.
+    const nodePruneFs: PruneFsLike = { lstat, realpath, stat, lockProbe }
+    try {
+      const listing = await listAllSessions(lister)
+      // An incomplete roster is a protocol-level BLOCK, not a partial plan.
+      // Cursor/reply errors thrown by listAllSessions fall into the catch
+      // below and reach the wire as INTERNAL — never a silent half plan.
+      if (listing.truncated) {
+        replyError(req.id, 'BLOCKED', 'session.prune.plan aborted: session.list roster is incomplete (truncated pagination)', {
+          capability: 'session.prune.plan',
+          reason: 'incomplete-roster',
+          pages: listing.pages,
+        })
+        return
+      }
+      const plan = await planSessionPrune(listing.rows, persistence, nodePruneFs, {
+        retentionDays: policy.retentionDays,
+        now: Date.now(),
+        sessionsRoot,
+        currentSessionId: binding?.sessionId,
+        stagedIds,
+        blankGraceDays: policy.blankGraceDays,
+        lockGraceMs: policy.lockGraceMs,
+        freshMtimeGraceMs: policy.freshMtimeGraceMs,
+      })
+      replyOk(req.id, {
+        ...plan,
+        fingerprint: computePlanFingerprint(plan),
+        configFingerprint: planConfigFingerprint,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('[dsh-opentui-bridge] session.prune.plan failed: %s', message)
+      const mapped = mapHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /** retention P2 — `session.prune.apply` — moves host-recomputed prune
+   *  candidates into `<dshHome>/trash/sessions/<UTC>/<id>` via rename.
+   *
+   *  The client sends three opaque values copied from `session.prune.plan`:
+   *  `fingerprint`, `generatedAt`, `configFingerprint`, plus an OPTIONAL
+   *  `stagedIds` echo used ONLY as an extra exclusion. It cannot send entries,
+   *  retention days, grace windows, roots or a dshHome — those are rejected
+   *  with BAD_PARAMS. The whole plan is recomputed here from host state and
+   *  re-gated before each rename; a client-supplied entry never becomes a
+   *  mutation input. The host-side apply lock serialises processes.
+   */
+  async function handleApplySessionPrune(req: ParsedRequest): Promise<void> {
+    const params = req.params
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.apply params must be an object')
+      return
+    }
+    const p = params as Record<string, unknown>
+    for (const key of [
+      'entries', 'retentionDays', 'blankGraceDays', 'lockGraceMs',
+      'freshMtimeGraceMs', 'sessionsRoot', 'dshHome',
+    ]) {
+      if (p[key] !== undefined) {
+        replyError(req.id, 'BAD_PARAMS', `session.prune.apply ${key} is host-owned; clients may not set it`)
+        return
+      }
+    }
+    // stagedIds is the ONE client input apply accepts, and ONLY as an EXTRA
+    // exclusion: it can add `staged` skips, never remove a host gate or widen
+    // the delete set. A resume staged before its next turn is skipped at plan
+    // time; echoing the same ids here makes the recomputed plan fingerprint
+    // match so `/resume` followed by `/prune` can actually apply.
+    const stagedIds = new Set<string>()
+    if (p.stagedIds !== undefined) {
+      if (!Array.isArray(p.stagedIds) || p.stagedIds.some((s) => typeof s !== 'string')) {
+        replyError(req.id, 'BAD_PARAMS', 'session.prune.apply stagedIds must be a string array')
+        return
+      }
+      for (const id of p.stagedIds as string[]) stagedIds.add(id)
+    }
+    const fingerprint = p.fingerprint
+    const configFingerprint = p.configFingerprint
+    const generatedAt = p.generatedAt
+    if (typeof fingerprint !== 'string' || fingerprint === '') {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.apply requires fingerprint from session.prune.plan')
+      return
+    }
+    if (typeof configFingerprint !== 'string' || configFingerprint === '') {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.apply requires configFingerprint from session.prune.plan')
+      return
+    }
+    if (typeof generatedAt !== 'number' || !Number.isFinite(generatedAt)) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.apply requires numeric generatedAt from session.prune.plan')
+      return
+    }
+
+    const persistence = resolvePrunePersistence(ctx)
+    if (persistence === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionPersistence.stat unavailable: session.prune.apply requires stat capability', {
+        capability: 'session.prune.apply', service: 'sessionPersistence',
+      })
+      return
+    }
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.prune.apply requires session.list', {
+        capability: 'session.prune.apply', service: 'sessionController',
+      })
+      return
+    }
+    const tryLockExclusive = resolveFlockTryLockExclusive()
+    if (tryLockExclusive === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'flock capability unavailable: session.prune.apply requires tryLockExclusive', {
+        capability: 'session.prune.apply', service: 'node-addon-system/flock', detail: 'tryLockExclusive',
+      })
+      return
+    }
+
+    const sessionsRoot = resolvePruneSessionsRoot(ctx, config)
+    const dshHome = resolvePruneDshHome(ctx, config)
+    const policy = resolveHostPrunePolicy(ctx, config, sessionsRoot)
+    const maxPlanAgeMs = (() => {
+      const fromConfig = config !== null && typeof config === 'object'
+        ? config as { maxPlanAgeMs?: unknown }
+        : {}
+      let hostValue: unknown
+      try {
+        const hostConfig = typeof ctx.get === 'function' ? ctx.get('config') : undefined
+        if (hostConfig !== null && typeof hostConfig === 'object') hostValue = (hostConfig as { maxPlanAgeMs?: unknown }).maxPlanAgeMs
+      } catch { /* no host config service */ }
+      const value = fromConfig.maxPlanAgeMs ?? hostValue
+      return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 86_400_000
+        ? value
+        : 60_000
+    })()
+
+    const lockProbe = createPruneLockProbe(tryLockExclusive)
+    const nodePruneFs: PruneFsLike = { lstat, realpath, stat, lockProbe }
+    const nodeApplyFs: ApplyFsLike = {
+      lstat, realpath, stat, rename,
+      mkdir: (path, options) => options?.recursive
+        ? mkdir(path, { recursive: true, mode: options.mode })
+        : mkdir(path, { mode: options?.mode }),
+      writeFile: (path, data, options) => writeFile(path, data, options),
+      appendFile,
+      readdir,
+      readFile: (path) => readFile(path, 'utf8'),
+    }
+    const now = Date.now()
+    const deps = {
+      persistence,
+      lockProbe,
+      now,
+      opId: `${utcStamp(now)}-${randomUUID().slice(0, 8)}`,
+      withApplyLock: <T>(fn: () => Promise<T>) => withHostApplyLock(dshHome, tryLockExclusive, fn),
+    }
+    // The three checks run in this order: config, plan age, fresh plan
+    // fingerprint. A mismatch never reaches a mutation.
+    if (computeConfigFingerprint(policy) !== configFingerprint) {
+      replyError(req.id, 'STALE_PLAN', 'session.prune.apply config fingerprint mismatch', {
+        capability: 'session.prune.apply', reason: 'config-fingerprint',
+      })
+      return
+    }
+    if (generatedAt > now + 1_000 || now - generatedAt > maxPlanAgeMs) {
+      replyError(req.id, 'STALE_PLAN', 'session.prune.apply plan is outside the max-age window', {
+        capability: 'session.prune.apply', reason: 'max-age', maxPlanAgeMs,
+      })
+      return
+    }
+
+    try {
+      const listing = await listAllSessions({ list: (request) => controller.list(request) })
+      if (listing.truncated) {
+        replyError(req.id, 'BLOCKED', 'session.prune.apply aborted: session.list roster is incomplete', {
+          capability: 'session.prune.apply', reason: 'incomplete-roster', pages: listing.pages,
+        })
+        return
+      }
+      // stagedIds is an EXTRA exclusion only: the host recomputes every gate
+      // and the staged ids can only turn a candidate into a skip, never the
+      // reverse. This keeps plan/apply fingerprints equal after `/resume`.
+      const freshPlan = await planSessionPrune(listing.rows, persistence, nodePruneFs, {
+        retentionDays: policy.retentionDays,
+        now,
+        sessionsRoot,
+        currentSessionId: binding?.sessionId,
+        stagedIds,
+        blankGraceDays: policy.blankGraceDays,
+        lockGraceMs: policy.lockGraceMs,
+        freshMtimeGraceMs: policy.freshMtimeGraceMs,
+      })
+      const freshFingerprint = computePlanFingerprint(freshPlan)
+      if (freshFingerprint !== fingerprint) {
+        replyError(req.id, 'STALE_PLAN', 'session.prune.apply plan fingerprint mismatch', {
+          capability: 'session.prune.apply', reason: 'plan-fingerprint',
+        })
+        return
+      }
+      const result = await applyTrashPlan(nodeApplyFs, deps, freshPlan, {
+        dshHome, sessionsRoot, planFingerprint: freshFingerprint,
+      })
+      replyOk(req.id, { ...result })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('[dsh-opentui-bridge] session.prune.apply failed: %s', message)
+      if (err instanceof ApplyError) {
+        replyError(req.id, err.code, message, err.detail)
+        return
+      }
+      // Any non-ApplyError is a host/fs failure whose `message`/`detail` can
+      // embed an absolute dshHome path. Never mapHostError/forward either one
+      // on the wire: reply with a fixed, path-free message instead.
+      replyError(req.id, 'INTERNAL', 'session.prune.apply failed')
+    }
+  }
+
+  /** retention P3 — `session.prune.purge` — trash-only deletion with a
+   *  server-issued second-confirmation token.
+   *
+   *  `phase:'prepare'` re-derives eligible trash entries from host state and
+   *  returns an HMAC token bound to the exact (id, path) set, host trash root,
+   *  residence policy and issue time. `phase:'commit'` verifies that token,
+   *  re-derives and re-gates every candidate, and deletes ONLY signed trash
+   *  session directories. A client can send neither a path/root nor a policy:
+   *  all of those are host-owned and rejected with BAD_PARAMS. A missing flock
+   *  capability degrades to UNSUPPORTED, never "assume no writer".
+   */
+  async function handlePurgeSessionPrune(req: ParsedRequest): Promise<void> {
+    const params = req.params
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.purge params must be an object')
+      return
+    }
+    const p = params as Record<string, unknown>
+    for (const key of [
+      'entries', 'retentionDays', 'purgeRetentionDays', 'tokenTtlMs',
+      'sessionsRoot', 'dshHome', 'trashRoot', 'path', 'paths', 'secret', 'algorithm',
+    ]) {
+      if (p[key] !== undefined) {
+        replyError(req.id, 'BAD_PARAMS', `session.prune.purge ${key} is host-owned; clients may not set it`)
+        return
+      }
+    }
+    if (p.phase !== 'prepare' && p.phase !== 'commit') {
+      replyError(req.id, 'BAD_PARAMS', "session.prune.purge phase must be 'prepare' or 'commit'")
+      return
+    }
+    if (p.phase === 'commit' && (typeof p.token !== 'string' || p.token === '')) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.purge commit requires the prepare token')
+      return
+    }
+
+    const persistence = resolvePrunePersistence(ctx)
+    if (persistence === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionPersistence.stat unavailable: session.prune.purge requires stat capability', {
+        capability: 'session.prune.purge', service: 'sessionPersistence',
+      })
+      return
+    }
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.prune.purge requires session.list', {
+        capability: 'session.prune.purge', service: 'sessionController',
+      })
+      return
+    }
+    const tryLockExclusive = resolveFlockTryLockExclusive()
+    if (tryLockExclusive === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'flock capability unavailable: session.prune.purge requires tryLockExclusive', {
+        capability: 'session.prune.purge', service: 'node-addon-system/flock', detail: 'tryLockExclusive',
+      })
+      return
+    }
+
+    try {
+      const dshHome = resolvePruneDshHome(ctx, config)
+      const hostPolicy = resolveHostPurgePolicy(ctx, config)
+      const lockProbe = createPruneLockProbe(tryLockExclusive)
+      const nodePurgeFs: PurgeFsLike = {
+        lstat, realpath, stat, readdir,
+        readFile: (path) => readFile(path, 'utf8'),
+        readFileBuffer: (path) => readFile(path),
+        writeFile: (path, data, options) => writeFile(path, data, options),
+        appendFile,
+        unlink,
+        rmdir,
+        mkdir: (path, options) => options?.recursive
+          ? mkdir(path, { recursive: true, mode: options.mode })
+          : mkdir(path, { mode: options?.mode }),
+      }
+      const now = Date.now()
+      const deps = {
+        persistence,
+        lister: { list: (request: Parameters<typeof controller.list>[0]) => controller.list(request) },
+        lockProbe,
+        now,
+        opId: `${utcStamp(now)}-${randomUUID().slice(0, 8)}`,
+        secret: await resolvePurgeSecret(nodePurgeFs, dshHome, () => randomUUID() + randomUUID()),
+        retentionDays: hostPolicy.retentionDays,
+        tokenTtlMs: hostPolicy.tokenTtlMs,
+        newSecret: () => randomUUID() + randomUUID(),
+        withApplyLock: <T>(fn: () => Promise<T>) => withHostApplyLock(dshHome, tryLockExclusive, fn),
+      }
+      if (p.phase === 'prepare') {
+        const result = await preparePurge(nodePurgeFs, deps, dshHome)
+        replyOk(req.id, {
+          opId: result.opId,
+          candidates: result.candidates,
+          rejected: result.rejected,
+          token: result.token,
+        })
+        return
+      }
+      const result = await purgeTrashSessions(nodePurgeFs, deps, dshHome, p.token)
+      replyOk(req.id, { ...result })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('[dsh-opentui-bridge] session.prune.purge failed: %s', message)
+      if (err instanceof PurgeError) {
+        replyError(req.id, err.code, message, err.detail)
+        return
+      }
+      const mapped = mapHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /** retention B4/C7 — `session.prune.restore` — restore a trashed session.
+   *
+   *  `phase:'list'` re-derives the recoverable trash entries from host state
+   *  and reports only `{id, movedAt, size?}` — NEVER a path. `phase:'restore'`
+   *  accepts ONLY a trash entry id (a session id, not a path) and re-validates
+   *  the whole entry (trash realpath, manifest, artifact header.id, live
+   *  roster, destination containment, refuse-if-exists, flock) inside the
+   *  host apply lock before the single reverse rename. A client cannot send a
+   *  path/root/policy/manifest; all of those are host-owned and rejected with
+   *  BAD_PARAMS. Missing flock capability degrades to UNSUPPORTED.
+   */
+  async function handleRestoreSessionPrune(req: ParsedRequest): Promise<void> {
+    const params = req.params
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.restore params must be an object')
+      return
+    }
+    const p = params as Record<string, unknown>
+    for (const key of [
+      'entries', 'path', 'paths', 'sessionsRoot', 'dshHome', 'trashRoot',
+      'manifest', 'root', 'retentionDays',
+    ]) {
+      if (p[key] !== undefined) {
+        replyError(req.id, 'BAD_PARAMS', `session.prune.restore ${key} is host-owned; clients may not set it`)
+        return
+      }
+    }
+    const phase = p.phase ?? 'list'
+    if (phase !== 'list' && phase !== 'restore') {
+      replyError(req.id, 'BAD_PARAMS', "session.prune.restore phase must be 'list' or 'restore'")
+      return
+    }
+    if (phase === 'restore' && (typeof p.id !== 'string' || p.id === '')) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.restore requires a non-empty id')
+      return
+    }
+
+    const persistence = resolvePrunePersistence(ctx)
+    if (persistence === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionPersistence.stat unavailable: session.prune.restore requires stat capability', {
+        capability: 'session.prune.restore', service: 'sessionPersistence',
+      })
+      return
+    }
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.prune.restore requires session.list', {
+        capability: 'session.prune.restore', service: 'sessionController',
+      })
+      return
+    }
+    const tryLockExclusive = resolveFlockTryLockExclusive()
+    if (tryLockExclusive === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'flock capability unavailable: session.prune.restore requires tryLockExclusive', {
+        capability: 'session.prune.restore', service: 'node-addon-system/flock', detail: 'tryLockExclusive',
+      })
+      return
+    }
+
+    try {
+      const dshHome = resolvePruneDshHome(ctx, config)
+      const sessionsRoot = resolvePruneSessionsRoot(ctx, config)
+      const lockProbe = createPruneLockProbe(tryLockExclusive)
+      const nodeRestoreFs: RestoreFsLike = {
+        lstat, realpath, stat, readdir,
+        readFile: (path) => readFile(path, 'utf8'),
+        readFileBuffer: (path) => readFile(path),
+        rename,
+      }
+      const now = Date.now()
+      const deps = {
+        persistence,
+        lister: { list: (request: Parameters<typeof controller.list>[0]) => controller.list(request) },
+        lockProbe,
+        now,
+        opId: `${utcStamp(now)}-${randomUUID().slice(0, 8)}`,
+        sessionsRoot,
+        withApplyLock: <T>(fn: () => Promise<T>) => withHostApplyLock(dshHome, tryLockExclusive, fn),
+      }
+      if (phase === 'list') {
+        const result = await listRestoreEntries(nodeRestoreFs, dshHome)
+        replyOk(req.id, { entries: result.entries, rejected: result.rejected })
+        return
+      }
+      const result = await restoreTrashEntry(nodeRestoreFs, deps, dshHome, p.id)
+      replyOk(req.id, { ...result })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('[dsh-opentui-bridge] session.prune.restore failed: %s', message)
+      if (err instanceof RestoreError) {
+        replyError(req.id, err.code, message, err.detail)
+        return
+      }
+      // Any non-RestoreError is a host/fs failure whose `message`/`detail` can
+      // embed an absolute dshHome path. Never mapHostError/forward either one
+      // on the wire: reply with a fixed, path-free message instead.
+      replyError(req.id, 'INTERNAL', 'session.prune.restore failed')
+    }
+  }
+
   // ---- L1 (0.23.1) — subagents.interrupt / subagents.stopChildren ----------
 
   /** Refresh the subagent index from the authoritative `session.list` source.
@@ -4738,6 +5718,30 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // generated chain, so @manual drops 11 → 10.
     if (CAP_SESSION_WIRE_METHODS[req.method] !== undefined) {
       await handleListSessions(req)
+      return
+    }
+    // retention P1 — read-only prune planner. A hand-copied protocol frame
+    // (no CapIR id, no host write): registered in ledger wired_protocol.
+    if (req.method === 'session.prune.plan') {
+      await handlePlanSessionPrune(req)
+      return
+    }
+    // retention P2 — host-recomputed trash-apply. A hand-copied protocol frame
+    // (no CapIR id): registered in ledger wired_protocol (11 -> 12).
+    if (req.method === 'session.prune.apply') {
+      await handleApplySessionPrune(req)
+      return
+    }
+    // retention P3 — trash-only purge. A hand-copied protocol frame (no CapIR
+    // id): registered in ledger wired_protocol (12 -> 13).
+    if (req.method === 'session.prune.purge') {
+      await handlePurgeSessionPrune(req)
+      return
+    }
+    // retention B4/C7 — trash restore by entry id. A hand-copied protocol frame
+    // (no CapIR id): registered in ledger wired_protocol (13 -> 14).
+    if (req.method === 'session.prune.restore') {
+      await handleRestoreSessionPrune(req)
       return
     }
     // 025-w1b B/C — session.search / session.fork ride the generated capcontract

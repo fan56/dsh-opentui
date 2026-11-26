@@ -81,7 +81,7 @@ import { HistoryPanel, openHistoryPanel } from "../src/routes/session/history-pa
 import { SubagentsViewer, openSubagentsViewer } from "../src/routes/session/subagents-viewer"
 import { SettingsModalHost } from "../src/routes/session/settings-modal"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
-import { readCacheHitMode } from "../src/seams/config"
+import { readCacheHitMode, resolveSessionScrollbar } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogPrompt } from "../src/ui/dialog-prompt"
 import { DialogConfirm } from "../src/ui/dialog-confirm"
@@ -467,6 +467,19 @@ function V2SessionPageBody(props: {
 			showNotice(pendingAgentsHomeNotice)
 			pendingAgentsHomeNotice = undefined
 		}
+		// retention UI — FIRST FRAME IS ALREADY PAINTED here. The prune plan is
+		// a fire-and-forget READ: it never blocks boot, never auto-applies, and
+		// an absent face / failed capability simply produces no notice (the
+		// honest degrade — no fake "0 reclaimable"). Only a plan that actually
+		// found candidates gets a one-line pointer to /prune.
+		let pruneNoticeDisposed = false
+		onCleanup(() => { pruneNoticeDisposed = true })
+		if (seam.planPrune) {
+			void seam.planPrune().then((plan) => {
+				if (pruneNoticeDisposed || plan.counts.prune <= 0) return
+				void showNotice(t("notice.prune.available", { n: String(plan.counts.prune) }))
+			}).catch(() => { /* capability absent / plan failed: no notice */ })
+		}
 		const timer = setInterval(() => setNow(new Date()), 1000)
 		onCleanup(() => clearInterval(timer))
 	})
@@ -486,6 +499,13 @@ function V2SessionPageBody(props: {
 		turnAborted = false
 		setTurnBusy(true)
 		setLastRequest(text)
+		// Away-hint (transcript-scroll-hints): a USER submit always lands on
+		// the newest row. This is the composer's user-facing submit path only —
+		// passive streaming / row appends never scroll, so the away hint can
+		// still appear while the reader is browsing scrollback. The transcript
+		// owns `scrollRef`, so this is the same scrollbox whose `change` event
+		// drives `syncAway()`; returning to the bottom hides the hint.
+		transcriptScroll?.scrollTo(Infinity)
 		const done = projection.send(text)
 		void done.finally(() => setTurnBusy(false))
 		return done
@@ -1361,6 +1381,16 @@ function V2SessionPageBody(props: {
 				createComponent(Transcript, {
 					seam,
 					projection,
+					// Scrollbar (round7 AMEND): the v2 page opts in by default,
+					// but an explicit `session.scrollbar: false` turns it off.
+					// `configLoad()`'s whitelist omits nested `session`, so the
+					// reader decodes the full-config seam faces READ-ONLY —
+					// workspace overlay > profile raw > configLoad. The
+					// component default stays off for other hosts and the track
+					// keeps Transcript's themed colors.
+					get scrollbar() {
+						return resolveSessionScrollbar(seam.workspaceConfig?.(), seam.configRaw?.(), seam.configLoad?.())
+					},
 					// Pane focus: heavy/accent frame while the transcript owns
 					// the renderer focus, single/border.base otherwise.
 					focused: paneFocus.transcriptFocused,

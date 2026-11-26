@@ -76,7 +76,9 @@ describe("journal mappers", () => {
 		expect(ok.name).toBe("bash")
 		expect(ok.args).toBe('{"command":"ls -la"}')
 		expect(ok.ok).toBe(true)
-		expect(ok.brief.startsWith('{"content":[{"type":"text","text":"file1')).toBe(true)
+		// LIVE PARITY: the journal brief is the tool's real output text, not the
+		// raw JSON envelope (which used to paint `{"content":[...]}` in Ctrl+G).
+		expect(ok.brief).toBe("file1\nfile2")
 		const bad = rows[1] as { kind: string; name: string; ok: boolean; brief: string }
 		expect(bad.kind).toBe("tool")
 		expect(bad.name).toBe("bash")

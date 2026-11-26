@@ -312,7 +312,16 @@ export function buildOpentuiRows(ctx: SettingsRowContext): SettingsRow[] {
 		.filter((item) => item.id !== "lang")
 		.map((row) =>
 			row.id === "activityPanelHeight"
-				? { ...row, note: t("settings.row.activityPanelHeightNote") }
+				? {
+						...row,
+						// Keep buildLocalItems' effective-default note (set when the
+						// gear is UNSET) alongside the static explanation instead of
+						// overwriting it — the modal and the list must say the same.
+						note:
+							row.note === undefined
+								? t("settings.row.activityPanelHeightNote")
+								: `${t("settings.row.activityPanelHeightNote")} · ${row.note}`,
+					}
 				: row,
 		)
 		.map(fromItem)

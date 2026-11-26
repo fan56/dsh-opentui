@@ -11,6 +11,10 @@ import {
 	dispatchLine,
 	filterCommands,
 	findPresetRow,
+	formatPruneBytes,
+	formatPrunePlanRows,
+	formatPurgePrepareRows,
+	pruneReasonLabel,
 	isRiskPermissionPreset,
 	permissionCatalogLines,
 	presetLabelFor,
@@ -394,6 +398,10 @@ describe("filterCommands (palette prefix filter)", () => {
 			// 026 — /permission, /cwd appended last (index-based tests keep positions).
 			"/permission",
 			"/cwd",
+			// retention UI — appended last (index-based tests keep positions).
+			"/prune",
+			"/prune-purge",
+			"/prune-restore",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pe").map((c) => c.name)).toEqual(["/permission"])
@@ -442,6 +450,9 @@ describe("core commands", () => {
 			// 026 — /permission, /cwd appended last (index-based tests keep positions).
 			"/permission — show or switch the current session permission preset",
 			"/cwd — show the current session working directory (basename)",
+			"/prune — review reclaimable sessions, then move them to trash (asks for confirmation)",
+			"/prune-purge — permanently delete trashed sessions (asks for confirmation)",
+			"/prune-restore — restore a trashed session by id (no argument lists recoverable entries)",
 		])
 	})
 
@@ -2479,6 +2490,126 @@ describe("026 /cwd — current session working directory", () => {
 		const ctx = makeCtx(seam)
 		await cwdCmd().run(ctx, "")
 		expect(ctx.lines[0]).toContain("unavailable")
+	})
+})
+
+describe("retention UI — /prune and /prune-purge", () => {
+	const PLAN = {
+		generatedAt: 1,
+		retentionDays: 90,
+		fingerprint: "fp-opaque",
+		configFingerprint: "cfp-opaque",
+		entries: [
+			{ sessionId: "old", decision: "prune", ageDays: 120 },
+			{ sessionId: "new", decision: "prune", ageDays: 95 },
+			{ sessionId: "running", decision: "skip", reason: "running" },
+		],
+		counts: { prune: 2, skip: 1, byReason: { running: 1 } },
+	}
+	const PREPARED = {
+		opId: "op",
+		token: "server-issued-token",
+		candidates: [{ id: "trashed", ageDays: 9, appliedAt: 1 }],
+		rejected: [{ code: "FRESH", message: "too fresh" }],
+	}
+
+	function pruneCtx(answer?: string) {
+		const seam = new RecordingSeam()
+		const applyCalls: unknown[] = []
+		;(seam.seam as any).planPrune = async () => PLAN
+		;(seam.seam as any).applyPrune = async (params: unknown) => {
+			applyCalls.push(params)
+			return { opId: "op", applied: [{ id: "old" }, { id: "new" }], failed: [], markedOrphans: 0 }
+		}
+		const ctx = makeCtx(seam)
+		;(ctx as any).promptText = async () => answer
+		return { ctx, seam, applyCalls }
+	}
+
+	function purgeCtx(answer?: string) {
+		const seam = new RecordingSeam()
+		const commitCalls: unknown[] = []
+		;(seam.seam as any).preparePurge = async () => PREPARED
+		;(seam.seam as any).commitPurge = async (params: unknown) => {
+			commitCalls.push(params)
+			return { opId: "op", purged: [{ id: "trashed" }], failed: [] }
+		}
+		const ctx = makeCtx(seam)
+		;(ctx as any).promptText = async () => answer
+		return { ctx, seam, commitCalls }
+	}
+
+	test("plan rows carry counts/bytes, oldest/newest and localized skip reasons (no paths)", () => {
+		const rows = formatPrunePlanRows(PLAN as any, new Map([["old", 2048], ["new", 1024]]))
+		expect(rows[0]).toBe(t("command.prune.summary", {
+			count: "2", skipped: "1", bytes: "3.0 KB", days: "90",
+		}))
+		expect(rows[1]).toContain("old")
+		expect(rows[2]).toContain("new")
+		expect(rows[3]).toContain(pruneReasonLabel("running"))
+		expect(rows.join("\n")).not.toContain("/sessions/")
+	})
+
+	test("formatPruneBytes + unknown reason degrade are bounded", () => {
+		expect(formatPruneBytes(0)).toBe("0 B")
+		expect(formatPruneBytes(1_572_864)).toBe("1.5 MB")
+		expect(pruneReasonLabel("never-seen")).toContain("never-seen")
+	})
+
+	test("/prune with the wrong confirm word only plans (no apply)", async () => {
+		const { ctx, applyCalls } = pruneCtx("yes")
+		await coreCommands().find((c) => c.name === "/prune")!.run(ctx, "")
+		expect(applyCalls).toEqual([])
+		expect(ctx.lines[0]).toContain("reclaimable")
+		expect(ctx.lines.at(-1)).toBe(t("command.prune.cancelled"))
+	})
+
+	test("/prune with the exact word echoes ONLY the opaque receipts to apply", async () => {
+		const { ctx, applyCalls } = pruneCtx(" prune ")
+		await coreCommands().find((c) => c.name === "/prune")!.run(ctx, "")
+		expect(applyCalls).toEqual([{
+			fingerprint: "fp-opaque", configFingerprint: "cfp-opaque", generatedAt: 1,
+		}])
+		expect(ctx.lines.at(-1)).toBe(t("command.prune.applied", { count: "2", failed: "0" }))
+	})
+
+	test("/prune plan failure surfaces a failure line (never a fake success)", async () => {
+		const seam = new RecordingSeam()
+		;(seam.seam as any).planPrune = async () => { throw new Error("UNSUPPORTED") }
+		;(seam.seam as any).applyPrune = async () => ({ opId: "op", applied: [], failed: [], markedOrphans: 0 })
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/prune")!.run(ctx, "")
+		expect(ctx.lines).toEqual([t("command.prune.failed", { reason: "UNSUPPORTED" })])
+	})
+
+	test("/prune without the apply face degrades before planning", async () => {
+		const seam = new RecordingSeam()
+		;(seam.seam as any).planPrune = async () => PLAN
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/prune")!.run(ctx, "")
+		expect(ctx.lines).toEqual([t("command.prune.unavailable")])
+	})
+
+	test("purge rows show the deletion list + residence days, never a path", () => {
+		const rows = formatPurgePrepareRows(PREPARED as any)
+		expect(rows[0]).toContain("1")
+		expect(rows[1]).toContain("trashed")
+		expect(rows[1]).toContain("9.0")
+		expect(rows.join("\n")).not.toContain("/trash/")
+	})
+
+	test("/prune-purge with the wrong word only prepares (no commit)", async () => {
+		const { ctx, commitCalls } = purgeCtx("yes")
+		await coreCommands().find((c) => c.name === "/prune-purge")!.run(ctx, "")
+		expect(commitCalls).toEqual([])
+		expect(ctx.lines.at(-1)).toBe(t("command.prunePurge.cancelled"))
+	})
+
+	test("/prune-purge with the exact word commits ONLY the opaque token", async () => {
+		const { ctx, commitCalls } = purgeCtx("purge")
+		await coreCommands().find((c) => c.name === "/prune-purge")!.run(ctx, "")
+		expect(commitCalls).toEqual([{ token: "server-issued-token" }])
+		expect(ctx.lines.at(-1)).toBe(t("command.prunePurge.done", { count: "1", failed: "0" }))
 	})
 })
 

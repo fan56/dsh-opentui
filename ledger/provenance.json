@@ -189,81 +189,109 @@
   },
   "wired_protocol": {
     "mark": "bridge-protocol (ADR-0010)",
-    "source": "packages/bridge/src/index.ts handleLine() dispatch, inventory at 08cd2a8 (0.23.3 base)",
-    "note": "ADR-0010 bridge protocol frames — multi-step / stateful / I-class-dependent, with NO same-name CapIR id. NOT a hand-copied host capability and NOT either track of the double-track drift, so this dimension is EXCLUDED from the @manual count (oldfox 裁决 1). S1 removed model.currentSelection (12->11); the 0.24 final knife removed session.list (11->10), leaving these 10 protocol frames. Each method carries a note on its protocol nature.",
+    "source": "packages/bridge/src/index.ts handleLine() dispatch; source_line values re-checked first-hand against the working tree on 2026-11-26 (B4/C7 restore slice: all 14 dispatch lines re-read)",
+    "note": "ADR-0010 bridge protocol frames — multi-step / stateful / I-class-dependent, with NO same-name CapIR id. NOT a hand-copied host capability and NOT either track of the double-track drift, so this dimension is EXCLUDED from the @manual count (oldfox 裁决 1). S1 removed model.currentSelection (12->11); the 0.24 final knife removed session.list (11->10); retention P1 adds session.prune.plan (10->11); retention P2 adds session.prune.apply (11->12); retention P3 adds session.prune.purge (12->13); B4/C7 adds session.prune.restore (13->14), leaving these 14 protocol frames. Each method carries a note on its protocol nature.",
     "methods": [
       {
         "method": "bridge.ping",
         "kind": "meta",
-        "source_line": 2247,
+        "source_line": 5682,
         "capir_id": null,
         "note": "protocol version negotiation (no host call)"
       },
       {
         "method": "bridge.hello",
         "kind": "meta",
-        "source_line": 2256,
+        "source_line": 5691,
         "capir_id": null,
         "note": "protocol version negotiation (no host call)"
       },
       {
+        "method": "session.prune.plan",
+        "kind": "business",
+        "source_line": 5725,
+        "capir_id": null,
+        "note": "retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion"
+      },
+      {
+        "method": "session.prune.apply",
+        "kind": "business",
+        "source_line": 5731,
+        "capir_id": null,
+        "note": "retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id"
+      },
+      {
+        "method": "session.prune.purge",
+        "kind": "business",
+        "source_line": 5737,
+        "capir_id": null,
+        "note": "retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id"
+      },
+      {
+        "method": "session.prune.restore",
+        "kind": "business",
+        "source_line": 5743,
+        "capir_id": null,
+        "note": "retention B4/C7 trash restore by entry id: read-only list of {id,movedAt,size?} (no path) + host re-validation of trash realpath/manifest/artifact header.id/live roster/live destination containment + refuse-if-exists + read-only flock probe + reverse rename; client path/policy rejected; no CapIR id"
+      },
+      {
         "method": "subagents.interrupt",
         "kind": "business",
-        "source_line": 2300,
+        "source_line": 5810,
         "capir_id": null,
         "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
       },
       {
         "method": "subagents.stopChildren",
         "kind": "business",
-        "source_line": 2304,
+        "source_line": 5814,
         "capir_id": null,
         "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
       },
       {
         "method": "session.open",
         "kind": "business",
-        "source_line": 2308,
+        "source_line": 5818,
         "capir_id": null,
         "note": "binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful"
       },
       {
         "method": "session.send",
         "kind": "business",
-        "source_line": 2312,
+        "source_line": 5822,
         "capir_id": null,
         "note": "single in-flight turn state machine + streaming turn"
       },
       {
         "method": "session.close",
         "kind": "business",
-        "source_line": 2316,
+        "source_line": 5826,
         "capir_id": null,
         "note": "binding dispose"
       },
       {
         "method": "turn.abort",
         "kind": "business",
-        "source_line": 2320,
+        "source_line": 5830,
         "capir_id": null,
         "note": "turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel"
       },
       {
         "method": "ask.response",
         "kind": "business",
-        "source_line": 2324,
+        "source_line": 5834,
         "capir_id": null,
         "note": "bridge-internal AskRegistry settlement (no host call)"
       },
       {
         "method": "journal.replay",
         "kind": "business",
-        "source_line": 2328,
+        "source_line": 5838,
         "capir_id": null,
         "note": "I-class persistence read (persistence.open(id,'read')); no same-name CapIR id"
       }
     ],
-    "count": 10
+    "count": 14
   },
   "wired_manual": {
     "mark": "derived-from-manual host-copy",
@@ -274,7 +302,7 @@
   },
   "wired_capir_generated": {
     "mark": "S1+S2+S3+S5-generated-capcontract",
-    "note": "CapIR W ids wired through the generated capcontract host adapter (CAP_HOST_WIRED_IDS in packages/bridge/src/index.ts), NOT hand-copied req.method lines. S1 /model adds three sessionController model methods; S2 adds 12 deepseekAccount methods (10 unary + 2 stream via the kind-table stream arm) and 3 credentialsController methods on their own verified ctx.get seams; S3 adds 3 sessionController push stream methods (observeEvent/observeState/observeProjections); S5 adds 2 settingsController document methods (settings/describe, settings/mutate — service key verified rc.5 dsh-api-settings-controller/src/index.ts:86); the 0.24 final knife adds session/list (migrated off the @manual hand-wire onto the generated chain via CAP_SESSION_WIRE_METHODS -> createCapInvoke, reusing resolveSessionController) — 24 generated ids total. gen-ledger unions these ids with wired_manual[].capir_id + wired_protocol[].capir_id to produce methods[].in_wired (24/257). check-capcontract #10 reconciles this set against the bridge literal; #8a stays on the 10 hand-wired protocol names and #8b asserts wired_manual == 0. NOTE (B1 S1/S2 follow-up, review ticket .proof/b1-s3-provisioner/00-provenance-ticket.md): credentials ids still reach NOT_WIRED at runtime in the stock opentui-inproc profile (dsh-api-settings-controller not mounted in its base closure). settings ids NO LONGER reach NOT_WIRED there: the bridge settings arm resolves the host config service through resolveSettingsSurface (real settingsController first, else the inproc ctx.settings adapter in packages/bridge/src/settings-adapter.ts), so settings/describe|mutate reach the inproc host's config-editor + settings service (dsh-base mounts both). Wiring is still declared + unit-tested; since B1 S4 landed client-side host-first routing (commit 9caab9b, design 05 §7), the seam's settings/config/agents faces resolve THROUGH the host config service — settings.describe reads the host wire and settings.mutate forwards to it (source-aware: host when present, an explicit source=local-file / source=unavailable degrade when absent, never a faked local success); /agents caps come from the same host describe document (local-file yields n/a with no numbers). No degrade/mock is left; credentials ids still reach NOT_WIRED at runtime (dsh-api-settings-controller not mounted in the stock opentui-inproc profile), unchanged from the first ticket. S3 push streams may also reach NOT_WIRED on a host lacking the observe* surface; the relay degrades to cap.end rather than fabricating events. 025-w1b B/C: +session/search +session/fork (expected-75 gap closure, table-lookup hostInvoke). 025-w1b D: +subagents/prompt +subagents/interruptByUser (expected-75 gap closure).",
+    "note": "CapIR W ids wired through the generated capcontract host adapter (CAP_HOST_WIRED_IDS in packages/bridge/src/index.ts), NOT hand-copied req.method lines. S1 /model adds three sessionController model methods; S2 adds 12 deepseekAccount methods (10 unary + 2 stream via the kind-table stream arm) and 3 credentialsController methods on their own verified ctx.get seams; S3 adds 3 sessionController push stream methods (observeEvent/observeState/observeProjections); S5 adds 2 settingsController document methods (settings/describe, settings/mutate — service key verified rc.5 dsh-api-settings-controller/src/index.ts:86); the 0.24 final knife adds session/list (migrated off the @manual hand-wire onto the generated chain via CAP_SESSION_WIRE_METHODS -> createCapInvoke, reusing resolveSessionController) — 24 generated ids total. gen-ledger unions these ids with wired_manual[].capir_id + wired_protocol[].capir_id to produce methods[].in_wired (24/257). check-capcontract #10 reconciles this set against the bridge literal; #8a stays on the 14 hand-wired protocol names (retention P1 adds session.prune.plan; P2 adds session.prune.apply; P3 adds session.prune.purge) and #8b asserts wired_manual == 0. NOTE (B1 S1/S2 follow-up, review ticket .proof/b1-s3-provisioner/00-provenance-ticket.md): credentials ids still reach NOT_WIRED at runtime in the stock opentui-inproc profile (dsh-api-settings-controller not mounted in its base closure). settings ids NO LONGER reach NOT_WIRED there: the bridge settings arm resolves the host config service through resolveSettingsSurface (real settingsController first, else the inproc ctx.settings adapter in packages/bridge/src/settings-adapter.ts), so settings/describe|mutate reach the inproc host's config-editor + settings service (dsh-base mounts both). Wiring is still declared + unit-tested; since B1 S4 landed client-side host-first routing (commit 9caab9b, design 05 §7), the seam's settings/config/agents faces resolve THROUGH the host config service — settings.describe reads the host wire and settings.mutate forwards to it (source-aware: host when present, an explicit source=local-file / source=unavailable degrade when absent, never a faked local success); /agents caps come from the same host describe document (local-file yields n/a with no numbers). No degrade/mock is left; credentials ids still reach NOT_WIRED at runtime (dsh-api-settings-controller not mounted in the stock opentui-inproc profile), unchanged from the first ticket. S3 push streams may also reach NOT_WIRED on a host lacking the observe* surface; the relay degrades to cap.end rather than fabricating events. 025-w1b B/C: +session/search +session/fork (expected-75 gap closure, table-lookup hostInvoke). 025-w1b D: +subagents/prompt +subagents/interruptByUser (expected-75 gap closure).",
     "source": "packages/bridge/src/index.ts CAP_HOST_WIRED_IDS / createCapHostInvoke",
     "ids": [
       "@deepseek-ai/dsh-api-session-controller#session/list",

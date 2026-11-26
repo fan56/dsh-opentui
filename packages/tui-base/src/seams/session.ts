@@ -583,6 +583,9 @@ export interface SeamSubagentView {
 	lastLine?: string
 }
 
+/** LIVE TRANSCRIPT — the reason a child transcript is empty (or ready). */
+export type SubagentTranscriptStatus = "ready" | "pending" | "read-failed" | "not-running"
+
 /**
  * One agent-preset row (batch H2): the registry roster entry the /preset
  * picker renders. `isDefault` marks the registry-designated default row
@@ -772,6 +775,111 @@ export interface SeamAccountState {
 	linksPresent: boolean
 }
 
+/**
+ * retention P1 — READ-ONLY prune plan (dry run). Structural mirror of the
+ * shell bridge seam's plan (tui-base must not import from shell, ADR-0006).
+ * `location` is a backend-resolved artifact path in the RESULT; there is NO
+ * client-supplied path input — the bridge derives the sessions root from host
+ * config / DSH_HOME.
+ */
+export interface SessionPrunePlanEntry {
+	sessionId: string
+	decision: "prune" | "skip"
+	reason?: string
+	location?: string
+	ageDays?: number
+}
+export interface SessionPrunePlan {
+	generatedAt: number
+	retentionDays: number
+	entries: readonly SessionPrunePlanEntry[]
+	counts: { prune: number; skip: number; byReason: Record<string, number> }
+	/**
+	 * retention P2 — opaque host-issued plan receipts. The client echoes ONLY
+	 * these three values back to `applyPrune`; it never sends entries, paths,
+	 * roots or policy. Optional so older / fake projects still typecheck.
+	 */
+	fingerprint?: string
+	configFingerprint?: string
+}
+export interface SessionPrunePlanParams {
+	retentionDays?: number
+	stagedIds?: string[]
+	blankGraceDays?: number
+	lockGraceMs?: number
+}
+
+/** retention P2 — plan receipts plus an OPTIONAL extra staged-id exclusion.
+ *  The host still recomputes every gate; staged ids can only add skips. */
+export interface SessionPruneApplyParams {
+	fingerprint: string
+	configFingerprint: string
+	generatedAt: number
+	stagedIds?: string[]
+}
+/** Apply outcome, hand-projected: no absolute paths cross the seam. */
+export interface SessionPruneApplyResult {
+	opId: string
+	applied: readonly { id: string }[]
+	failed: readonly { id: string; code: string; message: string }[]
+	/** Count only — the backend's orphan markers are absolute paths. */
+	markedOrphans: number
+}
+
+/**
+ * retention B4/C7 — trash restore. The list is hand-projected to id/time/size
+ * ONLY: no absolute path, run name or manifest field crosses the seam. Restore
+ * takes a trash entry id (a session id), never a path.
+ */
+export interface SessionPruneRestoreEntry {
+	id: string
+	movedAt: number
+	size?: number
+}
+export interface SessionPruneRestoreRejection {
+	code: string
+	message: string
+}
+export interface SessionPruneRestoreList {
+	entries: readonly SessionPruneRestoreEntry[]
+	rejected: readonly SessionPruneRestoreRejection[]
+}
+export interface SessionPruneRestoreResult {
+	id: string
+	restored: true
+	opId: string
+}
+
+/**
+ * retention P3 — prepare result. `token` is an opaque server-issued string;
+ * only session ids + residence age cross (no path / manifest / root).
+ */
+export interface SessionPurgeCandidate {
+	id: string
+	ageDays: number
+	appliedAt: number
+}
+export interface SessionPurgeRejection {
+	id?: string
+	code: string
+	message: string
+}
+export interface SessionPurgePrepareResult {
+	opId: string
+	token: string
+	candidates: readonly SessionPurgeCandidate[]
+	rejected: readonly SessionPurgeRejection[]
+}
+export interface SessionPurgeCommitParams {
+	token: string
+}
+/** Commit outcome, hand-projected: no absolute paths cross the seam. */
+export interface SessionPurgeCommitResult {
+	opId: string
+	purged: readonly { id: string }[]
+	failed: readonly SessionPurgeRejection[]
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -779,6 +887,40 @@ export interface SessionSeam {
 
 	/** Session data reads (dialog-session-list, session-tabs, app routes). */
 	listSessions(limit?: number): Promise<SeamSessionSummary[]>
+	/**
+	 * retention P1 — READ-ONLY prune plan (dry run). The real client
+	 * (BridgeSessionSeam) implements this face and stays callable through it;
+	 * other seams may lack the frame, so it is optional and callers use `?.()`.
+	 * NO path input: the root is host-derived, never a wire/seam parameter.
+	 */
+	planPrune?(params?: SessionPrunePlanParams): Promise<SessionPrunePlan>
+	/**
+	 * retention P2 — move the host-RECOMPUTED prune candidates into trash.
+	 * Takes ONLY the opaque plan receipts; entries / paths / policy never
+	 * cross back. Optional — a seam without the frame degrades to a notice.
+	 */
+	applyPrune?(params: SessionPruneApplyParams): Promise<SessionPruneApplyResult>
+	/**
+	 * retention P3 — read-only purge prepare: enumerate eligible trash
+	 * sessions and issue a server-signed confirmation token. Deletes nothing.
+	 */
+	preparePurge?(): Promise<SessionPurgePrepareResult>
+	/**
+	 * retention P3 — commit a PREPARED purge by echoing its opaque token.
+	 * The host re-derives and re-gates the entire set before any delete.
+	 */
+	commitPurge?(params: SessionPurgeCommitParams): Promise<SessionPurgeCommitResult>
+	/**
+	 * retention B4/C7 — list recoverable trash entries (id/movedAt/size only;
+	 * no path). Optional — a seam without the frame degrades to a notice.
+	 */
+	listPruneRestore?(): Promise<SessionPruneRestoreList>
+	/**
+	 * retention B4/C7 — restore ONE trashed session by its trash entry id.
+	 * No path is accepted; the host re-validates every gate and refuses if a
+	 * live session with the same id already exists.
+	 */
+	restorePrune?(id: string): Promise<SessionPruneRestoreResult>
 	searchSessions(query: string): Promise<{ id: string; snippet: string }[]>
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined
@@ -1193,6 +1335,15 @@ export interface SessionSeam {
 	 * viewer's transcript as "unavailable".
 	 */
 	subagentTranscript?(id: string): string[]
+	/**
+	 * LIVE TRANSCRIPT — why a child's transcript is EMPTY. Optional: a seam
+	 * without it keeps the viewer's generic "no activity yet" empty state.
+	 * - `pending`     — running child, no finalized row produced yet;
+	 * - `read-failed` — journal read was attempted and failed;
+	 * - `not-running` — settled/unknown child, no journal rows;
+	 * - `ready`       — real rows exist (journal baseline and/or live frames).
+	 */
+	subagentTranscriptStatus?(id: string): SubagentTranscriptStatus
 	/**
 	 * Interrupt one child subagent (tui-pi `bridge.cancelChild` parity):
 	 * `subagents/interruptByParent` on the remote face. Optional — a seam

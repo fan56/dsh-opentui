@@ -12,7 +12,7 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 |---|---:|---|
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
-| Wired protocol (ADR-0010, not @manual) | 10 frames | bridge-protocol (ADR-0010) |
+| Wired protocol (ADR-0010, not @manual) | 14 frames | bridge-protocol (ADR-0010) |
 | Wired manual (@manual host-copy) | 0 methods | derived-from-manual host-copy |
 | Wired (generated capcontract) | 28 methods | S1+S2+S3+S5-generated-capcontract |
 | in_wired total (of 257) | 28 methods | union of wire-dim capir_ids + generated ids |
@@ -55,16 +55,20 @@ Corrections applied in provenance mapping data:
 
 | method | kind | source line | protocol nature |
 |---|---|---:|---|
-| bridge.ping | meta | 2247 | protocol version negotiation (no host call) |
-| bridge.hello | meta | 2256 | protocol version negotiation (no host call) |
-| subagents.interrupt | business | 2300 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| subagents.stopChildren | business | 2304 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| session.open | business | 2308 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
-| session.send | business | 2312 | single in-flight turn state machine + streaming turn |
-| session.close | business | 2316 | binding dispose |
-| turn.abort | business | 2320 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
-| ask.response | business | 2324 | bridge-internal AskRegistry settlement (no host call) |
-| journal.replay | business | 2328 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
+| bridge.ping | meta | 5682 | protocol version negotiation (no host call) |
+| bridge.hello | meta | 5691 | protocol version negotiation (no host call) |
+| session.prune.plan | business | 5725 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
+| session.prune.apply | business | 5731 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
+| session.prune.purge | business | 5737 | retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id |
+| session.prune.restore | business | 5743 | retention B4/C7 trash restore by entry id: read-only list of {id,movedAt,size?} (no path) + host re-validation of trash realpath/manifest/artifact header.id/live roster/live destination containment + refuse-if-exists + read-only flock probe + reverse rename; client path/policy rejected; no CapIR id |
+| subagents.interrupt | business | 5810 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| subagents.stopChildren | business | 5814 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| session.open | business | 5818 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
+| session.send | business | 5822 | single in-flight turn state machine + streaming turn |
+| session.close | business | 5826 | binding dispose |
+| turn.abort | business | 5830 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
+| ask.response | business | 5834 | bridge-internal AskRegistry settlement (no host call) |
+| journal.replay | business | 5838 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
 
 ## Wired manual host-copy (@manual count source — must be 0)
 

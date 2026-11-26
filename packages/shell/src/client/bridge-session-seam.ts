@@ -67,8 +67,16 @@ import type {
 	SeamSettingsSource,
 	SeamStatus,
 	SeamSubagentView,
+	SubagentTranscriptStatus,
 	SeamTranscriptRow,
 	SeamTurnCallbacks,
+	SessionPruneApplyParams,
+	SessionPruneApplyResult,
+	SessionPruneRestoreList,
+	SessionPruneRestoreResult,
+	SessionPurgeCommitParams,
+	SessionPurgeCommitResult,
+	SessionPurgePrepareResult,
 	SessionSeam,
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
@@ -132,6 +140,11 @@ import {
 	projectHostSettingsDocument,
 	settingsFailureReason,
 } from "./bridge-settings-route.ts"
+// maxRounds hard-stop ladder — the RUNTIME consumer of the profile config.json
+// `maxRounds`/`maxRoundsGrace` knobs. One policy instance per session binding;
+// driven by additive `agent.progress` rounds, delivered through the seam's real
+// child steer/interrupt faces (settings-defaults-029 default-50 blocker).
+import { SubagentRoundPolicy, parseSubagentRoundLimits } from "../subagent-policy.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -494,6 +507,215 @@ function accountClientMeta(): { version: string; locale: string; timezoneOffsetS
 		locale: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().locale : "en",
 		timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
 	}
+}
+
+/** retention P1 — read-only prune plan (dry run). The wire reply is projected
+ *  through a whitelist: no host path or extra field leaks past these shapes,
+ *  and a malformed reply is a protocol error (never a fake empty plan). */
+export interface BridgePrunePlanEntry {
+	sessionId: string
+	decision: "prune" | "skip"
+	reason?: string
+	location?: string
+	ageDays?: number
+}
+export interface BridgePrunePlan {
+	generatedAt: number
+	retentionDays: number
+	entries: readonly BridgePrunePlanEntry[]
+	counts: { prune: number; skip: number; byReason: Record<string, number> }
+	/** Opaque host receipts echoed verbatim by applyPrune (never re-minted). */
+	fingerprint?: string
+	configFingerprint?: string
+}
+
+export function projectBridgePrunePlan(value: unknown): BridgePrunePlan {
+	const record = asRecord(value)
+	if (!Array.isArray(record.entries)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no entries array")
+	}
+	const entries: BridgePrunePlanEntry[] = []
+	for (const raw of record.entries) {
+		const row = asRecord(raw)
+		if (typeof row.sessionId !== "string" || (row.decision !== "prune" && row.decision !== "skip")) continue
+		const entry: BridgePrunePlanEntry = { sessionId: row.sessionId, decision: row.decision }
+		if (typeof row.reason === "string") entry.reason = row.reason
+		if (typeof row.location === "string") entry.location = row.location
+		if (typeof row.ageDays === "number" && Number.isFinite(row.ageDays)) entry.ageDays = row.ageDays
+		entries.push(entry)
+	}
+	// OLD CRITERION (SUPERSEDED, oldfox P1 CONCERN): a missing generatedAt /
+	// retentionDays / counts was filled with 0, and counts were copied from
+	// the wire AFTER entries were silently filtered. Both hid protocol and
+	// dataflow faults. Missing/invalid required fields now throw a protocol
+	// error (never a fake 0), and counts are recomputed from POST-FILTER
+	// entries so the plan is always internally consistent.
+	if (typeof record.generatedAt !== "number" || !Number.isFinite(record.generatedAt)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid generatedAt")
+	}
+	if (typeof record.retentionDays !== "number" || !Number.isFinite(record.retentionDays)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid retentionDays")
+	}
+	const countsRaw = record.counts
+	if (
+		countsRaw === null || typeof countsRaw !== "object" || Array.isArray(countsRaw) ||
+		typeof (countsRaw as Record<string, unknown>).prune !== "number" ||
+		typeof (countsRaw as Record<string, unknown>).skip !== "number" ||
+		(countsRaw as Record<string, unknown>).byReason === null ||
+		typeof (countsRaw as Record<string, unknown>).byReason !== "object" ||
+		Array.isArray((countsRaw as Record<string, unknown>).byReason)
+	) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid counts")
+	}
+	const byReason: Record<string, number> = {}
+	let prune = 0
+	let skip = 0
+	for (const entry of entries) {
+		if (entry.decision === "prune") {
+			prune += 1
+		} else {
+			skip += 1
+			const reason = entry.reason ?? "unknown"
+			byReason[reason] = (byReason[reason] ?? 0) + 1
+		}
+	}
+	return {
+		generatedAt: record.generatedAt,
+		retentionDays: record.retentionDays,
+		entries,
+		counts: { prune, skip, byReason },
+		...(typeof record.fingerprint === "string" ? { fingerprint: record.fingerprint } : {}),
+		...(typeof record.configFingerprint === "string" ? { configFingerprint: record.configFingerprint } : {}),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// retention P2/P3 — SECOND whitelists for the write-side replies. Every host
+// path / journal / manifest field is DROPPED here: the TUI never displays an
+// absolute path, and a malformed reply is a protocol error (never a fake OK).
+// Transport errors are NOT caught by the seam faces — they propagate as-is.
+// ---------------------------------------------------------------------------
+
+export function projectBridgePruneApply(value: unknown): SessionPruneApplyResult {
+	const record = asRecord(value)
+	if (typeof record.opId !== "string" || record.opId === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.apply returned no valid opId")
+	}
+	if (!Array.isArray(record.applied) || !Array.isArray(record.failed)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.apply returned no applied/failed arrays")
+	}
+	const applied: { id: string }[] = []
+	for (const raw of record.applied) {
+		const row = asRecord(raw)
+		if (typeof row.id === "string" && row.id !== "") applied.push({ id: row.id })
+	}
+	const failed: { id: string; code: string; message: string }[] = []
+	for (const raw of record.failed) {
+		const row = asRecord(raw)
+		if (typeof row.id !== "string" || typeof row.code !== "string" || typeof row.message !== "string") continue
+		failed.push({ id: row.id, code: row.code, message: row.message.slice(0, 300) })
+	}
+	return {
+		opId: record.opId,
+		applied,
+		failed,
+		markedOrphans: Array.isArray(record.markedOrphans) ? record.markedOrphans.length : 0,
+	}
+}
+
+export function projectBridgePurgePrepare(value: unknown): SessionPurgePrepareResult {
+	const record = asRecord(value)
+	if (typeof record.opId !== "string" || typeof record.token !== "string" || record.token === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge prepare returned no opId/token")
+	}
+	if (!Array.isArray(record.candidates) || !Array.isArray(record.rejected)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge prepare returned no candidates/rejected arrays")
+	}
+	const candidates: Array<SessionPurgePrepareResult["candidates"][number]> = []
+	for (const raw of record.candidates) {
+		const row = asRecord(raw)
+		if (typeof row.id !== "string" || row.id === "") continue
+		if (typeof row.ageDays !== "number" || !Number.isFinite(row.ageDays)) continue
+		if (typeof row.appliedAt !== "number" || !Number.isFinite(row.appliedAt)) continue
+		candidates.push({ id: row.id, ageDays: row.ageDays, appliedAt: row.appliedAt })
+	}
+	const rejected: Array<SessionPurgePrepareResult["rejected"][number]> = []
+	for (const raw of record.rejected) {
+		const row = asRecord(raw)
+		if (typeof row.code !== "string" || typeof row.message !== "string") continue
+		rejected.push({
+			...(typeof row.id === "string" ? { id: row.id } : {}),
+			code: row.code,
+			message: row.message.slice(0, 300),
+		})
+	}
+	return { opId: record.opId, token: record.token, candidates, rejected }
+}
+
+export function projectBridgePurgeCommit(value: unknown): SessionPurgeCommitResult {
+	const record = asRecord(value)
+	if (typeof record.opId !== "string" || record.opId === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge commit returned no valid opId")
+	}
+	if (!Array.isArray(record.purged) || !Array.isArray(record.failed)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.purge commit returned no purged/failed arrays")
+	}
+	const purged: { id: string }[] = []
+	for (const raw of record.purged) {
+		const row = asRecord(raw)
+		if (typeof row.id === "string" && row.id !== "") purged.push({ id: row.id })
+	}
+	const failed: Array<SessionPurgeCommitResult["failed"][number]> = []
+	for (const raw of record.failed) {
+		const row = asRecord(raw)
+		if (typeof row.code !== "string" || typeof row.message !== "string") continue
+		failed.push({
+			...(typeof row.id === "string" ? { id: row.id } : {}),
+			code: row.code,
+			message: row.message.slice(0, 300),
+		})
+	}
+	return { opId: record.opId, purged, failed }
+}
+
+// ---------------------------------------------------------------------------
+// retention B4/C7 — SECOND whitelist for the restore replies. Every host path /
+// run / manifest / journal field is DROPPED: the TUI sees only id + time +
+// optional size, and a malformed reply is a protocol error (never a fake list).
+// ---------------------------------------------------------------------------
+
+export function projectBridgePruneRestoreList(value: unknown): SessionPruneRestoreList {
+	const record = asRecord(value)
+	if (!Array.isArray(record.entries) || !Array.isArray(record.rejected)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.restore list returned no entries/rejected arrays")
+	}
+	const entries: SessionPruneRestoreList["entries"][number][] = []
+	for (const raw of record.entries) {
+		const row = asRecord(raw)
+		if (typeof row.id !== "string" || row.id === "") continue
+		if (typeof row.movedAt !== "number" || !Number.isFinite(row.movedAt)) continue
+		entries.push({
+			id: row.id,
+			movedAt: row.movedAt,
+			...(typeof row.size === "number" && Number.isFinite(row.size) && row.size > 0 ? { size: row.size } : {}),
+		})
+	}
+	const rejected: SessionPruneRestoreList["rejected"][number][] = []
+	for (const raw of record.rejected) {
+		const row = asRecord(raw)
+		if (typeof row.code !== "string" || typeof row.message !== "string") continue
+		rejected.push({ code: row.code, message: row.message.slice(0, 300) })
+	}
+	return { entries, rejected }
+}
+
+export function projectBridgePruneRestore(value: unknown): SessionPruneRestoreResult {
+	const record = asRecord(value)
+	if (typeof record.id !== "string" || record.id === "" || record.restored !== true ||
+		typeof record.opId !== "string" || record.opId === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.restore returned no valid id/restored/opId")
+	}
+	return { id: record.id, restored: true, opId: record.opId }
 }
 
 /** Build the honest UNSUPPORTED rejection for an absent async capability. */
@@ -1509,6 +1731,96 @@ export function bridgeReplayRowsToChildLog(rows: readonly BridgeReplayRow[]): st
 	}).filter((line) => line !== "")
 }
 
+// ---- LIVE TRANSCRIPT — additive `agent.transcript` row projection + cap ----
+
+/** 500 rows / 64 KiB (UTF-8) per child transcript. Both limits are hard. */
+export const CHILD_TRANSCRIPT_MAX_LINES = 500
+export const CHILD_TRANSCRIPT_MAX_BYTES = 64 * 1024
+
+const childTextEncoder = new TextEncoder()
+// fatal:true makes decode throw on a partial trailing glyph, so the cut can be
+// walked back to a clean UTF-8 boundary instead of emitting a replacement char.
+const childStrictTextDecoder = new TextDecoder("utf-8", { fatal: true })
+
+function childTranscriptBytes(line: string): number {
+	return childTextEncoder.encode(line).length
+}
+
+/** A single line may use the whole byte budget minus the +1 separator counted by capChildLog. */
+const CHILD_TRANSCRIPT_LINE_BUDGET = CHILD_TRANSCRIPT_MAX_BYTES - 1
+/** Visible marker so a truncated line is distinguishable from a naturally short one. */
+const CHILD_TRANSCRIPT_TRUNCATION_MARKER = "…"
+const CHILD_TRANSCRIPT_TRUNCATION_MARKER_BYTES = childTextEncoder.encode(CHILD_TRANSCRIPT_TRUNCATION_MARKER).length
+
+/**
+ * Truncate an over-budget single line on a UTF-8 boundary, keeping a marker.
+ * A line that fits is returned verbatim; otherwise cut to LINE_BUDGET minus the
+ * marker, decode strictly (no split multibyte glyph), append the marker. This
+ * keeps the line instead of letting capChildLog's head-drop discard it whole.
+ */
+function childTranscriptTruncate(line: string): string {
+	const bytes = childTextEncoder.encode(line)
+	if (bytes.length <= CHILD_TRANSCRIPT_LINE_BUDGET) return line
+	const cutBudget = CHILD_TRANSCRIPT_LINE_BUDGET - CHILD_TRANSCRIPT_TRUNCATION_MARKER_BYTES
+	for (let end = cutBudget; end > 0; end -= 1) {
+		try {
+			return childStrictTextDecoder.decode(bytes.slice(0, end)) + CHILD_TRANSCRIPT_TRUNCATION_MARKER
+		} catch {
+			// partial multibyte glyph at the cut — try one byte earlier
+		}
+	}
+	return CHILD_TRANSCRIPT_TRUNCATION_MARKER
+}
+
+/**
+ * Cap the per-child log: drop the OLDEST rows until both the row count and the
+ * byte budget fit, and truncate any single row that alone exceeds the budget.
+ * Pure and shared by the journal-baseline and live-append paths.
+ */
+export function capChildLog(lines: readonly string[]): string[] {
+	const out = lines.map((line) => childTranscriptTruncate(line))
+	let bytes = out.reduce((total, line) => total + childTranscriptBytes(line) + 1, 0)
+	while (out.length > CHILD_TRANSCRIPT_MAX_LINES || (out.length > 0 && bytes > CHILD_TRANSCRIPT_MAX_BYTES)) {
+		const dropped = out.shift()!
+		bytes -= childTranscriptBytes(dropped) + 1
+	}
+	return out
+}
+
+/**
+ * One whitelisted wire row → one viewer line. Only finalized assistant/tool
+ * kinds survive; `notice` / token / delta rows are filtered (notice filtering:
+ * the child log is a raw log view, never a notice consumer). Tool rendering
+ * mirrors `bridgeReplayRowsToChildLog` (▶ call / ⎿ result).
+ */
+export function childTranscriptRowToLine(row: unknown): string {
+	const r = asRecord(row)
+	if (r.kind !== "assistant" && r.kind !== "tool") return ""
+	const text = typeof r.text === "string" ? r.text : ""
+	const output = typeof r.output === "string" ? r.output : ""
+	if (r.kind === "tool") return output !== "" ? `▶ ${text}\n⎿ ${output}` : `▶ ${text}`
+	return text
+}
+
+/**
+ * Round5 — the viewer renders every transcript element as a height=1 single-line
+ * `<text>` node, so a folded `▶ ${text}\n⎿ ${output}` string loses its second
+ * line. Split every embedded newline into a SEPARATE array element before the
+ * log is written to #subagentTranscripts. Applied at BOTH entry points (journal
+ * baseline + live append). Empty segments are dropped, matching the existing
+ * `line !== ""` filtering already done by both paths (journal projection and
+ * live loop) so empty-line handling stays consistent across the two entries.
+ */
+export function splitChildLogLines(lines: readonly string[]): string[] {
+	const out: string[] = []
+	for (const line of lines) {
+		for (const part of line.split("\n")) {
+			if (part !== "") out.push(part)
+		}
+	}
+	return out
+}
+
 /** L2b C3: first confirm poll delay, the doubling ceiling, and the total cap
  *  (45s, inside the plan's 30–60s band). A child that is still host-running at
  *  the cap is NOT force-settled — the marker is dropped so the turn-boundary
@@ -2478,6 +2790,13 @@ export class BridgeSessionSeam implements SessionSeam {
 		lastLine?: string
 		elapsedSec?: number
 	}>()
+	/**
+	 * maxRounds ladder — ONE instance per session binding (lazily created on the
+	 * first `agent.progress` that grows a child's rounds). Disposed on rebind /
+	 * dispose; a settled child is forgotten so a catalog revive of the same id
+	 * starts a fresh ladder. Limits are read live from the profile config.json.
+	 */
+	#roundPolicy: SubagentRoundPolicy | undefined
 	/** The session the current subagent map belongs to; reset on binding change. */
 	#subagentSessionId: string | undefined
 	/**
@@ -2502,6 +2821,19 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * a snapshot copy. Keyed by childId (not run key): a re-run overwrites lines.
 	 */
 	readonly #subagentTranscripts = new Map<string, string[]>()
+	/**
+	 * LIVE TRANSCRIPT — per-child dedupe/order of `agent.transcript` frames.
+	 * The dedupe identity is (childId, runId, seq). `runId` is the CHILD run
+	 * identity (catalog childCreatedAt / tool-workflow runId), NOT the parent
+	 * turn: one parent turn can settle a child and re-spawn it with seq back at
+	 * 0. A changed runId opens a fresh seen-set; a new `agent.spawn` also clears
+	 * the old run's seen/settle lock. The journal baseline lines stay.
+	 */
+	readonly #subagentTranscriptRuns = new Map<string, { runId: string; seen: Set<number> }>()
+	/** LIVE TRANSCRIPT — a settled child is journal-authoritative; no live append. */
+	readonly #subagentTranscriptSettled = new Set<string>()
+	/** LIVE TRANSCRIPT — a child whose journal read was attempted and failed. */
+	readonly #subagentTranscriptReadFailed = new Set<string>()
 	/**
 	 * 0.23.0 T1: run keys settled by the registry SWEEP, keyed by childId → the
 	 * run key (`id@<startedAt>`) observed at settle time. A sweep settle has NO
@@ -3647,6 +3979,21 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * LIVE TRANSCRIPT — why a child's transcript is EMPTY. The viewer uses this
+	 * to distinguish "not produced yet" (running, no rows), "read failed"
+	 * (journal read attempted and failed), and "not running" (settled/unknown).
+	 * `ready` means real rows exist (live and/or journal baseline). Never a mock.
+	 */
+	subagentTranscriptStatus(id: string): SubagentTranscriptStatus {
+		const lines = this.#subagentTranscripts.get(id)
+		if (lines !== undefined && lines.length > 0) return "ready"
+		if (this.#subagentTranscriptReadFailed.has(id)) return "read-failed"
+		const view = this.#subagentViews.get(id)
+		if (view === undefined || view.status !== "running") return "not-running"
+		return "pending"
+	}
+
+	/**
 	 * 025-w1b D — steer a RUNNING child via the generated `subagents.prompt` frame
 	 * (host SubagentRuntime.prompt, delivery 'steer'). The seam contract is a
 	 * SYNC boolean: true when the child is known+running (reachable), false when
@@ -3864,6 +4211,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		for (const [childId, startedAt] of before) {
 			const view = this.#subagentViews.get(childId)
 			if (view === undefined || view.status === "running") continue
+			// maxRounds: this run is terminal. Forget its latches so a later
+			// catalog revive of the SAME childId (a new run) gets a fresh ladder.
+			this.#roundPolicy?.forgetChild(childId)
 			if (view.elapsedSec === undefined || view.endedAt === undefined) continue
 			const runKey = `${childId}@${startedAt ?? ""}`
 			const frozen = this.#subagentSettleSnapshots.get(runKey)
@@ -3996,7 +4346,12 @@ export class BridgeSessionSeam implements SessionSeam {
 		try {
 			const value = asRecord(await this.#transport.request("journal.replay", { sessionId: childId }))
 			const rows = value.rows
-			if (!Array.isArray(rows)) return // malformed read ≠ empty journal
+			if (!Array.isArray(rows)) {
+				// LIVE TRANSCRIPT: an attempted-but-unreadable journal is a distinct
+				// empty state; never pretend it is "no activity yet".
+				this.#subagentTranscriptReadFailed.add(childId)
+				return // malformed read ≠ empty journal
+			}
 			// P2-3d: a defensive read may carry null / non-object entries; drop them
 			// before bridgeChildJournalMeta reads `.payload` off each row (a null row
 			// would otherwise throw and silently degrade the whole child's meta).
@@ -4008,7 +4363,12 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (this.#subagentSessionId !== sessionAtStart || this.#disposed) return
 			// 025-w1b D — fold the same real rows into the viewer's transcript
 			// lines (sync face reads this cache; never a fabricated log).
-			this.#subagentTranscripts.set(childId, bridgeReplayRowsToChildLog(cleanRows))
+			// LIVE TRANSCRIPT: FIRST journal replay is the baseline; a later
+			// terminal re-read OVERWRITES it (never appends) because the journal
+			// is authoritative after settle. A new baseline starts a fresh seen-set.
+			this.#subagentTranscripts.set(childId, capChildLog(splitChildLogLines(bridgeReplayRowsToChildLog(cleanRows))))
+			this.#subagentTranscriptReadFailed.delete(childId)
+			this.#subagentTranscriptRuns.delete(childId)
 			// Cache by run key even if the view changed in flight: a replay re-fold
 			// can revisit this run later and needs the meta to restore rounds.
 			this.#subagentJournalMeta.set(key, meta)
@@ -4023,6 +4383,10 @@ export class BridgeSessionSeam implements SessionSeam {
 			})
 			this.#emitSubagentViews()
 		} catch {
+			// LIVE TRANSCRIPT: record the failed read so the viewer can say
+			// "read failed" instead of "no activity yet". Existing lines (if any)
+			// are kept — a failed read never wipes a real baseline.
+			this.#subagentTranscriptReadFailed.add(childId)
 			/* best-effort: keep rounds=0 / no model / no lastLine degradation */
 		}
 	}
@@ -4190,6 +4554,21 @@ export class BridgeSessionSeam implements SessionSeam {
 			// synthesized start with viaCatalog and inserts the running row.
 			const runId = typeof payload.runId === "string" ? payload.runId : ""
 			const childId = typeof payload.childId === "string" ? payload.childId : ""
+			// LIVE TRANSCRIPT: a spawn of this child is a NEW run — revoke the
+			// settle lock AND the old run's seen-set so a re-spawned child whose
+			// seq restarts at 0 in the SAME parent turn is not deduped away (the
+			// journal baseline for the new run is re-read by #ensureChildJournal).
+			if (childId !== "") {
+				this.#subagentTranscriptRuns.delete(childId)
+				this.#subagentTranscriptSettled.delete(childId)
+				this.#subagentTranscriptReadFailed.delete(childId)
+			}
+			// Bind the roster to the parent session on the first live spawn so a
+			// foreign transcript frame cannot claim the binding before any valid
+			// live/replay frame establishes it (same rule as the settle path).
+			if (this.#subagentSessionId === undefined && frameSession !== "") {
+				this.#subagentSessionId = frameSession
+			}
 			changed = runId === `${BRIDGE_CATALOG_RUN_PREFIX}${childId}`
 				? this.#foldWithFrozenSettle(BRIDGE_SUBAGENT_CATALOG, payload, now, true)
 				: this.#foldWithFrozenSettle(BRIDGE_AGENT_START, payload, now, true)
@@ -4207,6 +4586,16 @@ export class BridgeSessionSeam implements SessionSeam {
 			// register a mismatching `id@` key.
 			const childId = typeof payload.childId === "string" ? payload.childId : ""
 			const existing = childId !== "" ? this.#subagentViews.get(childId) : undefined
+			// LIVE TRANSCRIPT: freeze live appends from this terminal on. A parent
+			// `tool-workflow/agent-end` may omit childId — pair it through the same
+			// runSeq key the lifecycle fold uses, so both settle paths agree.
+			const lockedChild = childId !== ""
+				? childId
+				: this.#subagentRunSeq.get(bridgeAgentRunKey(
+					typeof payload.runId === "string" ? payload.runId : "",
+					typeof payload.seq === "number" ? payload.seq : -1,
+				))
+			if (lockedChild !== undefined) this.#subagentTranscriptSettled.add(lockedChild)
 			if (existing !== undefined && existing.status === "running") {
 				// A live settle can arrive BEFORE any journal fold has established
 				// #subagentSessionId (turn-external child terminal). Bind it from the
@@ -4225,6 +4614,67 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#syncSubagentMeta(false)
 			this.#emitSubagentViews()
 		}
+	}
+
+	/**
+	 * The round ladder's runtime consumer. Created lazily so a session with no
+	 * child progress pays nothing. The two knobs are read LIVE from the profile
+	 * config.json through the local config face — `parseSubagentRoundLimits`
+	 * owns the unset→50/0 and explicit-0-disables rules; no settings-ns provider
+	 * is consulted (the retired plugin face answered defaults forever).
+	 *
+	 * Delivery rides the seam's REAL child faces: the wrap-up goes out through
+	 * `steerChild` (subagents.prompt, delivery 'steer') with the policy's own
+	 * canonical `wrapupMessage`, and the force-stop through `interruptChild`
+	 * (subagents.interrupt + confirm-then-emit settle). The policy's F6 hooks
+	 * land the markers in the canonical view so they survive meta sync / settle
+	 * and reach every onSubagentViews subscriber.
+	 */
+	#ensureRoundPolicy(): SubagentRoundPolicy {
+		if (this.#roundPolicy === undefined) {
+			this.#roundPolicy = new SubagentRoundPolicy({
+				limits: () => parseSubagentRoundLimits(this.configLoad()),
+				// A settled child is terminal for this run — never re-awaken it
+				// with a wrap-up or a force-stop (re-checked at the deferred
+				// wrap-up flush too, in case it settled in the same tick).
+				isSettled: (childId) => {
+					const view = this.#subagentViews.get(childId)
+					return view === undefined || view.status !== "running"
+				},
+				wrapup: (childId, message) => this.steerChild(childId, message),
+				// A resolved interrupt issued a stop; a rejection (no binding /
+				// failed disposition) reports that nothing was stopped.
+				forceStop: (childId) => this.interruptChild(childId).then(() => true, () => false),
+				onWrapUp: (childId, round) => this.#markRoundPolicy(childId, "injectedRound", round),
+				onForceStop: (childId, round) => this.#markRoundPolicy(childId, "hardStopRound", round),
+				onSpinStop: (childId, round) => this.#markRoundPolicy(childId, "spinStopRound", round),
+			})
+		}
+		return this.#roundPolicy
+	}
+
+	/** Drop the policy on a binding change/dispose so a deferred wrap-up can
+	 *  never land on the next session's roster. */
+	#resetRoundPolicy(): void {
+		this.#roundPolicy?.dispose()
+		this.#roundPolicy = undefined
+	}
+
+	/** Land one policy marker in the canonical view (first latch wins) and
+	 *  push it through the existing onSubagentViews emit path. */
+	#markRoundPolicy(
+		childId: string,
+		field: "injectedRound" | "hardStopRound" | "spinStopRound",
+		round: number,
+	): void {
+		const view = this.#subagentViews.get(childId)
+		if (view === undefined || view[field] !== undefined) return
+		const next: SeamSubagentView = { ...view }
+		if (field === "injectedRound") next.injectedRound = round
+		else if (field === "hardStopRound") next.hardStopRound = round
+		else next.spinStopRound = round
+		this.#subagentViews.set(childId, next)
+		this.#emitSubagentViews()
 	}
 
 	/**
@@ -4255,13 +4705,69 @@ export class BridgeSessionSeam implements SessionSeam {
 			? payload.elapsedSec
 			: undefined
 		const prev = this.#subagentProgress.get(childId)
-		this.#subagentProgress.set(childId, {
+		const merged: { rounds: number; lastLine?: string; elapsedSec?: number } = {
 			rounds: Math.max(prev?.rounds ?? 0, rounds),
 			...(lastLine !== undefined ? { lastLine } : prev?.lastLine !== undefined ? { lastLine: prev.lastLine } : {}),
 			...(elapsedSec !== undefined ? { elapsedSec } : prev?.elapsedSec !== undefined ? { elapsedSec: prev.elapsedSec } : {}),
-		})
+		}
+		this.#subagentProgress.set(childId, merged)
+		// Drive the ladder ONLY when the round count actually grew. The policy
+		// latches per child; duplicate frames at the same round must not retry a
+		// delivery or re-enter the ladder.
+		if (merged.rounds > (prev?.rounds ?? 0)) {
+			this.#ensureRoundPolicy().onRoundCount(childId, merged.rounds, view.label)
+		}
 		// Restore first, emit once — no transient rounds=0 (P2b).
 		this.#syncSubagentMeta(false)
+		this.#emitSubagentViews()
+	}
+
+	/**
+	 * LIVE TRANSCRIPT — append one additive `agent.transcript` frame to the
+	 * child's viewer log. Dedupe identity is (childId, runId, seq): duplicate
+	 * frames (e.g. a replayed stdio frame) never double-paint; a NEW CHILD run
+	 * (new runId) opens a fresh seen-set even inside the same parent turn, where
+	 * `seq` restarts at 0. `turnId` remains required as the parent-turn tag and
+	 * is the fallback identity only for a pre-runId bridge frame. A settled or
+	 * unknown child is refused — after settle the journal read is the only
+	 * authority. Both caps are enforced on every append.
+	 */
+	#foldAgentTranscript(frame: BridgeEventFrame): void {
+		const payload = asRecord(frame.payload)
+		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
+		const childId = typeof payload.childId === "string" ? payload.childId : ""
+		const turnId = typeof payload.turnId === "string" ? payload.turnId : ""
+		const runId = typeof payload.runId === "string" && payload.runId !== "" ? payload.runId : turnId
+		const seq = typeof payload.seq === "number" && Number.isFinite(payload.seq) ? payload.seq : -1
+		const rows = payload.rows
+		if (childId === "" || turnId === "" || seq < 0 || !Array.isArray(rows)) return
+		if (this.#subagentTranscriptSettled.has(childId)) return
+		const view = this.#subagentViews.get(childId)
+		// No ghost rows: only a currently RUNNING child of this binding accepts
+		// live transcript rows (receiver law — this is a class method).
+		if (view === undefined || view.status !== "running") return
+		// Parent-session isolation: this roster is bound to one parent session.
+		// A live transcript frame for a RUNNING child must carry that sessionId.
+		// When no replay/spawn has established the binding yet, bind from this
+		// first valid live frame; any later foreign sessionId is refused so a
+		// different session's child cannot leak rows into this child's log.
+		if (this.#subagentSessionId === undefined) {
+			if (frameSession !== "") this.#subagentSessionId = frameSession
+		} else if (frameSession !== "" && frameSession !== this.#subagentSessionId) return
+		let run = this.#subagentTranscriptRuns.get(childId)
+		if (run === undefined || run.runId !== runId) {
+			run = { runId, seen: new Set<number>() }
+			this.#subagentTranscriptRuns.set(childId, run)
+		}
+		if (run.seen.has(seq)) return
+		run.seen.add(seq)
+		const lines = [...(this.#subagentTranscripts.get(childId) ?? [])]
+		for (const row of rows) {
+			const line = childTranscriptRowToLine(row)
+			if (line !== "") lines.push(line)
+		}
+		this.#subagentTranscripts.set(childId, capChildLog(splitChildLogLines(lines)))
+		this.#subagentTranscriptReadFailed.delete(childId)
 		this.#emitSubagentViews()
 	}
 
@@ -4282,9 +4788,13 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentRunSeq.clear()
 			this.#subagentLiveStarts.clear()
 			this.#subagentProgress.clear() // B3: live progress belongs to the old binding
+			this.#resetRoundPolicy() // maxRounds: latches belong to the old binding
 			this.#subagentJournalLoaded.clear()
 			this.#subagentJournalMeta.clear()
 			this.#subagentTranscripts.clear() // 025-w1b D: transcripts belong to the old binding
+			this.#subagentTranscriptRuns.clear() // LIVE TRANSCRIPT: dedupe/order belong to the old binding
+			this.#subagentTranscriptSettled.clear()
+			this.#subagentTranscriptReadFailed.clear()
 			this.#sweepSettledRuns.clear()
 			this.#subagentSettleSnapshots.clear()
 			this.#interruptInFlight.clear() // L2a: in-flight interrupts belong to the old binding
@@ -4385,6 +4895,88 @@ export class BridgeSessionSeam implements SessionSeam {
 		// "capability unavailable" answer).
 		const value = await this.#transport.request("session.list")
 		return projectBridgeSessionList(asRecord(value).items, limit)
+	}
+
+	/**
+	 * retention P1 — READ-ONLY prune plan (dry run). `retentionDays=0` means the
+	 * host skips every row; the default (90) stays host-side. This face NEVER
+	 * deletes. A host without the optional `sessionPersistence.stat` capability
+	 * rejects with UNSUPPORTED — that error propagates, never a fake empty plan.
+	 */
+	async planPrune(params?: {
+		retentionDays?: number
+		stagedIds?: string[]
+		blankGraceDays?: number
+		lockGraceMs?: number
+	}): Promise<BridgePrunePlan> {
+		// OLD CRITERION (SUPERSEDED): this face accepted a client-controlled
+		// `sessionsRoot` and forwarded it. The root is now host-derived; NO
+		// path is exposed here. The bridge only knows BOUND sessions, so wire
+		// the REAL staged id from `stagedSessionId()` (a resume staged before
+		// its next turn) into the exclusion set; over-exclusion is safe.
+		const staged = this.stagedSessionId()
+		const ids = new Set(params?.stagedIds ?? [])
+		if (staged !== undefined && staged !== "") ids.add(staged)
+		const wireParams = ids.size > 0 ? { ...(params ?? {}), stagedIds: [...ids] } : { ...(params ?? {}) }
+		const value = await this.#transport.request("session.prune.plan", wireParams)
+		return projectBridgePrunePlan(value)
+	}
+
+	/**
+	 * retention P2 — trash-apply. The client echoes the opaque receipts from a
+	 * fresh plan plus the REAL staged id as an EXTRA exclusion (the host still
+	 * recomputes every gate; staged ids can only add skips). Entries / paths /
+	 * roots / policy are NOT sent — the host rejects them with BAD_PARAMS.
+	 * Echoing the staged id keeps plan/apply fingerprints equal after /resume.
+	 * Transport errors and host refusals propagate UNCHANGED — no fake success.
+	 */
+	async applyPrune(params: SessionPruneApplyParams): Promise<SessionPruneApplyResult> {
+		const staged = this.stagedSessionId()
+		const ids = new Set(params.stagedIds ?? [])
+		if (staged !== undefined && staged !== "") ids.add(staged)
+		const value = await this.#transport.request("session.prune.apply", {
+			fingerprint: params.fingerprint,
+			configFingerprint: params.configFingerprint,
+			generatedAt: params.generatedAt,
+			...(ids.size > 0 ? { stagedIds: [...ids] } : {}),
+		})
+		return projectBridgePruneApply(value)
+	}
+
+	/**
+	 * retention P3 phase 1 — read-only prepare. Issues a server-signed token
+	 * bound to the exact trash set; NO path / root / policy crosses the wire.
+	 */
+	async preparePurge(): Promise<SessionPurgePrepareResult> {
+		const value = await this.#transport.request("session.prune.purge", { phase: "prepare" })
+		return projectBridgePurgePrepare(value)
+	}
+
+	/**
+	 * retention P3 phase 2 — commit by echoing the prepare token. The host
+	 * re-derives and re-gates everything; no client path ever reaches a delete.
+	 */
+	async commitPurge(params: SessionPurgeCommitParams): Promise<SessionPurgeCommitResult> {
+		const value = await this.#transport.request("session.prune.purge", { phase: "commit", token: params.token })
+		return projectBridgePurgeCommit(value)
+	}
+
+	/**
+	 * retention B4/C7 phase 1 — read-only list of recoverable trash entries.
+	 * NO path / run / manifest field crosses the wire or the projection.
+	 */
+	async listPruneRestore(): Promise<SessionPruneRestoreList> {
+		const value = await this.#transport.request("session.prune.restore", { phase: "list" })
+		return projectBridgePruneRestoreList(value)
+	}
+
+	/**
+	 * retention B4/C7 phase 2 — restore ONE trashed session by entry id (never
+	 * a path). Transport errors and host refusals propagate UNCHANGED.
+	 */
+	async restorePrune(id: string): Promise<SessionPruneRestoreResult> {
+		const value = await this.#transport.request("session.prune.restore", { phase: "restore", id })
+		return projectBridgePruneRestore(value)
 	}
 
 	/**
@@ -4827,8 +5419,13 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#subagentRunSeq.clear()
 		this.#subagentLiveStarts.clear()
 		this.#subagentProgress.clear()
+		this.#resetRoundPolicy() // maxRounds: no deferred wrap-up survives teardown
 		this.#subagentJournalLoaded.clear()
 		this.#subagentJournalMeta.clear()
+		this.#subagentTranscripts.clear()
+		this.#subagentTranscriptRuns.clear()
+		this.#subagentTranscriptSettled.clear()
+		this.#subagentTranscriptReadFailed.clear()
 		this.#sweepSettledRuns.clear()
 		this.#subagentSettleSnapshots.clear()
 		this.#interruptInFlight.clear()
@@ -5420,6 +6017,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		if (frame.type === "agent.progress") {
 			this.#foldAgentProgress(frame)
+			return
+		}
+		if (frame.type === "agent.transcript") {
+			this.#foldAgentTranscript(frame)
 			return
 		}
 

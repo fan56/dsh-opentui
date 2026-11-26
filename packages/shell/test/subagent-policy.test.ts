@@ -23,10 +23,21 @@ describe("settings parse (dsh-opentui namespace)", () => {
 		expect(parseSubagentRoundLimits({ maxRounds: 5, maxRoundsGrace: 2 })).toEqual({ maxRounds: 5, maxRoundsGrace: 2 })
 		expect(parseSubagentRoundLimits({ maxRounds: "7", maxRoundsGrace: " 1 " })).toEqual({ maxRounds: 7, maxRoundsGrace: 1 })
 	})
-	test("malformed / negative / missing values fall back to the disabled defaults", () => {
+	// settings-defaults-029: title updated from "…disabled defaults" — the
+	// frozen default cap is now 50; the three assertions below are UNCHANGED
+	// (they compare against the constant, so they still express the contract).
+	test("malformed / negative / missing values fall back to the frozen defaults", () => {
 		expect(parseSubagentRoundLimits({ maxRounds: -3, maxRoundsGrace: "x" })).toEqual(DEFAULT_SUBAGENT_ROUND_LIMITS)
 		expect(parseSubagentRoundLimits(undefined)).toEqual(DEFAULT_SUBAGENT_ROUND_LIMITS)
 		expect(parseSubagentRoundLimits("5")).toEqual(DEFAULT_SUBAGENT_ROUND_LIMITS)
+	})
+	test("settings-defaults-029: unconfigured cap = 50; explicit 0 still disables the ladder", () => {
+		expect(DEFAULT_SUBAGENT_ROUND_LIMITS).toEqual({ maxRounds: 50, maxRoundsGrace: 0 })
+		expect(parseSubagentRoundLimits({})).toEqual({ maxRounds: 50, maxRoundsGrace: 0 })
+		expect(limitsFromSettingsRows([])).toEqual({ maxRounds: 50, maxRoundsGrace: 0 })
+		expect(parseSubagentRoundLimits({ maxRounds: 0 })).toEqual({ maxRounds: 0, maxRoundsGrace: 0 })
+		expect(ladderDecision({ count: 50, cap: 50, grace: 0, wrapupDelivered: false, settled: false })).toBe("wrapup")
+		expect(ladderDecision({ count: 99, cap: 0, grace: 0, wrapupDelivered: false, settled: false })).toBe("none")
 	})
 	test("picks the dsh-opentui row only", () => {
 		const rows = [

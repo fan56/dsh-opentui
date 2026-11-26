@@ -117,6 +117,30 @@ export function TranscriptScrollKeys(props: TranscriptScrollKeysProps) {
 		],
 		bindings: ["session.first", "session.last"],
 	}))
+	// Away-hint's independent command. alt+shift+end returns the transcript to
+	// the bottom even while the composer holds focus — the editor gate above
+	// deliberately does NOT apply here (that gate keeps plain home/end as
+	// buffer keys). Only the page-ownership gate applies. The chord is distinct
+	// from session.messages_last_user's alt+end so no vendored layer can shadow
+	// it while a page owns the keyboard.
+	const toBottom = () => {
+		const scroll = props.scroll()
+		if (!scroll || scroll.isDestroyed) return
+		scroll.scrollTo(Infinity)
+	}
+	Keymap.createLayer(() => ({
+		capture: "main",
+		enabled: props.enabled(),
+		commands: [
+			{
+				id: "session.scroll.to_bottom",
+				title: "Jump to latest",
+				group: "Session",
+				run: toBottom,
+			},
+		],
+		bindings: ["session.scroll.to_bottom"],
+	}))
 	// The layer lives in the Keymap, not the scene; the vendored hosts use
 	// the same always-false Show slot for layer-only components.
 	return <Show when={false}>{null}</Show>
