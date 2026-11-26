@@ -5441,8 +5441,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         replyError(req.id, err.code, message, err.detail)
         return
       }
-      const mapped = mapHostError(err)
-      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+      // Any non-RestoreError is a host/fs failure whose `message`/`detail` can
+      // embed an absolute dshHome path. Never mapHostError/forward either one
+      // on the wire: reply with a fixed, path-free message instead.
+      replyError(req.id, 'INTERNAL', 'session.prune.restore failed')
     }
   }
 

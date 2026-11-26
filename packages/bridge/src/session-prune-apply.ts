@@ -576,9 +576,17 @@ export async function applyTrashPlan(
           planFingerprint: config.planFingerprint, appliedAt: deps.now,
         }
         try {
-          await fs.writeFile(join(trashPath, '.applied.json'), JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
+          // `.applied.json` is the committed-applied marker that lives INSIDE
+          // the trash entry. It MUST be written last: if `.post.json` or the
+          // manifest append fails, rollback reverse-renames the whole directory
+          // back to source and a marker written earlier would travel with it,
+          // leaving a stale `.applied.json` in the live session dir. That stale
+          // marker makes every later apply of the same session fail again with
+          // EEXIST -> JOURNAL_FAILED. Write the two external journals first so
+          // a rolled-back entry is always marker-free at its source.
           await fs.writeFile(`${journalBase}.post.json`, JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
           await fs.appendFile(join(runDir, 'manifest.jsonl'), JSON.stringify(appliedRecord) + '\n')
+          await fs.writeFile(join(trashPath, '.applied.json'), JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
         } catch (journalErr) {
           await rollbackAfterRename(fs, deps, {
             sourceDir, trashPath, id, journalBase,

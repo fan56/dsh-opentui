@@ -147,4 +147,36 @@ describe("session.prune.restore — RPC gates", () => {
     h.send({ id: 9, method: "session.prune.restore", params: { phase: "restore", id: "missing" } })
     expect((await h.waitFor(9)).error.code).toBe("NOT_FOUND")
   })
+
+  test("lister throws with dshHome in the message => fixed wire text, no path", async () => {
+    const home = tempHome()
+    const secret = `${home}/sessions/private-run`
+    const throwingController = {
+      async list() { throw new Error(`EACCES: cannot read ${secret}`) },
+    }
+    const h = makeHarness({ sessionController: throwingController, sessionPersistence: statCapable }, configFor(home))
+    h.send({ id: 10, method: "session.prune.restore", params: { phase: "restore", id: "target" } })
+    const reply = await h.waitFor(10)
+    expect(reply.ok).toBe(false)
+    expect(reply.error.code).toBe("INTERNAL")
+    expect(reply.error.message).toBe("session.prune.restore failed")
+    expect(reply.error.detail).toBeUndefined()
+    expect(JSON.stringify(reply)).not.toContain(secret)
+    expect(JSON.stringify(reply)).not.toContain(home)
+  })
+
+  test("apply-lock throws with dshHome in the message => fixed wire text, no path", async () => {
+    const home = tempHome()
+    const secret = `${home}/trash/.apply.lock`
+    const h = makeHarness({ sessionController: controller, sessionPersistence: statCapable }, configFor(home))
+    setFlockTryLockExclusiveForTest(async () => { throw new Error(`EACCES: cannot lock ${secret}`) })
+    h.send({ id: 11, method: "session.prune.restore", params: { phase: "restore", id: "target" } })
+    const reply = await h.waitFor(11)
+    expect(reply.ok).toBe(false)
+    expect(reply.error.code).toBe("INTERNAL")
+    expect(reply.error.message).toBe("session.prune.restore failed")
+    expect(reply.error.detail).toBeUndefined()
+    expect(JSON.stringify(reply)).not.toContain(secret)
+    expect(JSON.stringify(reply)).not.toContain(home)
+  })
 })

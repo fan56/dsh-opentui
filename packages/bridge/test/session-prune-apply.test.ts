@@ -173,6 +173,9 @@ function plan(): PrunePlan {
 interface DepsOptions {
   lock?: (path: string) => Promise<{ status: "unlocked" | "lock-held" | "no-lock" | "unknown" }>
   opId?: string
+  /** Re-apply simulation: a fresh timestamp yields a fresh trash run dir,
+   *  exactly like a later real apply after a previous rollback. */
+  now?: number
   /** Simulate the REAL backend losing/changing its stat record after the
    *  forward rename. Must not affect rollback (which uses the frozen journal). */
   statAfterRename?: (id: string) => Promise<unknown> | unknown
@@ -201,7 +204,7 @@ function deps(fs: MemoryFs, options: DepsOptions = {}) {
       // First probe (source) is clean; a later probe at the trash path is held.
       return heldCount > 1 ? { status: "lock-held" as const } : { status: "unlocked" as const }
     },
-    now: NOW,
+    now: options.now ?? NOW,
     opId: options.opId ?? "op-test",
     withApplyLock: async <T>(fn: () => Promise<T>) => fn(),
   }
@@ -262,12 +265,44 @@ describe("session.prune.apply — trash core", () => {
       expect(result.failed[0].message).toBe(original.message)
       // The session is back at its live source; the trash entry is gone.
       expect(fs.dirs.has(SESSION_DIR)).toBe(true)
+      // No committed-applied marker may travel back with the rolled-back dir:
+      // a stale `.applied.json` in the live session would poison every later
+      // apply of that session (EEXIST -> permanent JOURNAL_FAILED).
+      expect(fs.files.has(`${SESSION_DIR}/.applied.json`)).toBe(false)
       const trashPaths = [...fs.dirs.keys()].filter((p) => p.startsWith(trashSessionsRoot(DSH_HOME)) && p.includes(ID))
       expect(trashPaths).toEqual([])
       expect(fs.renameCalls).toHaveLength(2)
       expect(fs.renameCalls[0][1]).toBe(fs.renameCalls[1][0])
       expect([...fs.files.keys()].some((p) => p.endsWith(".rollback.json"))).toBe(true)
     }
+  })
+
+  test("post-rename rollback leaves the source marker-free so a later apply is not permanently JOURNAL_FAILED", async () => {
+    const fs = new MemoryFs()
+    const original = Object.assign(new Error("write failed on post"), { code: "ENOSPC" })
+    let failPost = true
+    fs.writeFileHook = (path) => { if (failPost && path.endsWith(".post.json")) throw original }
+    const first = await applyWith(fs, { lock: async () => ({ status: "unlocked" }) })
+    expect(first.applied).toEqual([])
+    expect(first.failed).toHaveLength(1)
+    expect(first.failed[0].code).toBe("JOURNAL_FAILED")
+    expect(fs.dirs.has(SESSION_DIR)).toBe(true)
+    expect(fs.files.has(`${SESSION_DIR}/.applied.json`)).toBe(false)
+
+    // Fault cleared. A later apply uses a fresh run dir (new timestamp). The
+    // reverse rename must have carried no stale `.applied.json` back into the
+    // live session, otherwise the `wx` marker write collides (EEXIST) and this
+    // second apply would fail with JOURNAL_FAILED all over again.
+    failPost = false
+    const second = await applyWith(fs, {
+      lock: async () => ({ status: "unlocked" }),
+      now: NOW + 60_000,
+      opId: "op-reapply",
+    })
+    expect(second.failed).toEqual([])
+    expect(second.applied).toHaveLength(1)
+    expect(fs.dirs.has(SESSION_DIR)).toBe(false)
+    expect(fs.files.has(`${second.applied[0].to}/.applied.json`)).toBe(true)
   })
 
   test("real backend stat invalidation after rename does not block rollback (journal is the proof)", async () => {
