@@ -20,7 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
-import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionPrunePlan, SessionPurgePrepareResult, SessionSeam } from "../../seams/session"
+import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionPrunePlan, SessionPruneRestoreList, SessionPurgePrepareResult, SessionSeam } from "../../seams/session"
 
 /** The sanctioned patch-write channel: the host settings mutate face. */
 type SettingsMutate = (ns: string, ops: SeamSettingsOp[], revision?: number) => Promise<SeamSettingsMutateResult>
@@ -244,6 +244,26 @@ export function formatPurgePrepareRows(result: SessionPurgePrepareResult): strin
 		rows.push(t("command.prunePurge.rejected", {
 			count: String(result.rejected.length),
 			codes: [...new Set(result.rejected.map((row) => row.code))].join(", "),
+		}))
+	}
+	return rows
+}
+
+/** The transcript rows /prune-restore prints. NO path is formatted here: the
+ *  seam projects only id / movedAt / optional size, never a host path. */
+export function formatRestoreListRows(list: SessionPruneRestoreList): string[] {
+	const rows = [t("command.pruneRestore.count", { count: String(list.entries.length) })]
+	for (const entry of list.entries) {
+		rows.push(t("command.pruneRestore.entry", {
+			id: entry.id,
+			movedAt: new Date(entry.movedAt).toISOString(),
+			size: entry.size === undefined ? t("command.pruneRestore.unknownSize") : formatPruneBytes(entry.size),
+		}))
+	}
+	if (list.rejected.length > 0) {
+		rows.push(t("command.pruneRestore.rejected", {
+			count: String(list.rejected.length),
+			codes: [...new Set(list.rejected.map((row) => row.code))].join(", "),
 		}))
 	}
 	return rows
@@ -2365,6 +2385,59 @@ export function coreCommands(): SlashCommand[] {
 				} catch (error) {
 					ctx.say(t("command.prunePurge.failed", {
 						code: "INTERNAL", message: seamFailureReason(error),
+					}))
+				}
+			},
+		},
+		{
+			// retention B4/C7 — restore a trashed session. No argument lists the
+			// recoverable entries and lets the user pick one; an argument is a
+			// trash entry id (NEVER a path). The host re-validates everything.
+			name: "/prune-restore",
+			description: t("command.pruneRestore.description"),
+			async run(ctx, argText) {
+				if (!ctx.seam.listPruneRestore || !ctx.seam.restorePrune) {
+					ctx.say(t("command.pruneRestore.unavailable"))
+					return
+				}
+				let id = argText.trim()
+				try {
+					if (id === "") {
+						const list = await ctx.seam.listPruneRestore()
+						for (const line of formatRestoreListRows(list)) ctx.say(line)
+						if (list.entries.length === 0) {
+							ctx.say(t("command.pruneRestore.empty"))
+							return
+						}
+						if (!ctx.pickOne) {
+							ctx.say(t("command.pruneRestore.promptUnavailable"))
+							return
+						}
+						const picked = await ctx.pickOne(
+							t("command.pruneRestore.pickTitle"),
+							list.entries.map((entry) => ({
+								title: entry.id,
+								value: entry.id,
+								description: new Date(entry.movedAt).toISOString(),
+							})),
+							t("command.pruneRestore.pickHeader"),
+						)
+						if (picked === undefined) {
+							ctx.say(t("command.pruneRestore.cancelled"))
+							return
+						}
+						id = picked
+					}
+					const result = await ctx.seam.restorePrune(id)
+					ctx.say(t("command.pruneRestore.done", { id: result.id }))
+				} catch (error) {
+					const rawCode = (error as { code?: unknown })?.code
+					const code = typeof rawCode === "string" && rawCode !== "" ? rawCode : "INTERNAL"
+					if (code === "CONFLICT" || code === "LIVE_AGENT") {
+						ctx.say(t("command.pruneRestore.conflict", { id }))
+					}
+					ctx.say(t("command.pruneRestore.failed", {
+						code, message: seamFailureReason(error),
 					}))
 				}
 			},

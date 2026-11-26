@@ -253,6 +253,18 @@ async function assess(fs: MemoryFs, deps: PurgeDeps, id: string, live = new Map<
 }
 
 describe("session.prune.purge — trash-only core", () => {
+  test("first purge: missing trash/sessions yields an empty preparation, not INTERNAL", async () => {
+    const fs = new MemoryFs()
+    fs.dirs.delete(TRASH)
+    fs.dirs.delete(`${TRASH}/${RUN}`)
+    const prepared = await preparePurge(fs, makeDeps(fs), DSH_HOME)
+    expect(prepared.candidates).toEqual([])
+    expect(prepared.rejected).toEqual([])
+    expect(typeof prepared.token).toBe("string")
+    expect(prepared.tokenPayload.root).toBe(TRASH)
+    expect(prepared.tokenPayload.ids).toEqual([])
+  })
+
   test("token: mint/verify, tamper, wrong secret, expiry and replay", async () => {
     const input = {
       opId: "op-1", ids: [ID], paths: [candidateDir(ID)], root: TRASH,

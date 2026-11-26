@@ -401,6 +401,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			// retention UI — appended last (index-based tests keep positions).
 			"/prune",
 			"/prune-purge",
+			"/prune-restore",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pe").map((c) => c.name)).toEqual(["/permission"])
@@ -451,6 +452,7 @@ describe("core commands", () => {
 			"/cwd — show the current session working directory (basename)",
 			"/prune — review reclaimable sessions, then move them to trash (asks for confirmation)",
 			"/prune-purge — permanently delete trashed sessions (asks for confirmation)",
+			"/prune-restore — restore a trashed session by id (no argument lists recoverable entries)",
 		])
 	})
 

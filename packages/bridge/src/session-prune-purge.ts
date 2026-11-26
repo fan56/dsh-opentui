@@ -665,6 +665,22 @@ export async function recoverPurgeIntents(fs: PurgeFsLike, dshHome: string): Pro
 // RPC phases.
 // ---------------------------------------------------------------------------
 
+/**
+ * First-ever purge: `<dshHome>/trash/sessions` does not exist yet. `realpath`
+ * would throw ENOENT and surface as INTERNAL; fall back to the host-derived
+ * lexical root so prepare can return a valid EMPTY preparation. The token is
+ * still bound to the host-derived path — no client input reaches it.
+ */
+async function purgeRootForToken(fs: PurgeFsLike, dshHome: string): Promise<string> {
+  const root = trashSessionsRoot(dshHome)
+  try {
+    return await fs.realpath(root)
+  } catch (err) {
+    if (errorCode(err) === 'ENOENT') return root
+    throw err
+  }
+}
+
 export interface PurgePrepareResult {
   readonly opId: string
   readonly candidates: PurgeCandidate[]
@@ -681,7 +697,7 @@ export async function preparePurge(fs: PurgeFsLike, deps: PurgeDeps, dshHome: st
   return deps.withApplyLock(async () => {
     const liveIds = await readLiveIds(deps)
     const scan = await scanPurgeCandidates(fs, deps, dshHome, liveIds)
-    const root = await fs.realpath(trashSessionsRoot(dshHome))
+    const root = await purgeRootForToken(fs, dshHome)
     const issued = issuePurgeToken({
       opId: deps.opId,
       ids: scan.candidates.map((c) => c.id),
@@ -736,7 +752,7 @@ export async function purgeTrashSessions(
     if (payload.v !== 1) fail('BAD_TOKEN', 'unsupported purge token version')
     const liveIds = await readLiveIds(deps)
     const scan = await scanPurgeCandidates(fs, deps, dshHome, liveIds)
-    const root = await fs.realpath(trashSessionsRoot(dshHome))
+    const root = await purgeRootForToken(fs, dshHome)
     if (root !== payload.root || payload.retentionDays !== deps.retentionDays) {
       fail('STALE_TOKEN', 'host trash root or retention policy changed since prepare', {
         root, tokenRoot: payload.root, retentionDays: deps.retentionDays,

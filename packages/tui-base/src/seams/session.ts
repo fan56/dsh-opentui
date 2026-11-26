@@ -809,11 +809,13 @@ export interface SessionPrunePlanParams {
 	lockGraceMs?: number
 }
 
-/** retention P2 — the ONLY three values a prune apply may carry back. */
+/** retention P2 — plan receipts plus an OPTIONAL extra staged-id exclusion.
+ *  The host still recomputes every gate; staged ids can only add skips. */
 export interface SessionPruneApplyParams {
 	fingerprint: string
 	configFingerprint: string
 	generatedAt: number
+	stagedIds?: string[]
 }
 /** Apply outcome, hand-projected: no absolute paths cross the seam. */
 export interface SessionPruneApplyResult {
@@ -822,6 +824,30 @@ export interface SessionPruneApplyResult {
 	failed: readonly { id: string; code: string; message: string }[]
 	/** Count only — the backend's orphan markers are absolute paths. */
 	markedOrphans: number
+}
+
+/**
+ * retention B4/C7 — trash restore. The list is hand-projected to id/time/size
+ * ONLY: no absolute path, run name or manifest field crosses the seam. Restore
+ * takes a trash entry id (a session id), never a path.
+ */
+export interface SessionPruneRestoreEntry {
+	id: string
+	movedAt: number
+	size?: number
+}
+export interface SessionPruneRestoreRejection {
+	code: string
+	message: string
+}
+export interface SessionPruneRestoreList {
+	entries: readonly SessionPruneRestoreEntry[]
+	rejected: readonly SessionPruneRestoreRejection[]
+}
+export interface SessionPruneRestoreResult {
+	id: string
+	restored: true
+	opId: string
 }
 
 /**
@@ -884,6 +910,17 @@ export interface SessionSeam {
 	 * The host re-derives and re-gates the entire set before any delete.
 	 */
 	commitPurge?(params: SessionPurgeCommitParams): Promise<SessionPurgeCommitResult>
+	/**
+	 * retention B4/C7 — list recoverable trash entries (id/movedAt/size only;
+	 * no path). Optional — a seam without the frame degrades to a notice.
+	 */
+	listPruneRestore?(): Promise<SessionPruneRestoreList>
+	/**
+	 * retention B4/C7 — restore ONE trashed session by its trash entry id.
+	 * No path is accepted; the host re-validates every gate and refuses if a
+	 * live session with the same id already exists.
+	 */
+	restorePrune?(id: string): Promise<SessionPruneRestoreResult>
 	searchSessions(query: string): Promise<{ id: string; snippet: string }[]>
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined

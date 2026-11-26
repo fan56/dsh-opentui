@@ -72,6 +72,8 @@ import type {
 	SeamTurnCallbacks,
 	SessionPruneApplyParams,
 	SessionPruneApplyResult,
+	SessionPruneRestoreList,
+	SessionPruneRestoreResult,
 	SessionPurgeCommitParams,
 	SessionPurgeCommitResult,
 	SessionPurgePrepareResult,
@@ -674,6 +676,46 @@ export function projectBridgePurgeCommit(value: unknown): SessionPurgeCommitResu
 		})
 	}
 	return { opId: record.opId, purged, failed }
+}
+
+// ---------------------------------------------------------------------------
+// retention B4/C7 — SECOND whitelist for the restore replies. Every host path /
+// run / manifest / journal field is DROPPED: the TUI sees only id + time +
+// optional size, and a malformed reply is a protocol error (never a fake list).
+// ---------------------------------------------------------------------------
+
+export function projectBridgePruneRestoreList(value: unknown): SessionPruneRestoreList {
+	const record = asRecord(value)
+	if (!Array.isArray(record.entries) || !Array.isArray(record.rejected)) {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.restore list returned no entries/rejected arrays")
+	}
+	const entries: SessionPruneRestoreList["entries"][number][] = []
+	for (const raw of record.entries) {
+		const row = asRecord(raw)
+		if (typeof row.id !== "string" || row.id === "") continue
+		if (typeof row.movedAt !== "number" || !Number.isFinite(row.movedAt)) continue
+		entries.push({
+			id: row.id,
+			movedAt: row.movedAt,
+			...(typeof row.size === "number" && Number.isFinite(row.size) && row.size > 0 ? { size: row.size } : {}),
+		})
+	}
+	const rejected: SessionPruneRestoreList["rejected"][number][] = []
+	for (const raw of record.rejected) {
+		const row = asRecord(raw)
+		if (typeof row.code !== "string" || typeof row.message !== "string") continue
+		rejected.push({ code: row.code, message: row.message.slice(0, 300) })
+	}
+	return { entries, rejected }
+}
+
+export function projectBridgePruneRestore(value: unknown): SessionPruneRestoreResult {
+	const record = asRecord(value)
+	if (typeof record.id !== "string" || record.id === "" || record.restored !== true ||
+		typeof record.opId !== "string" || record.opId === "") {
+		throw new BridgeProtocolError("INTERNAL", "session.prune.restore returned no valid id/restored/opId")
+	}
+	return { id: record.id, restored: true, opId: record.opId }
 }
 
 /** Build the honest UNSUPPORTED rejection for an absent async capability. */
@@ -4881,16 +4923,22 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
-	 * retention P2 — trash-apply. The client echoes ONLY the three opaque
-	 * receipts from a fresh plan; entries / paths / roots / staged ids are NOT
-	 * sent (the host rejects any of them with BAD_PARAMS). Transport errors and
-	 * host refusals propagate UNCHANGED — no catch, no fake success.
+	 * retention P2 — trash-apply. The client echoes the opaque receipts from a
+	 * fresh plan plus the REAL staged id as an EXTRA exclusion (the host still
+	 * recomputes every gate; staged ids can only add skips). Entries / paths /
+	 * roots / policy are NOT sent — the host rejects them with BAD_PARAMS.
+	 * Echoing the staged id keeps plan/apply fingerprints equal after /resume.
+	 * Transport errors and host refusals propagate UNCHANGED — no fake success.
 	 */
 	async applyPrune(params: SessionPruneApplyParams): Promise<SessionPruneApplyResult> {
+		const staged = this.stagedSessionId()
+		const ids = new Set(params.stagedIds ?? [])
+		if (staged !== undefined && staged !== "") ids.add(staged)
 		const value = await this.#transport.request("session.prune.apply", {
 			fingerprint: params.fingerprint,
 			configFingerprint: params.configFingerprint,
 			generatedAt: params.generatedAt,
+			...(ids.size > 0 ? { stagedIds: [...ids] } : {}),
 		})
 		return projectBridgePruneApply(value)
 	}
@@ -4911,6 +4959,24 @@ export class BridgeSessionSeam implements SessionSeam {
 	async commitPurge(params: SessionPurgeCommitParams): Promise<SessionPurgeCommitResult> {
 		const value = await this.#transport.request("session.prune.purge", { phase: "commit", token: params.token })
 		return projectBridgePurgeCommit(value)
+	}
+
+	/**
+	 * retention B4/C7 phase 1 — read-only list of recoverable trash entries.
+	 * NO path / run / manifest field crosses the wire or the projection.
+	 */
+	async listPruneRestore(): Promise<SessionPruneRestoreList> {
+		const value = await this.#transport.request("session.prune.restore", { phase: "list" })
+		return projectBridgePruneRestoreList(value)
+	}
+
+	/**
+	 * retention B4/C7 phase 2 — restore ONE trashed session by entry id (never
+	 * a path). Transport errors and host refusals propagate UNCHANGED.
+	 */
+	async restorePrune(id: string): Promise<SessionPruneRestoreResult> {
+		const value = await this.#transport.request("session.prune.restore", { phase: "restore", id })
+		return projectBridgePruneRestore(value)
 	}
 
 	/**

@@ -11,9 +11,12 @@
  * reproduces the real host layout rather than a raw-id directory name.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { resolve } from "node:path"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import { apply } from "../src/index"
 import { setFlockTryLockExclusiveForTest } from "../src/prune-lock-probe"
+import { computeConfigFingerprint } from "../src/session-prune-apply"
 import { encodeSegment } from "../src/session-prune"
 
 const STDIO_SWITCH = "DSH_OPENTUI_BRIDGE_STDIO"
@@ -165,16 +168,22 @@ describe("session.prune.plan — read-only RPC", () => {
     expect(reply.error.code).toBe("BAD_PARAMS")
   })
 
-  test("retentionDays=0 => every row skipped, zero prune", async () => {
+  test("HOST config retentionDays=0 => every row skipped, zero prune (wire cannot set it)", async () => {
     const h = makeHarness({
       sessionController: controller([{ sessionId: FIXTURE_ID, updatedAt: OLD_UPDATED, agentAvailable: false, running: false, blank: false }]),
       sessionPersistence: statCapable,
-    })
-    h.send({ id: 4, method: "session.prune.plan", params: { retentionDays: 0 } })
+    }, { sessionsRoot: FIXTURE_ROOT, freshMtimeGraceMs: 0, retentionDays: 0 })
+    h.send({ id: 4, method: "session.prune.plan", params: {} })
     const reply = await h.waitFor(4)
     expect(reply.ok).toBe(true)
+    expect(reply.result.retentionDays).toBe(0)
     expect(reply.result.counts.prune).toBe(0)
     expect(reply.result.entries[0].reason).toBe("retention-disabled")
+
+    // The same value over the wire is rejected: policy is host-only.
+    const wire = makeHarness({ sessionController: controller([]), sessionPersistence: statCapable })
+    wire.send({ id: 40, method: "session.prune.plan", params: { retentionDays: 0 } })
+    expect((await wire.waitFor(40)).error.code).toBe("BAD_PARAMS")
   })
 
   test("valid plan reply has entries/counts and never a delete frame", async () => {
@@ -188,6 +197,27 @@ describe("session.prune.plan — read-only RPC", () => {
     expect(reply.result.retentionDays).toBe(90)
     expect(reply.result.entries[0]).toMatchObject({ sessionId: FIXTURE_ID, decision: "prune" })
     expect(reply.result.counts).toMatchObject({ prune: 1, skip: 0 })
+  })
+
+  test("host/plugin config overrides policy; summary + configFingerprint match apply's resolver", async () => {
+    const config = {
+      sessionsRoot: FIXTURE_ROOT, freshMtimeGraceMs: 0,
+      retentionDays: 30, blankGraceDays: 7, lockGraceMs: 1_000,
+    }
+    const h = makeHarness({
+      sessionController: controller([{ sessionId: FIXTURE_ID, updatedAt: OLD_UPDATED, agentAvailable: false, running: false, blank: false }]),
+      sessionPersistence: statCapable,
+    }, config)
+    h.send({ id: 41, method: "session.prune.plan", params: {} })
+    const reply = await h.waitFor(41)
+    expect(reply.ok).toBe(true)
+    // /prune's summary reads plan.retentionDays — it must be the effective
+    // host setting, not the wire default.
+    expect(reply.result.retentionDays).toBe(30)
+    expect(reply.result.configFingerprint).toBe(computeConfigFingerprint({
+      retentionDays: 30, blankGraceDays: 7, lockGraceMs: 1_000,
+      freshMtimeGraceMs: 0, sessionsRoot: FIXTURE_ROOT,
+    }))
   })
 
   test("B1 real-host probe: artifact file + encoded dir basename prunes, not always skip", async () => {
@@ -311,7 +341,7 @@ describe("session.prune.plan — read-only RPC", () => {
 describe("session.prune.apply — wire contract (no mutation exercised)", () => {
   const row = () => ({ sessionId: FIXTURE_ID, updatedAt: OLD_UPDATED, agentAvailable: false, running: false, blank: false })
 
-  test("client entries / policy / stagedIds are rejected with BAD_PARAMS", async () => {
+  test("client entries / policy are rejected with BAD_PARAMS (stagedIds is exclusion-only, allowed)", async () => {
     for (const [id, extra] of [
       [20, { entries: [] }],
       [21, { retentionDays: 1 }],
@@ -320,7 +350,6 @@ describe("session.prune.apply — wire contract (no mutation exercised)", () => 
       [24, { freshMtimeGraceMs: 0 }],
       [25, { sessionsRoot: "/tmp/evil" }],
       [26, { dshHome: "/tmp/evil" }],
-      [27, { stagedIds: [FIXTURE_ID] }],
     ] as Array<[number, Record<string, unknown>]>) {
       const h = makeHarness({ sessionController: controller([row()]), sessionPersistence: statCapable })
       h.send({ id, method: "session.prune.apply", params: {
@@ -368,5 +397,40 @@ describe("session.prune.apply — wire contract (no mutation exercised)", () => 
       generatedAt: 0,
     } })
     expect((await h.waitFor(34)).error.detail.reason).toBe("max-age")
+  })
+
+  test("stagedIds is an exclusion-only echo: /resume then /prune can apply", async () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "dsh-prune-staged-"))
+    const config = { sessionsRoot: FIXTURE_ROOT, freshMtimeGraceMs: 0, dshHome: tmpHome }
+    const stagedRow = { sessionId: "staged-id", updatedAt: OLD_UPDATED, agentAvailable: false, running: false, blank: false }
+    const h = makeHarness({ sessionController: controller([stagedRow]), sessionPersistence: statCapable }, config)
+    h.send({ id: 50, method: "session.prune.plan", params: { stagedIds: ["staged-id"] } })
+    const planned = await h.waitFor(50)
+    expect(planned.ok).toBe(true)
+    expect(planned.result.entries[0]).toMatchObject({ sessionId: "staged-id", decision: "skip", reason: "staged" })
+
+    // The seam echoes the staged id on apply too; the recomputed plan then
+    // carries the same skip, so the fingerprint matches and nothing is renamed.
+    h.send({ id: 51, method: "session.prune.apply", params: {
+      fingerprint: planned.result.fingerprint,
+      configFingerprint: planned.result.configFingerprint,
+      generatedAt: planned.result.generatedAt,
+      stagedIds: ["staged-id"],
+    } })
+    const applied = await h.waitFor(51)
+    expect(applied.ok).toBe(true)
+    expect(applied.result.applied).toEqual([])
+
+    // Without the echo the recomputed plan differs -> STALE_PLAN; staged ids
+    // can only ADD skips, never widen the delete set.
+    h.send({ id: 52, method: "session.prune.apply", params: {
+      fingerprint: planned.result.fingerprint,
+      configFingerprint: planned.result.configFingerprint,
+      generatedAt: planned.result.generatedAt,
+    } })
+    const noEcho = await h.waitFor(52)
+    expect(noEcho.ok).toBe(false)
+    expect(noEcho.error.detail.reason).toBe("plan-fingerprint")
+    rmSync(tmpHome, { recursive: true, force: true })
   })
 })

@@ -100,6 +100,14 @@ import {
   resolvePurgeSecret,
   type PurgeFsLike,
 } from './session-prune-purge'
+// retention B4/C7 — trash restore core. Rename-only: host-derived id scan +
+// manifest/header/root gates + refuse-if-exists; all fs primitives injected.
+import {
+  RestoreError,
+  listRestoreEntries,
+  restoreTrashEntry,
+  type RestoreFsLike,
+} from './session-prune-restore'
 // B1 S1/S2 — inproc host settings adapter. Controller-absent fallback only:
 // resolveSettingsSurface() prefers the real settingsController, then adapts
 // ctx.settings (dsh-settings SettingsForms) via a pure projection module.
@@ -4901,9 +4909,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  - A `session.list` row with `agentAvailable === true` skips outright;
    *    a missing/non-boolean field is a field anomaly, never "deletable" on
    *    an older host that never emitted the field.
-   *  - `retentionDays=0` -> every row skipped (planner rule); default 90.
-   *  - The sessions root is derived from HOST config / DSH_HOME; a client
-   *    `sessionsRoot` param is rejected (BAD_PARAMS), never honoured.
+   *  - ALL policy (retention / blank / lock / fresh windows and sessions root)
+   *    comes from `resolveHostPrunePolicy` — the SAME resolver apply uses. A
+   *    client policy param is rejected (BAD_PARAMS), never honoured, so the
+   *    /prune summary matches the effective host settings and both sides agree
+   *    on the config fingerprint. `retentionDays=0` -> every row skipped.
+   *  - `stagedIds` is the only client input accepted here, and it is only an
+   *    extra exclusion (a staged row is skipped), never a widening gate.
    *  - A truncated `session.list` walk aborts the whole plan (BLOCKED): a
    *    half roster must never be planned. Cursor/reply failures propagate as
    *    INTERNAL through the catch below.
@@ -4941,17 +4953,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const lockProbe = createPruneLockProbe(tryLockExclusive)
 
     const params = req.params ?? {}
-    // The containment root is host-owned. Accepting a wire-supplied root let
-    // a client aim the read-only planner at an arbitrary directory — reject it
-    // loudly instead of silently ignoring it.
-    if (params.sessionsRoot !== undefined) {
-      replyError(req.id, 'BAD_PARAMS', 'session.prune.plan sessionsRoot is host-derived; clients may not set it')
-      return
-    }
-    const retentionDays = params.retentionDays === undefined ? DEFAULT_RETENTION_DAYS : params.retentionDays
-    if (typeof retentionDays !== 'number' || !Number.isInteger(retentionDays) || retentionDays < 0 || retentionDays > 3650) {
-      replyError(req.id, 'BAD_PARAMS', 'session.prune.plan retentionDays must be an integer in [0,3650]')
-      return
+    // Every pruning POLICY input — root, retention, blank/lock/fresh windows —
+    // is host-owned. `resolveHostPrunePolicy` is shared by plan and apply so a
+    // wire value can never change a decision or make the two fingerprints
+    // disagree. Reject policy params loudly rather than silently ignoring them.
+    for (const key of ['sessionsRoot', 'retentionDays', 'blankGraceDays', 'lockGraceMs', 'freshMtimeGraceMs']) {
+      if (params[key] !== undefined) {
+        replyError(req.id, 'BAD_PARAMS', `session.prune.plan ${key} is host-derived; clients may not set it`)
+        return
+      }
     }
     const stagedIds = new Set<string>()
     if (params.stagedIds !== undefined) {
@@ -4961,35 +4971,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       }
       for (const id of params.stagedIds as string[]) stagedIds.add(id)
     }
-    const blankGraceDays = params.blankGraceDays === undefined ? 30 : params.blankGraceDays
-    if (typeof blankGraceDays !== 'number' || !Number.isFinite(blankGraceDays) || blankGraceDays < 0) {
-      replyError(req.id, 'BAD_PARAMS', 'session.prune.plan blankGraceDays must be a non-negative number')
-      return
-    }
-    const lockGraceMs = params.lockGraceMs === undefined ? 300_000 : params.lockGraceMs
-    if (typeof lockGraceMs !== 'number' || !Number.isFinite(lockGraceMs) || lockGraceMs < 0) {
-      replyError(req.id, 'BAD_PARAMS', 'session.prune.plan lockGraceMs must be a non-negative number')
-      return
-    }
     // Never build a session directory from an id: the root is only used to
     // CONTAIN the backend-resolved location, and is canonicalised by `realpath`
     // inside the planner. Derived from host config / DSH_HOME, NOT the wire.
     const sessionsRoot = resolvePruneSessionsRoot(ctx, config)
-    // The artifact recent-write heuristic defaults to the same window as the
-    // lock gate; host config can override (0 disables it for fixtures).
-    const configuredFreshGrace =
-      config !== null && typeof config === 'object'
-        ? (config as { freshMtimeGraceMs?: unknown }).freshMtimeGraceMs
-        : undefined
-    const freshMtimeGraceMs =
-      typeof configuredFreshGrace === 'number' && Number.isFinite(configuredFreshGrace) && configuredFreshGrace >= 0
-        ? configuredFreshGrace
-        : lockGraceMs
+    // The SAME host-only resolver apply uses. No wire value reaches any policy
+    // field, so /prune's summary reports the effective host settings and both
+    // sides derive an identical config fingerprint.
+    const policy = resolveHostPrunePolicy(ctx, config, sessionsRoot)
     // P2: publish opaque fingerprints so the client can echo them back to
     // `session.prune.apply`. Age/entrance details remain recomputed server-side.
-    const planConfigFingerprint = computeConfigFingerprint({
-      retentionDays, blankGraceDays, lockGraceMs, freshMtimeGraceMs, sessionsRoot,
-    })
+    const planConfigFingerprint = computeConfigFingerprint(policy)
 
     const lister: SessionListerLike = {
       list: (request) => controller.list(request),
@@ -5011,14 +5003,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         return
       }
       const plan = await planSessionPrune(listing.rows, persistence, nodePruneFs, {
-        retentionDays,
+        retentionDays: policy.retentionDays,
         now: Date.now(),
         sessionsRoot,
         currentSessionId: binding?.sessionId,
         stagedIds,
-        blankGraceDays,
-        lockGraceMs,
-        freshMtimeGraceMs,
+        blankGraceDays: policy.blankGraceDays,
+        lockGraceMs: policy.lockGraceMs,
+        freshMtimeGraceMs: policy.freshMtimeGraceMs,
       })
       replyOk(req.id, {
         ...plan,
@@ -5036,12 +5028,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   /** retention P2 — `session.prune.apply` — moves host-recomputed prune
    *  candidates into `<dshHome>/trash/sessions/<UTC>/<id>` via rename.
    *
-   *  The client sends ONLY three opaque values copied from `session.prune.plan`:
-   *  `fingerprint`, `generatedAt`, `configFingerprint`. It cannot send entries,
-   *  retention days, grace windows, staged ids, roots or a dshHome — those are
-   *  rejected with BAD_PARAMS. The whole plan is recomputed here from host
-   *  state and re-gated before each rename; a client-supplied entry never
-   *  becomes a mutation input. The host-side apply lock serialises processes.
+   *  The client sends three opaque values copied from `session.prune.plan`:
+   *  `fingerprint`, `generatedAt`, `configFingerprint`, plus an OPTIONAL
+   *  `stagedIds` echo used ONLY as an extra exclusion. It cannot send entries,
+   *  retention days, grace windows, roots or a dshHome — those are rejected
+   *  with BAD_PARAMS. The whole plan is recomputed here from host state and
+   *  re-gated before each rename; a client-supplied entry never becomes a
+   *  mutation input. The host-side apply lock serialises processes.
    */
   async function handleApplySessionPrune(req: ParsedRequest): Promise<void> {
     const params = req.params
@@ -5052,12 +5045,25 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const p = params as Record<string, unknown>
     for (const key of [
       'entries', 'retentionDays', 'blankGraceDays', 'lockGraceMs',
-      'freshMtimeGraceMs', 'sessionsRoot', 'dshHome', 'stagedIds',
+      'freshMtimeGraceMs', 'sessionsRoot', 'dshHome',
     ]) {
       if (p[key] !== undefined) {
         replyError(req.id, 'BAD_PARAMS', `session.prune.apply ${key} is host-owned; clients may not set it`)
         return
       }
+    }
+    // stagedIds is the ONE client input apply accepts, and ONLY as an EXTRA
+    // exclusion: it can add `staged` skips, never remove a host gate or widen
+    // the delete set. A resume staged before its next turn is skipped at plan
+    // time; echoing the same ids here makes the recomputed plan fingerprint
+    // match so `/resume` followed by `/prune` can actually apply.
+    const stagedIds = new Set<string>()
+    if (p.stagedIds !== undefined) {
+      if (!Array.isArray(p.stagedIds) || p.stagedIds.some((s) => typeof s !== 'string')) {
+        replyError(req.id, 'BAD_PARAMS', 'session.prune.apply stagedIds must be a string array')
+        return
+      }
+      for (const id of p.stagedIds as string[]) stagedIds.add(id)
     }
     const fingerprint = p.fingerprint
     const configFingerprint = p.configFingerprint
@@ -5158,12 +5164,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         })
         return
       }
-      // NO stagedIds here: client staged ids never participate in apply safety.
+      // stagedIds is an EXTRA exclusion only: the host recomputes every gate
+      // and the staged ids can only turn a candidate into a skip, never the
+      // reverse. This keeps plan/apply fingerprints equal after `/resume`.
       const freshPlan = await planSessionPrune(listing.rows, persistence, nodePruneFs, {
         retentionDays: policy.retentionDays,
         now,
         sessionsRoot,
         currentSessionId: binding?.sessionId,
+        stagedIds,
         blankGraceDays: policy.blankGraceDays,
         lockGraceMs: policy.lockGraceMs,
         freshMtimeGraceMs: policy.freshMtimeGraceMs,
@@ -5294,6 +5303,104 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       const message = err instanceof Error ? err.message : String(err)
       logger.error('[dsh-opentui-bridge] session.prune.purge failed: %s', message)
       if (err instanceof PurgeError) {
+        replyError(req.id, err.code, message, err.detail)
+        return
+      }
+      const mapped = mapHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /** retention B4/C7 — `session.prune.restore` — restore a trashed session.
+   *
+   *  `phase:'list'` re-derives the recoverable trash entries from host state
+   *  and reports only `{id, movedAt, size?}` — NEVER a path. `phase:'restore'`
+   *  accepts ONLY a trash entry id (a session id, not a path) and re-validates
+   *  the whole entry (trash realpath, manifest, artifact header.id, live
+   *  roster, destination containment, refuse-if-exists, flock) inside the
+   *  host apply lock before the single reverse rename. A client cannot send a
+   *  path/root/policy/manifest; all of those are host-owned and rejected with
+   *  BAD_PARAMS. Missing flock capability degrades to UNSUPPORTED.
+   */
+  async function handleRestoreSessionPrune(req: ParsedRequest): Promise<void> {
+    const params = req.params
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.restore params must be an object')
+      return
+    }
+    const p = params as Record<string, unknown>
+    for (const key of [
+      'entries', 'path', 'paths', 'sessionsRoot', 'dshHome', 'trashRoot',
+      'manifest', 'root', 'retentionDays',
+    ]) {
+      if (p[key] !== undefined) {
+        replyError(req.id, 'BAD_PARAMS', `session.prune.restore ${key} is host-owned; clients may not set it`)
+        return
+      }
+    }
+    const phase = p.phase ?? 'list'
+    if (phase !== 'list' && phase !== 'restore') {
+      replyError(req.id, 'BAD_PARAMS', "session.prune.restore phase must be 'list' or 'restore'")
+      return
+    }
+    if (phase === 'restore' && (typeof p.id !== 'string' || p.id === '')) {
+      replyError(req.id, 'BAD_PARAMS', 'session.prune.restore requires a non-empty id')
+      return
+    }
+
+    const persistence = resolvePrunePersistence(ctx)
+    if (persistence === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionPersistence.stat unavailable: session.prune.restore requires stat capability', {
+        capability: 'session.prune.restore', service: 'sessionPersistence',
+      })
+      return
+    }
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.prune.restore requires session.list', {
+        capability: 'session.prune.restore', service: 'sessionController',
+      })
+      return
+    }
+    const tryLockExclusive = resolveFlockTryLockExclusive()
+    if (tryLockExclusive === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'flock capability unavailable: session.prune.restore requires tryLockExclusive', {
+        capability: 'session.prune.restore', service: 'node-addon-system/flock', detail: 'tryLockExclusive',
+      })
+      return
+    }
+
+    try {
+      const dshHome = resolvePruneDshHome(ctx, config)
+      const sessionsRoot = resolvePruneSessionsRoot(ctx, config)
+      const lockProbe = createPruneLockProbe(tryLockExclusive)
+      const nodeRestoreFs: RestoreFsLike = {
+        lstat, realpath, stat, readdir,
+        readFile: (path) => readFile(path, 'utf8'),
+        readFileBuffer: (path) => readFile(path),
+        rename,
+      }
+      const now = Date.now()
+      const deps = {
+        persistence,
+        lister: { list: (request: Parameters<typeof controller.list>[0]) => controller.list(request) },
+        lockProbe,
+        now,
+        opId: `${utcStamp(now)}-${randomUUID().slice(0, 8)}`,
+        sessionsRoot,
+        withApplyLock: <T>(fn: () => Promise<T>) => withHostApplyLock(dshHome, tryLockExclusive, fn),
+      }
+      if (phase === 'list') {
+        const result = await listRestoreEntries(nodeRestoreFs, dshHome)
+        replyOk(req.id, { entries: result.entries, rejected: result.rejected })
+        return
+      }
+      const result = await restoreTrashEntry(nodeRestoreFs, deps, dshHome, p.id)
+      replyOk(req.id, { ...result })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('[dsh-opentui-bridge] session.prune.restore failed: %s', message)
+      if (err instanceof RestoreError) {
         replyError(req.id, err.code, message, err.detail)
         return
       }
@@ -5588,6 +5695,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // id): registered in ledger wired_protocol (12 -> 13).
     if (req.method === 'session.prune.purge') {
       await handlePurgeSessionPrune(req)
+      return
+    }
+    // retention B4/C7 — trash restore by entry id. A hand-copied protocol frame
+    // (no CapIR id): registered in ledger wired_protocol (13 -> 14).
+    if (req.method === 'session.prune.restore') {
+      await handleRestoreSessionPrune(req)
       return
     }
     // 025-w1b B/C — session.search / session.fork ride the generated capcontract

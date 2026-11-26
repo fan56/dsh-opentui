@@ -45,6 +45,8 @@ class MemoryFs implements ApplyFsLike {
   lstatCalls: string[] = []
   lstatHook?: (path: string, count: number) => void
   renameHook?: (from: string, to: string) => void
+  writeFileHook?: (path: string, data: string) => void
+  appendFileHook?: (path: string, data: string) => void
   devFor?: (path: string) => number
   private ino = 1
 
@@ -134,10 +136,12 @@ class MemoryFs implements ApplyFsLike {
     this.movePrefix(from, to)
   }
   async writeFile(path: string, data: string, options: { flag: "wx" }): Promise<void> {
+    this.writeFileHook?.(path, data)
     if (options.flag === "wx" && (this.files.has(path) || this.dirs.has(path))) throw err("EEXIST")
     this.files.set(path, data)
   }
   async appendFile(path: string, data: string): Promise<void> {
+    this.appendFileHook?.(path, data)
     this.files.set(path, (this.files.get(path) ?? "") + data)
   }
   async readdir(path: string): Promise<string[]> {
@@ -224,6 +228,34 @@ describe("session.prune.apply — trash core", () => {
     expect([...fs.files.keys()].some((p) => p.endsWith(".pre.json"))).toBe(true)
     expect([...fs.files.keys()].some((p) => p.endsWith(".post.json"))).toBe(true)
     expect([...fs.files.keys()].some((p) => p.endsWith("manifest.jsonl"))).toBe(true)
+  })
+
+  test("post-rename journal write failure (.applied/.post/manifest) reverses rename and reports the original error", async () => {
+    for (const surface of ["applied", "post", "manifest"] as const) {
+      const fs = new MemoryFs()
+      const original = Object.assign(new Error(`write failed on ${surface}`), { code: "ENOSPC" })
+      if (surface === "applied") {
+        fs.writeFileHook = (path) => { if (path.endsWith("/.applied.json")) throw original }
+      } else if (surface === "post") {
+        fs.writeFileHook = (path) => { if (path.endsWith(".post.json")) throw original }
+      } else {
+        fs.appendFileHook = (path) => { if (path.endsWith("manifest.jsonl")) throw original }
+      }
+      const result = await applyWith(fs, { lock: async () => ({ status: "unlocked" }) })
+      expect(result.applied).toEqual([])
+      expect(result.failed).toHaveLength(1)
+      // JOURNAL_FAILED is distinct from a rename/LOCKED failure, and the
+      // ORIGINAL write error (not the rollback) is what reaches `failed`.
+      expect(result.failed[0].code).toBe("JOURNAL_FAILED")
+      expect(result.failed[0].message).toBe(original.message)
+      // The session is back at its live source; the trash entry is gone.
+      expect(fs.dirs.has(SESSION_DIR)).toBe(true)
+      const trashPaths = [...fs.dirs.keys()].filter((p) => p.startsWith(trashSessionsRoot(DSH_HOME)) && p.includes(ID))
+      expect(trashPaths).toEqual([])
+      expect(fs.renameCalls).toHaveLength(2)
+      expect(fs.renameCalls[0][1]).toBe(fs.renameCalls[1][0])
+      expect([...fs.files.keys()].some((p) => p.endsWith(".rollback.json"))).toBe(true)
+    }
   })
 
   test("TOCTOU: source flips to symlink before rename => no rename", async () => {

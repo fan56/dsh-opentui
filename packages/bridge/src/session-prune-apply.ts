@@ -43,6 +43,9 @@ export type ApplyErrorCode =
   | 'LOCKED'
   | 'ROLLED_BACK'
   | 'ROLLBACK_FAILED'
+  /** A write AFTER a successful rename failed; the rename was reversed and
+   *  the ORIGINAL write error is carried in the message. */
+  | 'JOURNAL_FAILED'
   | 'NO_RECOVERY'
 
 export class ApplyError extends Error {
@@ -284,6 +287,50 @@ export async function restoreFromTrash(
   }
 }
 
+/**
+ * Reverse a rename that already succeeded when a POST-rename journal write
+ * (`.applied.json`, `.post.json`, `manifest.jsonl`) fails. The session is moved
+ * back to its source; a rollback journal records why. A failed reverse rename
+ * is reported as ROLLBACK_FAILED with the original write error preserved in
+ * both the message and `detail` — never swallowed.
+ */
+async function rollbackAfterRename(
+  fs: ApplyFsLike,
+  deps: ApplyDeps,
+  options: {
+    readonly sourceDir: string
+    readonly trashPath: string
+    readonly id: string
+    readonly journalBase: string
+    readonly planFingerprint: string
+    readonly cause: unknown
+    readonly reason: string
+  },
+): Promise<void> {
+  const causeMessage = options.cause instanceof Error ? options.cause.message : String(options.cause)
+  try {
+    await restoreFromTrash(fs, {
+      sourceDir: options.sourceDir, trashPath: options.trashPath,
+      id: options.id, persistence: deps.persistence,
+      lockProbe: deps.lockProbe, skipLock: true,
+    })
+  } catch (rollbackErr) {
+    const rollbackMessage = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+    fail('ROLLBACK_FAILED', `reverse rename after journal failure failed (original: ${causeMessage})`, {
+      id: options.id, reason: options.reason, cause: causeMessage, rollback: rollbackMessage,
+    })
+  }
+  try {
+    await fs.writeFile(`${options.journalBase}.rollback.json`, JSON.stringify({
+      opId: deps.opId, phase: 'rolled-back', id: options.id,
+      sourceDir: options.sourceDir, trashPath: options.trashPath,
+      planFingerprint: options.planFingerprint, reason: options.reason,
+    }), { flag: 'wx', mode: 0o600 })
+  } catch {
+    // The reverse rename already happened; a journal write must not undo it.
+  }
+}
+
 /** Mark crash orphans only. No unlink/rm exists anywhere in this module. */
 export async function recoverTrashOrphans(fs: ApplyFsLike, dshHome: string): Promise<string[]> {
   const runsRoot = trashSessionsRoot(dshHome)
@@ -371,7 +418,6 @@ export async function applyTrashPlan(
     const { rootReal, trashStat } = roots
 
     const markedOrphans = await recoverTrashOrphans(fs, config.dshHome)
-    const manifestLines: string[] = []
 
     for (const entry of plan.entries) {
       if (entry.decision !== 'prune') continue
@@ -477,13 +523,30 @@ export async function applyTrashPlan(
         }
 
         // ---- journal + per-entry manifest AFTER a successful rename ----
+        // Every write here happens after the single mutation. If ANY of them
+        // fails the rename MUST be reversed: a trashed session without a valid
+        // applied marker is an orphan, not a successfully applied prune. The
+        // ORIGINAL write error is reported as JOURNAL_FAILED; a failed reverse
+        // rename is reported separately as ROLLBACK_FAILED (with the original
+        // error preserved). Siblings still proceed.
         const appliedRecord = {
           opId: deps.opId, phase: 'applied', id, from: sourceDir, to: trashPath,
           planFingerprint: config.planFingerprint, appliedAt: deps.now,
         }
-        await fs.writeFile(join(trashPath, '.applied.json'), JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
-        await fs.writeFile(`${journalBase}.post.json`, JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
-        manifestLines.push(JSON.stringify(appliedRecord) + '\n')
+        try {
+          await fs.writeFile(join(trashPath, '.applied.json'), JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
+          await fs.writeFile(`${journalBase}.post.json`, JSON.stringify(appliedRecord), { flag: 'wx', mode: 0o600 })
+          await fs.appendFile(join(runDir, 'manifest.jsonl'), JSON.stringify(appliedRecord) + '\n')
+        } catch (journalErr) {
+          await rollbackAfterRename(fs, deps, {
+            sourceDir, trashPath, id, journalBase,
+            planFingerprint: config.planFingerprint,
+            cause: journalErr, reason: 'post-rename-journal-write-failed',
+          })
+          fail('JOURNAL_FAILED', journalErr instanceof Error ? journalErr.message : String(journalErr), {
+            id, cause: journalErr instanceof Error ? journalErr.message : String(journalErr),
+          })
+        }
         applied.push({ id, from: sourceDir, to: trashPath })
       } catch (err) {
         const code = err instanceof ApplyError ? err.code : 'INTERNAL'
@@ -492,9 +555,6 @@ export async function applyTrashPlan(
       }
     }
 
-    if (manifestLines.length > 0) {
-      await fs.appendFile(join(runDir, 'manifest.jsonl'), manifestLines.join(''))
-    }
     return { opId: deps.opId, runDir, applied, failed, markedOrphans }
   })
 }

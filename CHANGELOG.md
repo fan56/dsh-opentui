@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Secure session retention via `/prune` and `/prune-purge`.** `/prune` uses a
-  90-day retention window by default, offers a preview before acting, moves the
-  pruned sessions to a trash (recycle bin), and supports `restore`.
-  `/prune-purge` permanently removes trashed sessions after a residency period
-  and requires a second confirmation.
-- **Live transcript for Ctrl+G sub-sessions.** Shows the sub-session's `runId`,
-  buffers up to 500 lines / 64 KB, and keeps tool output across multiple lines.
+- **Secure session retention via `/prune`, `/prune-restore` and `/prune-purge`.**
+  `/prune` uses a 90-day retention window by default, offers a preview before
+  acting, and moves the pruned sessions to a trash (recycle bin). Trashed
+  sessions can be brought back with `/prune-restore`. `/prune-purge` permanently
+  removes trashed sessions after a residency period and requires a second
+  confirmation.
+- **Live transcript for Ctrl+G sub-sessions.** Buffers up to 500 lines / 64 KB
+  and keeps tool output across multiple lines.
 - **Transcript scrollbar and "N new messages" indicator.** A scrollbar on the
   right edge of the transcript, an "N new messages" hint when the view is away
   from the bottom, `submit` returns the view to the bottom, and
@@ -24,8 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`maxRounds` defaults to 50 when unset.** An explicit `0` disables the
-  limit. At runtime, once the limit is reached the running sub-agent is
-  wrapped up and then hard-stopped.
+  limit. Reaching the limit only wraps the running sub-agent up: the grace
+  defaults to `0`, so no forced stop follows. A hard-stop happens only when an
+  explicit positive grace is configured.
 - **`think` display defaults to 5.**
 - **`retentionDays` defaults to 90.**
 - **Real-client environment precheck hardened.**
@@ -39,9 +41,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Risks
 
-- **`maxRounds` 50 forces a wrap-up on long-running sub-agents.**
+- **`maxRounds` 50 wraps up long-running sub-agents by default.** With the
+  default grace `0` nothing is hard-stopped; only an explicit positive grace
+  forces a stop.
 - **`prune` moves sessions to a trash.** Cross-process read-only viewers may
-  briefly hit `ENOENT`; the sessions can be brought back with `restore`.
+  briefly hit `ENOENT`; the sessions can be brought back with `/prune-restore`.
+- **Idle sessions in another process are best-effort, not proven.** Liveness
+  relies on the host's `agentAvailable` field plus a read-only flock probe on
+  `session.lock`; an open-but-idle session in another process that reports no
+  agent and holds no lock cannot be distinguished from a stale one. A flock
+  implementation that does not actually arbitrate across processes weakens
+  this gate.
+- **A crash during trash-apply can leave a recovery orphan.** Such an entry is
+  only marked `.orphan.json`; it is never auto-recovered and needs manual
+  handling.
+- **Purge decodes the zstd artifact to read the header.** The header id is read
+  from the first line, but the whole frame must be decompressed, so a very
+  large trashed session log makes that read expensive.
 
 ## [0.28.2] - 2026-11-25
 

@@ -143,6 +143,21 @@ describe("retention P2/P3 — write-side seam faces", () => {
     expect(JSON.stringify(result)).not.toContain("/home/")
   })
 
+  test("applyPrune echoes the REAL staged id as an exclusion-only wire param", async () => {
+    const calls: Array<{ method: string; params: any }> = []
+    const seam = makeSeam({ kind: "value", value: APPLY_REPLY }, calls)
+    seam.resumeSession("s-staged-before-turn")
+    await seam.applyPrune({
+      fingerprint: "fp", configFingerprint: "cfp", generatedAt: 7,
+      stagedIds: ["caller-extra"],
+    })
+    expect(calls[0].method).toBe("session.prune.apply")
+    expect(calls[0].params.stagedIds).toEqual(["caller-extra", "s-staged-before-turn"])
+    expect(Object.keys(calls[0].params).sort()).toEqual([
+      "configFingerprint", "fingerprint", "generatedAt", "stagedIds",
+    ])
+  })
+
   test("preparePurge sends phase=prepare and drops paths/manifests", async () => {
     const calls: Array<{ method: string; params: unknown }> = []
     const seam = makeSeam({ kind: "value", value: PREPARE_REPLY }, calls)
