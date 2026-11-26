@@ -230,7 +230,7 @@
       {
         "method": "session.prune.restore",
         "kind": "business",
-        "source_line": 5702,
+        "source_line": 5743,
         "capir_id": null,
         "note": "retention B4/C7 trash restore by entry id: read-only list of {id,movedAt,size?} (no path) + host re-validation of trash realpath/manifest/artifact header.id/live roster/live destination containment + refuse-if-exists + read-only flock probe + reverse rename; client path/policy rejected; no CapIR id"
       },
