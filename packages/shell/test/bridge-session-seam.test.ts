@@ -512,10 +512,8 @@ describe("sync degrade values + logs", () => {
 		expect(h.warnFor("onSessionEvent")[0].args.map(String).join(" ")).toContain("permission.asked")
 	})
 
-	test("steer degrades to a no-op + log; registerAskProvider now really stores the provider (ADR-0011 T4)", () => {
+	test("registerAskProvider really stores the provider (ADR-0011 T4; steer is no longer a no-op)", () => {
 		const h = makeHarness()
-		expect(() => h.seam.steer("x")).not.toThrow()
-		expect(h.warnFor("steer")).toHaveLength(1)
 		// T4: registerAskProvider is no longer a degrade stub — the real
 		// provider round-trip is pinned in bridge-session-ask.test.ts.
 		expect(() => h.seam.registerAskProvider(async () => [])).not.toThrow()
@@ -1081,6 +1079,35 @@ describe("covered lifecycle + turn stream", () => {
 		h.emit({ type: "turn.end", payload: { turnId: "t1" } })
 		expect(events).toHaveLength(2) // disposer stops the feed
 		expect(projectBridgeEvent({ type: "turn.token", payload: { text: "x" } }, "s")).toEqual([])
+	})
+
+	test("turn.error: onSessionEvent listener runs before the seam.turn() awaiter resumes", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-order" } })
+		const trace: string[] = []
+		const done = h.seam.turn("q", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError() {},
+		})
+		await Bun.sleep(0) // send ACK resolved: waiter + callbacks + turnId registered
+		h.seam.onSessionEvent((event) => {
+			if (event.type === "session.error") {
+				trace.push(`listener:${String((event.details as { turnId?: unknown }).turnId)}`)
+			}
+		})
+
+		h.emit({ type: "turn.error", payload: { turnId: "t-order", code: "ABORTED", message: "aborted" } })
+		await done
+		trace.push("await-resumed")
+
+		// The page records the turn-scoped error (and its turnId) in the event
+		// listener BEFORE any continuation after `await seam.turn()` can read it.
+		// A waiter released first — or an error event deferred behind the await —
+		// would invert this trace and lose the failure classification.
+		expect(trace).toEqual(["listener:t-order", "await-resumed"])
+		expect(h.seam.status().turn).toBe("idle")
 	})
 
 	test("dispose unsubscribes the event feed, closes the attached session and is idempotent", async () => {
@@ -4491,5 +4518,203 @@ describe("RESTORE: session-level live model route", () => {
 		expect(froms).toEqual([6, 4])
 		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p-new", modelID: "m-new" })
 		expect(froms.at(-1)).toBe(1)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 029 A — session.steer frame (replaces the old no-op degrade)
+// ---------------------------------------------------------------------------
+describe("029 A: BridgeSessionSeam.steer", () => {
+	async function capHarness() {
+		const h = makeHarness()
+		h.replies.set("bridge.ping", {
+			kind: "value",
+			value: { protocolVersion: 1, capabilities: ["session.steer"] },
+		})
+		await h.seam.connect()
+		return h
+	}
+
+	test("no capability: local UNSUPPORTED, no frame sent", async () => {
+		const h = makeHarness()
+		expect(await h.seam.steer("hello")).toEqual({ accepted: false, reason: "UNSUPPORTED" })
+		expect(h.lastRequest("session.steer")).toBeUndefined()
+	})
+
+	test("accepted reply returns the current turnId and sends exactly one frame", async () => {
+		const h = await capHarness()
+		h.replies.set("session.steer", { kind: "value", value: { accepted: true, turnId: "t-1", messageId: "m-1" } })
+		expect(await h.seam.steer("go on")).toEqual({ accepted: true, turnId: "t-1" })
+		expect(h.lastRequest("session.steer")).toEqual({ method: "session.steer", params: { text: "go on" } })
+		expect(h.requests.filter((r) => r.method === "session.steer")).toHaveLength(1)
+	})
+
+	test("typed bridge refusals become {accepted:false, reason} with no retry", async () => {
+		for (const code of ["STEER_IDLE", "STEER_ENDED", "STEER_ABORTING"]) {
+			const h = await capHarness()
+			h.replies.set("session.steer", {
+				kind: "error",
+				error: new BridgeProtocolError(code, "refused", { turnId: "t-9" }),
+			})
+			expect(await h.seam.steer("x")).toEqual({ accepted: false, reason: code, turnId: "t-9" })
+			expect(h.requests.filter((r) => r.method === "session.steer")).toHaveLength(1)
+		}
+	})
+
+	test("unknown errors propagate verbatim: no retry, no fake acceptance", async () => {
+		const h = await capHarness()
+		const boom = new BridgeProtocolError("INTERNAL", "host exploded")
+		h.replies.set("session.steer", { kind: "error", error: boom })
+		expect(await h.seam.steer("x").catch((e) => e)).toBe(boom)
+		expect(h.requests.filter((r) => r.method === "session.steer")).toHaveLength(1)
+	})
+
+	test("malformed success frame is a protocol error, not a receipt", async () => {
+		const h = await capHarness()
+		h.replies.set("session.steer", { kind: "value", value: { accepted: true } })
+		const err = await h.seam.steer("x").catch((e) => e)
+		expect(err).toBeInstanceOf(BridgeProtocolError)
+		expect((err as BridgeProtocolError).code).toBe("INTERNAL")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// P1-2 — a turn suspended by `bridge.dead` must never settle SILENTLY.
+//
+// Uses the file's existing makeHarness: its `emit` drives real DEAD frames and
+// `onSessionEvent` observes the seam events. Only the recovery/newSession exit
+// is scripted per test; no second fake seam is introduced.
+// ---------------------------------------------------------------------------
+describe("P1-2: a suspended turn settles with a local interrupted terminal", () => {
+	const turnCb = () => ({
+		onThinkingDelta() {},
+		onContentDelta() {},
+		onApprove: async () => "allowed-once" as const,
+		onError() {},
+	})
+
+	/** Bind a session, start a turn, then crash the bridge mid-turn. The
+	 *  `pending` promise stays unresolved until a recovery/newSession exit
+	 *  calls #settleSuspendedTurn. */
+	function crashMidTurn(h: ReturnType<typeof makeHarness>, sessionId: string, turnId: string) {
+		h.replies.set("session.open", { kind: "value", value: { sessionId } })
+		h.replies.set("session.send", { kind: "value", value: { turnId } })
+		h.seam.resumeSession(sessionId)
+		const pending = h.seam.turn("question", turnCb())
+		return {
+			pending,
+			async ready() {
+				await Bun.sleep(0) // send ACK resolved: turn id + waiter registered
+				h.emit({ type: "turn.token", payload: { turnId, kind: "text", text: "partial" } })
+				h.emit({ type: "bridge.dead", payload: { stage: "runtime", code: 1, signal: null, message: "crash" } })
+			},
+		}
+	}
+
+	/** Record only local interrupted terminals, and mark when the `await turn`
+	 *  continuation actually runs — the event must be delivered BEFORE it. */
+	function traceInterrupted(h: ReturnType<typeof makeHarness>, pending: Promise<void>) {
+		const trace: string[] = []
+		const events: { type: string; details: unknown }[] = []
+		h.seam.onSessionEvent((event) => {
+			if (event.type !== "bridge.turn.interrupted") return
+			trace.push(`interrupted:${String((event.details as { turnId?: unknown }).turnId)}`)
+			events.push(event)
+		})
+		const resumed = pending.then(() => trace.push("await-resumed"))
+		return { trace, events, resumed }
+	}
+
+	test("newSession (silent settle): interrupted reaches listeners before await turn resumes", async () => {
+		const h = makeHarness()
+		const { pending, ready } = crashMidTurn(h, "s-new-silent", "t-new-silent")
+		await ready()
+		const { trace, events, resumed } = traceInterrupted(h, pending)
+
+		h.seam.newSession()
+		await resumed
+
+		expect(trace).toEqual(["interrupted:t-new-silent", "await-resumed"])
+		expect(events).toHaveLength(1)
+		expect(events[0]!.details).toMatchObject({
+			turnId: "t-new-silent",
+			code: "SESSION_CLOSED",
+			reason: "session changed",
+			seq: null,
+			source: "local",
+		})
+	})
+
+	test("failed recovery (silent settle): interrupted reaches listeners before await turn resumes", async () => {
+		const h = makeHarness()
+		const { pending, ready } = crashMidTurn(h, "s-fail-silent", "t-fail-silent")
+		await ready()
+		const { trace, events, resumed } = traceInterrupted(h, pending)
+
+		// The re-attach fails → recoverSession's fail() exit settles the turn.
+		h.replies.set("session.open", { kind: "error", error: new BridgeProtocolError("SESSION_OPEN_FAILED", "open failed") })
+		const result = await h.seam.recoverSession()
+		await resumed
+
+		expect(result.state).toBe("failed")
+		expect(trace).toEqual(["interrupted:t-fail-silent", "await-resumed"])
+		expect(events).toHaveLength(1)
+		expect(events[0]!.details).toMatchObject({
+			turnId: "t-fail-silent",
+			code: "INTERRUPTED",
+			seq: null,
+			source: "local",
+		})
+	})
+
+	test("journal terminal path emits no local interrupted duplicate", async () => {
+		const h = makeHarness()
+		const { pending, ready } = crashMidTurn(h, "s-journal-term", "t-journal-term")
+		await ready()
+		const { trace, events, resumed } = traceInterrupted(h, pending)
+
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					{ seq: 1, type: "turn/start", payload: { turn: 1 } },
+					{ seq: 2, type: "turn/end", payload: { turn: 1, reason: { kind: "completed" } } },
+				],
+				cursor: 3,
+			},
+		})
+		const result = await h.seam.recoverSession()
+		await resumed
+
+		expect(result.state).toBe("attached")
+		expect(events).toHaveLength(0) // journal bridge.turn.terminal already announced it
+		expect(trace).toEqual(["await-resumed"])
+	})
+
+	test("journal interrupted path emits exactly one local terminal, before await turn resumes", async () => {
+		const h = makeHarness()
+		const { pending, ready } = crashMidTurn(h, "s-journal-silent", "t-journal-silent")
+		await ready()
+		const { trace, events, resumed } = traceInterrupted(h, pending)
+
+		// No journal terminal → the recovery arm paints the local marker ONCE.
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: { rows: [{ seq: 1, type: "turn/start", payload: { turn: 1 } }], cursor: 2 },
+		})
+		const result = await h.seam.recoverSession()
+		await resumed
+
+		expect(result.state).toBe("attached")
+		expect(trace).toEqual(["interrupted:t-journal-silent", "await-resumed"])
+		expect(events).toHaveLength(1)
+		expect(events[0]!.details).toMatchObject({
+			sessionID: "s-journal-silent",
+			turnId: "t-journal-silent",
+			partial: "partial",
+			code: "INTERRUPTED",
+			seq: null,
+			source: "local",
+		})
 	})
 })

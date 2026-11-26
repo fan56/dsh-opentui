@@ -92,10 +92,10 @@ describe("V2: SessionComposer textarea onContentChange → contentChange", () =>
 })
 
 describe("V3: every programmatic assignment carries its frozen source", () => {
-  test("all 7 setText sites have an adjacent traceSet label", () => {
+  test("all 8 setText sites have an adjacent traceSet label", () => {
     const rows = src(COMPOSER).split("\n")
     const setRows = rows.flatMap((row, i) => (/\.setText\(/.test(row) ? [i] : []))
-    expect(setRows).toHaveLength(7)
+    expect(setRows).toHaveLength(8)
     for (const i of setRows) {
       const next = rows.slice(i + 1, i + 3).find((row) => row.trim().length > 0) ?? ""
       expect(next.trim()).toMatch(/^traceSet\(/)
@@ -111,6 +111,8 @@ describe("V3: every programmatic assignment carries its frozen source", () => {
     expect(composer).toContain('traceSet("submit-clear", "")')
     // busy chooser: steer/queue gets its own source, sent falls back
     expect(composer).toContain('traceSet(result === "sent" ? "submit-clear" : "steer-queue", "")')
+    // refused-steer refill (1)
+    expect(composer).toContain('traceSet("failure-refill", text)')
     // slash apply rewrite + command clear + tab completion (3)
     expect(composer).toContain('traceSet("other", text)')
     expect(composer).toContain('traceSet("other", "")')

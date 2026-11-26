@@ -1644,7 +1644,7 @@ const CAP_SMOKE_SWITCH = 'DSH_OPENTUI_CAP_SMOKE'
 /** Additive capabilities advertised in the bridge.hello / bridge.ping reply.
  *  An older client that never sees this field has NO capability and keeps its
  *  legacy roster-walk behaviour; a new client gates the stop frame on it. */
-const BRIDGE_CAPABILITIES = ['subagents.interrupt', 'subagents.stopChildren'] as const
+const BRIDGE_CAPABILITIES = ['subagents.interrupt', 'subagents.stopChildren', 'session.steer'] as const
 /** Upper bound on remembered finalized turn ids for abort idempotency (D3).
  *  The set is a FIFO: once more than this many turns have finalized, the oldest
  *  id is evicted. An evicted id is no longer remembered, so a late repeated
@@ -2423,16 +2423,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         if (typeof svc?.local?.list === 'function') fallbackLen = svc.local.list().length
       } catch { /* keep -1 */ }
       emit('ctx.get typert fallback', { listLength: fallbackLen })
-      // S1 /model — probe the three model W methods through the SAME shipped
-      // createCapInvoke export. E1 modelCatalog → its default/first route;
-      // E2 selectModel onto a freshly created (real host) session; E3
-      // initializeDefaultModel; E4 an UNWIRED id must reject explicitly.
+      // S1 /model — three model W methods through the SAME shipped createCapInvoke.
+      // E1 modelCatalog → default/first route; E2 selectModel on a real session;
+      // E3 initializeDefaultModel; E4 UNWIRED negative fixture: session/control
+      // is unwired with no param pre-check, so empty params reach real NOT_WIRED.
       const CAP_ID = {
         list: W_ID,
         catalog: '@deepseek-ai/dsh-api-session-controller#session/modelCatalog' as never,
         select: '@deepseek-ai/dsh-api-session-controller#session/selectModel' as never,
         initDefault: '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel' as never,
-        unwired: '@deepseek-ai/dsh-api-session-controller#session/create' as never,
+        unwired: '@deepseek-ai/dsh-api-session-controller#session/control' as never,
       }
       const invoke = createCapInvoke(ctx)
       const probe = async (id: never, params: unknown): Promise<{ ok: boolean; value?: unknown; error?: string }> => {
@@ -4732,6 +4732,71 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  /** `session.steer` — inject one user message into the RUNNING turn (029 A).
+   *
+   * Unlike `session.send`, a steer does NOT mint a turn id, does NOT occupy
+   * `inFlightTurnId`, and emits NO `turn.start`: it joins the turn already in
+   * flight. Acceptance requires a live, non-aborting turn whose host agent is
+   * actually `running`; every rejection is typed and reaches NO host method.
+   * There is deliberately NO `agent.followup` downgrade — a rejected steer is
+   * reported to the caller, which keeps/queues the text itself.
+   */
+  async function handleSteer(req: ParsedRequest): Promise<void> {
+    if (binding === undefined) {
+      replyError(req.id, 'SESSION_NOT_OPEN', 'no open session; call session.open first')
+      return
+    }
+    const text = req.params.text
+    if (typeof text !== 'string' || text.trim() === '') {
+      replyError(req.id, 'BAD_PARAMS', 'session.steer requires a non-empty text string')
+      return
+    }
+    const state = activeTurn
+    const turnId = inFlightTurnId
+    // A terminal frame clears BOTH `activeTurn` and `inFlightTurnId`, so "no
+    // live turn" alone cannot tell "never started" from "already finished".
+    // The terminal-id FIFO is the durable discriminator: it is empty until a
+    // turn ends and is cleared by close/replace together with the binding.
+    const lastTerminalTurnId = [...terminalTurnIds].at(-1)
+    // Gate order matters: idle (no live turn) < ended (terminal frame arrived)
+    // < aborting (cancel issued but terminal not yet delivered). None of these
+    // branches calls into the host agent.
+    if (turnId === undefined || state === undefined || state.ended || turnId !== state.turnId) {
+      const ended = (state !== undefined && state.ended) || terminalTurnIds.size > 0
+      replyError(
+        req.id,
+        ended ? 'STEER_ENDED' : 'STEER_IDLE',
+        ended ? 'the turn has already ended; no running turn to steer' : 'no turn in flight; steer requires a running turn',
+        { turnId: turnId ?? lastTerminalTurnId ?? null },
+      )
+      return
+    }
+    if (state.abortRequested) {
+      replyError(req.id, 'STEER_ABORTING', 'the in-flight turn is aborting; steer refused', { turnId })
+      return
+    }
+    const agent = binding.handle.agent
+    if (agent.status !== 'running') {
+      replyError(req.id, 'STEER_IDLE', 'agent is not running; steer refused', { turnId })
+      return
+    }
+    if (typeof agent.steer !== 'function') {
+      replyError(req.id, 'UNSUPPORTED', 'open agent has no steer() seam', { capability: 'session.steer' })
+      return
+    }
+    const message = createBridgeUserMessage(text)
+    try {
+      // Direct, synchronous host hand-off. No turn bookkeeping, no followup
+      // fallback: a steer failure must be visible, never silently requeued.
+      agent.steer(message)
+      logger.info('[dsh-opentui-bridge] session.steer ok turnId=%s messageId=%s', turnId, message.id)
+      replyOk(req.id, { accepted: true, turnId, messageId: message.id })
+    } catch (err) {
+      logger.error('[dsh-opentui-bridge] session.steer failed: %s', err)
+      replyError(req.id, 'INTERNAL', err instanceof Error ? err.message : String(err))
+    }
+  }
+
   /** `session.close` — dispose handle, clear state, never exit the process. */
   async function handleClose(req: ParsedRequest): Promise<void> {
     if (binding === undefined) {
@@ -5821,6 +5886,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     if (req.method === 'session.send') {
       await handleSend(req)
+      return
+    }
+    if (req.method === 'session.steer') {
+      await handleSteer(req)
       return
     }
     if (req.method === 'session.close') {

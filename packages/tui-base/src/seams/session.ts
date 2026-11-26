@@ -880,6 +880,17 @@ export interface SessionPurgeCommitResult {
 	failed: readonly SessionPurgeRejection[]
 }
 
+/**
+ * Outcome of a steer attempt. `turnId` is the turn the message joined when
+ * accepted; on rejection `reason` is the typed code (STEER_IDLE /
+ * STEER_ENDED / STEER_ABORTING / UNSUPPORTED / …). A rejected steer MUST NOT
+ * be painted as delivered — the caller keeps the text (or explicitly chooses
+ * another delivery).
+ */
+export type SeamSteerResult =
+	| { accepted: true; turnId: string }
+	| { accepted: false; reason: string; turnId?: string }
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -1045,7 +1056,14 @@ export interface SessionSeam {
 
 	/** Turn streaming (mini/stream-v2 replacement point). */
 	turn(userText: string, cb: SeamTurnCallbacks): Promise<void>
-	steer(text: string): void
+	/**
+	 * Steering is a request with an observable outcome, not a fire-and-forget
+	 * void call: a bridge may refuse it (idle turn, ending/aborting turn,
+	 * missing capability). Callers MUST await the result before painting any
+	 * delivery receipt; a rejection keeps the text under caller control
+	 * (never silently downgraded to a normal send).
+	 */
+	steer(text: string): Promise<SeamSteerResult>
 	interrupt(): void
 
 	/**
@@ -1403,7 +1421,9 @@ export class NullSessionSeam implements SessionSeam {
 		return undefined
 	}
 	async turn(_userText: string, _cb: SeamTurnCallbacks): Promise<void> {}
-	steer(_text: string): void {}
+	async steer(_text: string): Promise<SeamSteerResult> {
+		return { accepted: false, reason: "UNSUPPORTED" }
+	}
 	interrupt(): void {}
 	/** Registered answerer; unset until a view (or test) registers one. */
 	#askProvider: ((questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>) | undefined

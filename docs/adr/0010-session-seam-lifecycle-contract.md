@@ -77,18 +77,25 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 
 **握手**：`bridge.hello` / `bridge.ping` 的响应携带 `protocolVersion`（当前 `1`）、`bridgeVersion` 与 `hostVersion`；`bridge.hello` 请求带 `params.protocolVersion` 时由 bridge 做版本比对，不一致返回 `VERSION_INCOMPATIBLE`（`detail` 含 `clientProtocolVersion` / `bridgeProtocolVersion` / `hostVersion`），对应 `OPEN_FAILED{VERSION_INCOMPATIBLE}`。
 
-**方法面**（以 `packages/bridge/src/index.ts:1777-1842` 的分发表为准，共 10 个）：
+**方法面**（以 `packages/bridge/src/index.ts` 的 `handleLine()` 分发表为准，手写协议帧 15 个；行号以 `ledger/provenance.json` 的 `wired_protocol[].source_line` 为准）：
 
 - `bridge.ping`
 - `bridge.hello`（握手版本比对：入参 `params.protocolVersion`；响应 `protocolVersion` / `bridgeVersion` / `hostVersion`，不匹配返回 `VERSION_INCOMPATIBLE`）
-- `model.currentSelection`（只读；转写 `ctx.agentDefaultModel.currentSelection()`，供 seam 的 `currentModelSelection` 在首个 `session.open` 前读当前选择；由 `19c2ab2` 加入，协议版本不变）
-- `session.list`
+- `session.prune.plan`（retention P1，只读 dry run）
+- `session.prune.apply`（retention P2，宿主重算后移入回收站）
+- `session.prune.purge`（retention P3，回收站内容删除）
+- `session.prune.restore`（B4/C7，按 entry id 从回收站恢复）
+- `subagents.interrupt`（L1 0.23.1，按 childId 取消单个在跑子代理）
+- `subagents.stopChildren`（L1 0.23.1，取消该父会话下全部在跑子代理）
 - `session.open({mode:"new"} | {mode:"resume", id})`
 - `session.close`
 - `session.send`
+- `session.steer({text})`（029 A，additive，协议版本仍为 1；由 `bridge.hello`/`bridge.ping` 的 `capabilities` 数组通告。请求只带非空 `text`；接受后返回 `{accepted:true, turnId, messageId}`。见下方「`session.steer` 语义」）
 - `turn.abort`
 - `ask.response`（ADR-0011 T3/T4：`{eventId, kind, verdict|answers, behavior?, escalation?}`；迟到/已结算的请求回 `ASK_TURN_ENDED` / `ASK_ALREADY_ANSWERED`）
 - `journal.replay`
+
+已移除的 `model.currentSelection` 与 `session.list` 不再出现在分发表：前者改走生成的 capcontract 链，后者在 0.24 final knife 迁到 `wired_capir_generated`。下文的 `session.list` 小节保留为历史语义记录，不代表当前协议帧。
 
 **事件**（两种类别，均由 `emitEvent` 走同一 `event{type,payload}` 写通道）：
 
@@ -101,6 +108,25 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 bridge 自身生命周期（连接断开、插件卸载等）**仍不通过 bridge 的 `emitEvent` 帧暴露**：bridge 子进程不产生生命周期 emitter；桥态 `DEAD` 的可恢复性由上文的恢复序列体现，而非某个 bridge 生命周期帧。阶段一落地后（`c9d3fae..a1341ea`），transport / seam 在 `onEvent` 管线下发并消费一组**客户端合成事件**——`bridge.dead` / `bridge.recovered` / `bridge.recovery.locked` / `bridge.recovery.failed` / `bridge.turn.interrupted`（`bridge-transport.ts:271,294`；`recoverSession()` / `bridge.dead` 帧处理，bridge-session-seam.ts）——它们不是 bridge 生产的帧，仅供本地 UI 上屏。`ask.pending` 除帧类型与 seam 消费（`onEvent` 的 `ask.pending` 分支，bridge-session-seam.ts）外，bridge 生产路径现已在 resume 时下发重连快照（`AskRegistry.pendingSnapshot` 的生产调用点见 `packages/bridge/src/index.ts:1374-1384`，commit `4323a82`），供上文恢复序列第 5 步重建卡片，见 ADR-0011 §8 与矩阵 §8。
 
 **并发**：单会话单在途 turn；并发 `session.send` 返回 `TURN_BUSY`（`detail.turnId` 为当前在途 turn id）。
+
+**`session.steer` 语义（029 A）**：steer 不创建 turn、不占用 `inFlightTurnId`、不发 `turn.start`；它把一条 `createBridgeUserMessage(text)` 形态的 user message 直接交给在途 turn 的 `agent.steer(message)`，返回的 `turnId` 是当前在途 turn 的 id，`messageId` 是该消息 id。接受需**同时**满足：已绑定会话、存在未终态的在途 turn、未请求 abort、宿主 `agent.status === 'running'`。任一拒绝分支都**不调用任何宿主方法**（包括 `agent.followup`），也不回写 turn 状态：
+
+- 无 binding：`SESSION_NOT_OPEN`；
+- 空/全空白 `text` 或非字符串：`BAD_PARAMS`；
+- idle（无在途 turn 或 agent 非 running）：`STEER_IDLE`；
+- 已终态（terminal 帧已到达）：`STEER_ENDED`。终态帧会同时清空 `activeTurn` 与 `inFlightTurnId`，故「从未开始」与「已结束」靠终态 turnId 的有界 FIFO 区分：FIFO 非空即 `STEER_ENDED`（`detail.turnId` 取最近终态 id）；`session.close` / `open{replace:true}` 会随 FIFO 清零回到 `STEER_IDLE`；
+- 已发 `turn.abort` 但终态未到：`STEER_ABORTING`；
+- host agent 无 `steer()`：`UNSUPPORTED`（`detail.capability='session.steer'`）；
+- `agent.steer()` 抛错：`INTERNAL`，绝不降级为 `followup`。
+
+**已接受但未消费的 steer 与 abort（未决风险）**：`turn.abort` 仍按 I3 调用 `agent.cancel({kind:'user'},{keepInbox:true})`；`keepInbox:true` 明确**不清空 inbox**，当前宿主 agent 的 bridge 结构面只有 `followup/steer/cancel/whenIdle`，**没有移除已排队但尚未被消费的 steer 消息的 API**。因此 abort 后那条 steer 可能被宿主在收尾前消费，也可能随 inbox 留存并被**下一轮 turn 消费**；bridge 既不承诺清理，也不假装已清理。`turn.error` 终态同样不清 inbox，残留 steer 没有终态兜底回收。回归断言固定这一事实：abort 只发 `cancel`（`keepInbox:true`），不调用任何消息移除接口；UI 侧该 steer 行可能一直停留在 `⤵ Injected`，abort **不构成 Delivered 的证据**——它只证明 cancel 已发出，不证明消息已被消费。若未来宿主提供 inbox 撤回能力，需另开协议帧并在此写明语义。
+
+同一未决风险覆盖所有「turn 已结束但 inbox 未撤回」的终态路径，端到端断言对每一条都不得把它当成 Delivered 证据：
+
+- **`/stop`**：`packages/tui-base/src/routes/session/commands.ts` 的 `/stop` 走 `stopEverything(ctx.seam)`，与 `turn.abort` 同源（父 turn 连同在跑子代理一起停），结束在途 turn 但不撤回已 accepted 的 steer；
+- **`turn.error`**：模型/宿主失败终态（含 `ABORTED` / `INTERRUPTED` / `BLOCKED` 等 code）不清 inbox，残留 steer 没有终态兜底回收；
+- **宿主自身 abort / 失败收尾**，以及 `session.open{replace:true}` / `session.close` 触发的 `SESSION_CLOSED` 替换终态：turn 因宿主或会话结束而终止，inbox 里那条已 accepted 的消息并不随之撤回；
+- **迟到 accepted**：`session.steer` 返回 `{accepted:true, turnId, messageId}` 只证明消息已交给在途 turn，**不证明已被消费**。若 turn 在 accept 与 consume 之间结束（含上面各路径），该行停在 `⤵ Injected`；宿主可能在**下一轮 turn** 才消费它，此时 `✓ Delivered` 可能到下一轮才翻出，且没有 bridge 事件把它关联回原来那个 accepted turn。真实客户端回归因此按「idle/settle 已达成 ∧ Injected 仍在 ∧ 无 Delivered」收口，不把 abort/idle/settle 本身当作消费证明。
 
 **`journal.replay` 游标语义（以实现为准）**：响应字段名是 `cursor`，不是 `journalCursor`；语义为全量日志的 exclusive 上界 `maxSeq + 1`（`maxSeq` 为本次读到的最大 `seq`，空日志为 `0`），与请求参数 `from`（inclusive seq 下界）无关 —— 响应只回 `seq >= from` 的 `rows`，但 `cursor` 始终覆盖全量日志。`session.open` 响应中另有 `journalCursor` 字段，取自 `agent.session.seq`（会话当前 seq，缺失时为 `0`），是另一个字段、另一条路径。把 replay 的 `cursor` 等同于 `session.seq` **依赖 seq 稠密**（从 0 连续分配、无压缩丢段），属**未验证假设**：宿主存储 seq 可能稀疏（turn/start、tool/call、compaction 标记占位，压缩可整段丢弃），因此「存储 seq 稀疏」与「`cursor = maxSeq + 1` 的计算」是两件事，不可混用。客户端不得用 `cursor` 反推行偏移：`skip` 是行数、`from` 是 seq 下界（见 seam 的投影注释）。
 
@@ -158,6 +184,9 @@ bridge 无 subagent RPC，其 `subagentViews` 名册从父 journal 的持久行�
 - `SESSION_NOT_OPEN`
 - `ALREADY_OPEN`（`detail.openSessionId`）
 - `TURN_BUSY`（`detail.turnId`）
+- `STEER_IDLE`（`session.steer`：无在途 turn 或宿主 agent 非 running；`detail.turnId` 为当前在途 turn id 或 `null`）
+- `STEER_ENDED`（`session.steer`：在途 turn 已终态；`detail.turnId` 为该 turn id 或 `null`）
+- `STEER_ABORTING`（`session.steer`：在途 turn 已发 abort 但终态未到；`detail.turnId` 为该 turn id）
 - `TURN_NOT_FOUND`（`turn.abort` 请求的 turnId 不是在途 turn、也非最近已终态 turn 时返回；`detail` 为 `{requestedTurnId, activeTurnId}`，其中 `activeTurnId` 为当前在途 turn id，无在途 turn 时为 `null`）
 - `SESSION_CLOSED`（`turn.error` 的 `code`：会话被 `session.open{replace:true}` 替换或被 `session.close` 关闭时，为仍在途的 turn 补发唯一的终态帧；该 turn 因所属会话结束而终止，既非模型失败，也非 `turn.abort` 的 `ABORTED`）
 - `ABORTED`（`turn.error` 的 `code`：`turn.abort` 成功取消时宿主 aborted 结果未带 code 的兜底；`packages/bridge/src/index.ts:598-601`）

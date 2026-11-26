@@ -22,7 +22,7 @@
 import { createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { createComponent, render, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamProviderModel, type SeamSessionSummary, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
+import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamProviderModel, type SeamSessionSummary, type SeamSteerResult, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
@@ -121,8 +121,11 @@ class FakeSeam extends NullSessionSeam {
 			{ kind: "assistant", text: "Earlier **answer** from stored history.", final: true },
 		]
 	}
-	override steer(text: string): void {
+	/** Demo steer is always accepted into the single stable demo turn; pushing
+	 * the text preserves the existing streamed `[steer received: …]` receipt. */
+	override async steer(text: string): Promise<SeamSteerResult> {
 		this.steers.push(text)
+		return { accepted: true, turnId: "demo-turn-1" }
 	}
 	override async turn(text: string, cb: SeamTurnCallbacks): Promise<void> {
 		const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))

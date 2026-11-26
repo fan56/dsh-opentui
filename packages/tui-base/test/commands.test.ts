@@ -129,7 +129,7 @@ class RecordingSeam {
 		},
 		renameSession: async () => undefined,
 		turn: async () => {},
-		steer: () => {},
+		steer: async () => ({ accepted: false as const, reason: "UNSUPPORTED" }),
 		interrupt: () => {
 			this.calls.push("interrupt")
 		},

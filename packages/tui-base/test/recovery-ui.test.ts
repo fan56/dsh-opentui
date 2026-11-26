@@ -202,7 +202,7 @@ describe("three-state footer + composer disable", () => {
 				sent.push(text)
 				return Promise.resolve()
 			},
-			steer: () => {},
+			steer: async () => ({ accepted: false as const, reason: "UNSUPPORTED" }),
 			disabled: () => controller.composerDisabled,
 		})
 		controller.handleEvent({ type: "bridge.dead" })

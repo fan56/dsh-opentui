@@ -185,13 +185,13 @@ async function openParent(h: ReturnType<typeof makeHarness>, id: number): Promis
 }
 
 describe("handshake capabilities (additive)", () => {
-  test("bridge.hello advertises both stop capabilities", async () => {
+  test("bridge.hello advertises the stop capabilities and session.steer", async () => {
     const h = makeHarness()
     h.send({ id: 1, method: "bridge.hello", params: { protocolVersion: 1 } })
     const hello = await h.waitFor(1)
     expect(hello.ok).toBe(true)
     expect(hello.result.protocolVersion).toBe(1)
-    expect(hello.result.capabilities).toEqual(["subagents.interrupt", "subagents.stopChildren"])
+    expect(hello.result.capabilities).toEqual(["subagents.interrupt", "subagents.stopChildren", "session.steer"])
   })
 
   test("bridge.ping advertises the same capabilities", async () => {
@@ -199,7 +199,7 @@ describe("handshake capabilities (additive)", () => {
     h.send({ id: 2, method: "bridge.ping" })
     const ping = await h.waitFor(2)
     expect(ping.ok).toBe(true)
-    expect(ping.result.capabilities).toEqual(["subagents.interrupt", "subagents.stopChildren"])
+    expect(ping.result.capabilities).toEqual(["subagents.interrupt", "subagents.stopChildren", "session.steer"])
   })
 })
 

@@ -183,7 +183,7 @@ describe("createBridgeSessionSeam: failure propagates, no silent degrade", () =>
 // 5. D3 downgrade law (user-decided, not to be violated by fail-fast)
 // ---------------------------------------------------------------------------
 describe("D3 downgrade law stays intact", () => {
-	test("sync members degrade + log, never throw", () => {
+	test("sync members degrade + log, never throw; steer is an explicit rejected result", async () => {
 		const { transport } = fakeTransport()
 		const warns: string[] = []
 		const seam = new BridgeSessionSeam({
@@ -192,8 +192,9 @@ describe("D3 downgrade law stays intact", () => {
 		})
 		expect(seam.status()).toHaveProperty("connection")
 		expect(seam.usageSummary()).toEqual([])
-		expect(() => seam.steer("x")).not.toThrow()
-		expect(warns.some((w) => w.includes("steer"))).toBe(true)
+		// 029 A: steer no longer silently no-ops — without a capability it
+		// returns an explicit UNSUPPORTED refusal and sends no frame.
+		expect(await seam.steer("x")).toEqual({ accepted: false, reason: "UNSUPPORTED" })
 	})
 
 	test("async unsupported members reject with UNSUPPORTED, never fake success", async () => {
