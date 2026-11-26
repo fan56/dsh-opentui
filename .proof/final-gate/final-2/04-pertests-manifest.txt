@@ -1,7 +1,0 @@
-shell|test/shell-render-regression-ft.test.tsx|exit=0
-shell|test/shell-render-incident-motion-ft.test.tsx|exit=0
-shell|test/bridge-session-seam.test.ts|exit=0
-tui-base|test/widgets-dock-render.test.ts|exit=0
-tui-base|test/r7-settled-subagents.test.ts|exit=0
-tui-base|test/r8-subagent-brief.test.ts|exit=0
-bridge|test/session-open-replace-guard.test.ts|exit=0

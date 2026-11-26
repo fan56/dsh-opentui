@@ -24,3 +24,6 @@ verify/remote-live-out/
 # UI-layer capture artifacts (verify/ui-matrix.mjs)
 # geometry × scene visual matrix artifacts (verify/ui-matrix.mjs)
 verify/ui-matrix-out/
+
+# local verification/proof artifacts — never commit, never upload
+.proof/

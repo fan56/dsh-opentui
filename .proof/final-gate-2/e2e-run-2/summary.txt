@@ -1,5 +1,0 @@
-FAMILY model-domain FAIL (see /tmp/e2e-unified-20261123T091418Z/model-domain)
-FAMILY account-credentials-domain FAIL (see /tmp/e2e-unified-20261123T091418Z/account-credentials-domain)
-FAMILY verify-gate FAIL (see /tmp/e2e-unified-20261123T091418Z/verify-gate)
-=== unified verdict: FAILED_FAMILIES=3 ===
-E2E UNIFIED: FAIL

@@ -1,8 +1,0 @@
-FULL-tui-base: 0
-FULL-bridge: 0
-FULL-shell: 1
-typecheck:entry exit=0
-capcontract exit=0
-git-status-ledger exit=0
-build-bridge exit=0
-real-client-gate exit=2
