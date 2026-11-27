@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-11-27
+
+### Fixed
+
+- Plugin-registered commands were missing from the slash palette on first
+  open: host command rows now apply while the palette is open, plugin command
+  listing ensures a host session first, and host command names are normalized
+  to slash form (#25).
+
 ## [0.30.1] - 2026-11-27
 
 ### Fixed
