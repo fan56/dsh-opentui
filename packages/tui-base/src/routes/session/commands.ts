@@ -196,9 +196,10 @@ const HOST_COMMAND_CAP = 100
  * `t("command.hostSource", { name })` — the suffix rides i18n, never a
  * hardcoded label. A host row's `run` proxies the RAW (unsuffixed) name plus
  * the typed arguments through `hostCommands.execute`; the seam's echoed text
- * is the feedback row, and both the no-text and the thrown arms degrade
- * through i18n lines (never a rejection — the palette runs `run`
- * fire-and-forget).
+ * is the feedback row, and the remaining arms degrade through i18n lines —
+ * `undefined` (seam contract: the command failed) and a throw both paint the
+ * failure copy, a settled no-text round paints the executed copy (never a
+ * rejection — the palette runs `run` fire-and-forget).
  */
 export function mergeHostCommands(
 	local: readonly SlashCommand[],
@@ -218,7 +219,14 @@ export function mergeHostCommands(
 				const line = argText ? `${rawName} ${argText}` : rawName
 				try {
 					const result = await ctx.seam?.hostCommands?.execute(line)
-					ctx.say(result?.text ?? deps.t("command.hostExecuted", { name: rawName }))
+					// seam contract: `undefined` = the command FAILED — paint the
+					// failure copy, never the success one. `{}` (settled, no echo
+					// text) and `{text}` are both successes; a throw stays failed.
+					ctx.say(
+						result === undefined
+							? deps.t("command.hostExecuteFailed", { name: rawName })
+							: (result.text ?? deps.t("command.hostExecuted", { name: rawName })),
+					)
 				} catch {
 					ctx.say(deps.t("command.hostExecuteFailed", { name: rawName }))
 				}

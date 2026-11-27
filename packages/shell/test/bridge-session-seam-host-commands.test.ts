@@ -128,6 +128,21 @@ describe("BridgeSessionSeam.hostCommands (027)", () => {
 		expect(h.seam.hostCommands.available()).toBe(true)
 	})
 
+	test("list unwraps the generic-arm `{ value: [...] }` envelope — the real wire shape", async () => {
+		const h = makeHarness()
+		// The bridge's generic arm wraps the host's plain ARRAY as { value: T }
+		// (projectGenericWireReply: a bare array never crosses the wire) — the
+		// ops layer must unwrap that envelope before mapping rows.
+		h.replies.set("commands.list", {
+			kind: "value",
+			value: { value: [{ name: "compact", description: "Compact the context" }] },
+		})
+		h.seam.resumeSession("a1")
+
+		expect(await h.seam.hostCommands.list()).toEqual([{ name: "compact", description: "Compact the context" }])
+		expect(h.seam.hostCommands.available()).toBe(true)
+	})
+
 	test("execute proxies the raw line and degrades to undefined (never rejects); echo text passes through", async () => {
 		const h = makeHarness()
 		h.seam.resumeSession("a1")

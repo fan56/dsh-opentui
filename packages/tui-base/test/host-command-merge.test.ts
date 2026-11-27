@@ -133,11 +133,21 @@ describe("mergeHostCommands", () => {
 		expect(said).toEqual(["host says hi"]) // echoed text wins over the fallback
 	})
 
-	test("host run with empty args proxies the bare name and falls back to the executed copy (key via stub t)", async () => {
+	test("host run with `undefined` (seam contract: the command FAILED) paints the failure copy, never the executed one (key via stub t)", async () => {
 		const { t, calls } = stubT()
 		const merged = mergeHostCommands([], [hostRow("/foo")], { t })
 		const run = merged.find((c) => c.name === "/foo")!.run
 		const { ctx, said } = fakeCtx(async () => undefined)
+		await run(ctx, "")
+		expect(said).toEqual(["failed:/foo"])
+		expect(calls).toContainEqual({ key: "command.hostExecuteFailed", params: { name: "/foo" } })
+	})
+
+	test("host run with a settled no-text round ({}) paints the executed copy (key via stub t)", async () => {
+		const { t, calls } = stubT()
+		const merged = mergeHostCommands([], [hostRow("/foo")], { t })
+		const run = merged.find((c) => c.name === "/foo")!.run
+		const { ctx, said } = fakeCtx(async () => ({}))
 		await run(ctx, "")
 		expect(said).toEqual(["executed:/foo"])
 		expect(calls).toContainEqual({ key: "command.hostExecuted", params: { name: "/foo" } })

@@ -2277,8 +2277,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	/**
 	 * slash wire name → generic-arm dot name. The bridge generic arm indexes
 	 * by EXACT dot-name (CAP_GENERIC_WIRE_METHODS, no slash-name normalization),
-	 * so the adapter must translate. Explicit 2-entry table — an unexpected
-	 * slash name fails LOUD instead of silently 404-ing into an empty face.
+	 * so the adapter must translate. Failure semantics match the implementation:
+	 * a list-path reject is swallowed by ops.commandsList's catch into a silent
+	 * empty-array degradation; only service-absent errors flip `available`,
+	 * because the rpc adapter below is the ONLY level where the raw wire error
+	 * is observable before ops swallows it.
 	 */
 	static readonly #HOST_COMMANDS_WIRE: Readonly<Record<string, string>> = {
 		"commands/list": "commands.list",
@@ -6080,6 +6083,12 @@ export class BridgeSessionSeam implements SessionSeam {
 			// 027: a dead bridge invalidates the hostCommands catalog — the next
 			// palette open must re-probe instead of serving cached rows.
 			this.#resetHostCommands()
+			// Same cleanup as dispose: a pending refresh settle must not fire
+			// against a dead bridge and resurrect stale state.
+			if (this.#hostCommandsRefreshTimer !== undefined) {
+				clearTimeout(this.#hostCommandsRefreshTimer)
+				this.#hostCommandsRefreshTimer = undefined
+			}
 			// S3: a dead bridge ends every host push subscription; record the
 			// disconnect per (session,method) subscription (BL-1) so a later
 			// resume can re-arm each one from seq 0.

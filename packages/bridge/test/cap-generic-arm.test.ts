@@ -75,6 +75,57 @@ async function rejectionMessage(fn: () => Promise<unknown>): Promise<string> {
   throw new Error('expected rejection but call resolved')
 }
 
+/**
+ * 027 — commands/list generic-arm envelope. The host's plain ARRAY cannot
+ * cross the generic arm as a bare array: projectGenericWireReply wraps any
+ * non-record result as `{ value: T }`. Pinned against the REAL generated
+ * table row (wire name → id, adapters, deny namespaces) — the client-side
+ * ops unwrap convention in remote-session-ops.commandsList is the mirror
+ * image of exactly this shape.
+ */
+describe('027 commands.list — generic-arm array envelope (real table row)', () => {
+  const COMMANDS_LIST_ID = CAP_GENERIC_WIRE_METHODS['commands.list']
+
+  test('a non-empty array wraps as { value: [...] }; the ops unwrap convention restores it', () => {
+    // Real release state: the dot-name resolves to the commands/list id, the
+    // id is in the adapter set, denied namespaces don't cover it, and it is
+    // NOT a hand-projection exception (the generic projection is load-bearing).
+    expect(COMMANDS_LIST_ID).toBe('@deepseek-ai/dsh-commands#commands/list')
+    expect(CAP_GENERIC_ADAPTERS.has(COMMANDS_LIST_ID as never)).toBe(true)
+    expect(CAP_PROJECTED_BY_HAND.has(COMMANDS_LIST_ID as never)).toBe(false)
+
+    const config = makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      projectedByHand: CAP_PROJECTED_BY_HAND,
+      confirmIds: CAP_WRITE_CONFIRM_IDS,
+    })
+    const rows = [
+      { name: 'compact', description: 'Compact the context' },
+      { name: 'plugin-cmd', description: 'plugin one' },
+    ]
+    const reply = projectGenericWireReply(config, COMMANDS_LIST_ID, rows, sanitizeFrameForWire)
+
+    // The envelope (bun:test has no toHaveProperty): a record carrying the
+    // rows under `value` — NOT the bare array the host service returned.
+    expect(typeof reply).toBe('object')
+    expect(reply !== null && 'value' in reply).toBe(true)
+    expect(reply).not.toBeInstanceOf(Array)
+    expect((reply as { value: unknown }).value).toEqual(rows)
+
+    // Mirror of the ops unwrap convention (remote-session-ops.commandsList):
+    // a non-null non-array record with `value` unwraps to reply.value, so the
+    // client restores the SAME non-empty array the host produced.
+    const unwrapped =
+      reply !== null && typeof reply === 'object' && !Array.isArray(reply) && 'value' in reply
+        ? (reply as { value: unknown }).value
+        : reply
+    expect(Array.isArray(unwrapped)).toBe(true)
+    expect((unwrapped as unknown[]).length).toBe(2)
+  })
+})
+
 describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => {
   // E4 core: positional reconstruction fidelity. This is the R3 silent-misplacement
   // guard: named params are read BY TABLE ORDER into positional args, values and
