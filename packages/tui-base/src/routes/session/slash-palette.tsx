@@ -225,6 +225,22 @@ export class SlashPaletteController {
 		this.#follow(count)
 	}
 
+	/**
+	 * Reset the highlight to the FIRST row of the current table and re-anchor
+	 * the window at the top. The entry-point for "the palette's row table was
+	 * replaced while OPEN" (the host-command pull settling mid-typing): the
+	 * fresh table changes identity AND order (the alphabetical merge can
+	 * insert host rows ahead of the highlighted local row), so a carried-over
+	 * index would highlight — and Enter execute — a different command than
+	 * the one the cursor sat on a keystroke ago. Resetting to 0 resolves that
+	 * hazard without delaying the write: index 0 always denotes the top of
+	 * the NEW table, so the user sees exactly the row Enter would run.
+	 */
+	resetSelection(): void {
+		this.#selected[1](0)
+		this.#offset[1](0)
+	}
+
 	/** The highlighted command, if any. */
 	current(commands: SlashCommand[]): SlashCommand | undefined {
 		return this.filtered(commands)[this.#selected[0]() - this.#offset[0]()]
@@ -321,7 +337,11 @@ export function SlashPalette(props: {
 									fg={active() ? row().textColor : color.base()}
 									attributes={paletteRowAttributes(command, active())}
 								>
-									{command.name}{" "}
+									{/* Display name wins the PAINT only: filtering, exact
+									    submit, Tab completion and dispatch all key on `name`
+									    (the raw command identity), so a suffixed duplicate
+									    twin stays reachable by its `/`-prefix. */}
+									{command.displayName ?? command.name}{" "}
 									{/* The description rides the row's own selected fg when the
 									    row is highlighted — the page-muted gray on the focused
 									    action background fails contrast (1.31:1 dsh-blue dark,

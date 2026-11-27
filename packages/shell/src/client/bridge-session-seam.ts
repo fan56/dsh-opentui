@@ -2355,8 +2355,25 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * its rows — never cached, never painted.
 	 */
 	async #hostCommandsList(): Promise<SeamHostCommandRow[]> {
-		const agentId = this.currentSessionId() ?? this.stagedSessionId()
-		if (agentId === undefined || agentId === "") return []
+		let agentId = this.currentSessionId() ?? this.stagedSessionId()
+		if (agentId === undefined || agentId === "") {
+			// Lazy-session client: the bridge mints the session only in turn() /
+			// DEAD recovery, but commands.list is agentId-addressed — without a
+			// binding the palette would stay empty on a fresh client that never
+			// sent a message. Ensure one on this non-turn UI path (see
+			// #ensureSession for the rationale); a failed open keeps the
+			// established degrade semantics ([] + once-log, never a throw).
+			try {
+				agentId = await this.#ensureSession()
+			} catch (err) {
+				this.#degradeOnce(
+					"hostCommands.list",
+					`ensure session failed: ${err instanceof Error ? err.message : String(err)}`,
+				)
+				return []
+			}
+			if (agentId === undefined || agentId === "") return []
+		}
 		const now = this.#confirmClock.now()
 		const cached = this.#hostCommandsCache.get(agentId)
 		if (cached && now - cached.fetchedAt < HOST_COMMANDS_TTL_MS) return cached.rows
@@ -2391,10 +2408,25 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * (success, no text) otherwise.
 	 */
 	async #hostCommandsExecute(line: string): Promise<{ text?: string } | undefined> {
-		const agentId = this.currentSessionId() ?? this.stagedSessionId()
+		let agentId = this.currentSessionId() ?? this.stagedSessionId()
 		if (agentId === undefined || agentId === "") {
-			this.#degradeOnce("hostCommands.execute", "execute without an active session")
-			return undefined
+			// Same ensure as #hostCommandsList (see there): execute is
+			// agentId-addressed too, so a palette pick on a fresh client opens
+			// the session first; a failed open degrades to `undefined` exactly
+			// like a failed wire round.
+			try {
+				agentId = await this.#ensureSession()
+			} catch (err) {
+				this.#degradeOnce(
+					"hostCommands.execute",
+					`ensure session failed: ${err instanceof Error ? err.message : String(err)}`,
+				)
+				return undefined
+			}
+			if (agentId === undefined || agentId === "") {
+				this.#degradeOnce("hostCommands.execute", "execute without an active session")
+				return undefined
+			}
 		}
 		try {
 			const result = await this.#hostCommandsOps().commandsExecute(agentId, line)
@@ -2878,6 +2910,14 @@ export class BridgeSessionSeam implements SessionSeam {
 	#recoveryState: BridgeRecoveryState = "idle"
 	/** Pending sync-stage from resumeSession()/newSession(), bound at next turn. */
 	#pendingOpen: { mode: "resume"; id: string } | { mode: "new" } | undefined
+	/**
+	 * Shared in-flight open across turn() and the non-turn UI faces
+	 * (#hostCommandsList / #hostCommandsExecute): ONE session.open at a time,
+	 * so a palette probe racing the user's first message can never mint a
+	 * second session. Cleared on settle (success or failure) so a failed open
+	 * is retryable and a settled slot never serves a stale binding.
+	 */
+	#ensureSessionInFlight: Promise<string | undefined> | undefined
 	/** Turn id of the single in-flight turn (drives interrupt()/status()). */
 	#inFlightTurnId: string | undefined
 	/** 025-w2-1 /btw: single in-flight side call + last throwaway id (domain
@@ -5273,44 +5313,35 @@ export class BridgeSessionSeam implements SessionSeam {
 		done?.()
 	}
 
-	async turn(userText: string, cb: SeamTurnCallbacks): Promise<void> {
-		// ADR-0011 T4: cb.onApprove is the turn-scoped answerer for `ask.request
-		// {kind:"approval"}` frames (it shadows the registered ask provider for
-		// this turn only). The active callbacks are installed below before send;
-		// #answerAsk reads them under the in-flight generation guard.
-
-		// P1-3 REENTRANCY SEMANTICS: reject, do not queue. The bridge drives one
-		// turn per session (TURN_BUSY on a second send), so an overlapping turn()
-		// is not meaningful work to defer — it is a caller bug. Rejecting keeps
-		// the single-slot callback/waiter state sound. Callers must await the
-		// first turn() before starting another.
-		if (this.#inFlightGeneration !== 0) {
-			throw new BridgeProtocolError(
-				"TURN_REENTRANT",
-				"turn() called while another turn is in flight; await the first turn()",
-				{ activeTurnId: this.#inFlightTurnId },
-			)
-		}
-
-		// Claim a generation BEFORE any await. Only this generation's finally
-		// may clear the slots; a stale turn cannot wipe a newer one's state.
-		const gen = ++this.#turnGeneration
-		this.#inFlightGeneration = gen
-		// A7: a NEW turn supersedes any stale death snapshot; start a fresh
-		// partial-text accumulator for this generation.
-		this.#deadInFlight = undefined
-		this.#inFlightPartial = ""
-		let sendFailed: unknown
-		try {
-			// Bind a staged id (resume/new) at the next turn, as in the remote seam.
-			// Default startup (autoResume off / no --session) stages NOTHING, so
-			// the first turn used to reach session.send with no bridge binding
-			// and the bridge answered SESSION_NOT_OPEN — no turn started, so the
-			// pre-execute gate never fired and no approval ask.card was pushed.
-			// Mirror the legacy facade's #ensureSession(): when no id is staged and
-			// no session is attached yet, stage a fresh session on this turn so
-			// the bridge binds it BEFORE send. --session / auto-resume / /new
-			// still win because they stage #pendingOpen explicitly.
+	/**
+	 * Stage → open → bind the bridge session, shared by turn() and the
+	 * non-turn UI faces (hostCommands list/execute).
+	 *
+	 * WHY a non-turn ensure exists at all: bridge/client mode is lazy — the
+	 * session is minted only by turn() (first message) or DEAD recovery, but
+	 * `commands.list` / `commands.execute` are agentId-addressed. A fresh
+	 * client that never sent a message has NO binding, so the slash palette
+	 * would stay empty forever (hostCommandsList used to early-return []).
+	 * This is the seam-side precedent of tui-base mini runtime's ensureSession
+	 * (packages/tui-base/src/mini/runtime.ts): a non-turn UI path resolves the
+	 * session before acting.
+	 *
+	 * WHY it does NOT replace turn()'s open: turn() still routes through this
+	 * exact block (extracted verbatim), keeping its error semantics — an open
+	 * failure surfaces to the turn caller (SESSION_LOCKED / SESSION_NOT_FOUND /
+	 * BAD_PARAMS ...), and the DEAD recovery path keeps its own dedicated
+	 * recoverSession() (resume + journal replay, different semantics). /new and
+	 * --session/auto-resume still win because they stage #pendingOpen
+	 * explicitly.
+	 *
+	 * CONCURRENCY: in-flight merged — every caller while an open is pending
+	 * awaits the SAME promise, so a palette list() racing turn()'s first open
+	 * cannot mint two sessions.
+	 */
+	#ensureSession(): Promise<string | undefined> {
+		const inFlight = this.#ensureSessionInFlight
+		if (inFlight !== undefined) return inFlight
+		const task = (async (): Promise<string | undefined> => {
 			if (this.#pendingOpen === undefined && !this.#sessionAttached) {
 				this.#pendingOpen = { mode: "new" }
 			}
@@ -5354,30 +5385,81 @@ export class BridgeSessionSeam implements SessionSeam {
 					pending.mode === "resume"
 						? { mode: "resume", id: pending.id, ...(this.#sessionAttached ? { replace: true } : {}) }
 						: { mode: "new" }
-				try {
-					const opened = asRecord(await this.#transport.request("session.open", params))
-					if (typeof opened.sessionId === "string") {
-						this.#currentSessionId = opened.sessionId
-						this.#resetHostCommands()
-					}
-					// A4: lastAppliedSeq is per-session. A different binding starts a
-					// fresh journal, so the next recovery must replay from 1.
-					if (this.#lastAppliedSessionId !== this.#currentSessionId) {
-						this.#lastAppliedSessionId = this.#currentSessionId
-						this.#lastAppliedSeq = undefined
-						this.#appliedReplayKeys.clear()
-						this.#resetModelRoute()
-					}
-					this.#sessionAttached = true
-				} catch (err) {
-					// SESSION_LOCKED / SESSION_NOT_FOUND / BAD_PARAMS surface to the
-					// turn caller. On the /new path close already succeeded (or no
-					// session was attached): attached stays false and the intent is
-					// NOT restored, so the next turn() re-stages {mode:"new"} via
-					// the !sessionAttached branch above and self-heals.
-					throw err
+				// SESSION_LOCKED / SESSION_NOT_FOUND / BAD_PARAMS surface to the
+				// turn caller. On the /new path close already succeeded (or no
+				// session was attached): attached stays false and the intent is
+				// NOT restored, so the next ensure/turn() re-stages {mode:"new"}
+				// via the !sessionAttached branch above and self-heals.
+				const opened = asRecord(await this.#transport.request("session.open", params))
+				if (typeof opened.sessionId === "string") {
+					this.#currentSessionId = opened.sessionId
+					this.#resetHostCommands()
 				}
+				// A4: lastAppliedSeq is per-session. A different binding starts a
+				// fresh journal, so the next recovery must replay from 1.
+				if (this.#lastAppliedSessionId !== this.#currentSessionId) {
+					this.#lastAppliedSessionId = this.#currentSessionId
+					this.#lastAppliedSeq = undefined
+					this.#appliedReplayKeys.clear()
+					this.#resetModelRoute()
+				}
+				this.#sessionAttached = true
 			}
+			return this.#currentSessionId
+		})()
+		this.#ensureSessionInFlight = task
+		// Clear the merge slot on settle (both arms) — the observer chain
+		// swallows the rejection itself; `task` still rejects for its real
+		// awaiters (turn() propagates, hostCommands faces degrade).
+		const clear = (): void => {
+			if (this.#ensureSessionInFlight === task) this.#ensureSessionInFlight = undefined
+		}
+		task.then(clear, clear)
+		return task
+	}
+
+	async turn(userText: string, cb: SeamTurnCallbacks): Promise<void> {
+		// ADR-0011 T4: cb.onApprove is the turn-scoped answerer for `ask.request
+		// {kind:"approval"}` frames (it shadows the registered ask provider for
+		// this turn only). The active callbacks are installed below before send;
+		// #answerAsk reads them under the in-flight generation guard.
+
+		// P1-3 REENTRANCY SEMANTICS: reject, do not queue. The bridge drives one
+		// turn per session (TURN_BUSY on a second send), so an overlapping turn()
+		// is not meaningful work to defer — it is a caller bug. Rejecting keeps
+		// the single-slot callback/waiter state sound. Callers must await the
+		// first turn() before starting another.
+		if (this.#inFlightGeneration !== 0) {
+			throw new BridgeProtocolError(
+				"TURN_REENTRANT",
+				"turn() called while another turn is in flight; await the first turn()",
+				{ activeTurnId: this.#inFlightTurnId },
+			)
+		}
+
+		// Claim a generation BEFORE any await. Only this generation's finally
+		// may clear the slots; a stale turn cannot wipe a newer one's state.
+		const gen = ++this.#turnGeneration
+		this.#inFlightGeneration = gen
+		// A7: a NEW turn supersedes any stale death snapshot; start a fresh
+		// partial-text accumulator for this generation.
+		this.#deadInFlight = undefined
+		this.#inFlightPartial = ""
+		let sendFailed: unknown
+		try {
+			// Bind a staged id (resume/new) at the next turn, as in the remote seam.
+			// Default startup (autoResume off / no --session) stages NOTHING, so
+			// the first turn used to reach session.send with no bridge binding
+			// and the bridge answered SESSION_NOT_OPEN — no turn started, so the
+			// pre-execute gate never fired and no approval ask.card was pushed.
+			// Mirror the legacy facade's #ensureSession(): when no id is staged and
+			// no session is attached yet, stage a fresh session on this turn so
+			// the bridge binds it BEFORE send. --session / auto-resume / /new
+			// still win because they stage #pendingOpen explicitly.
+			// Extracted verbatim into #ensureSession() (shared with the non-turn
+			// hostCommands faces, in-flight merged — one open, never two racing
+			// sessions); an open failure still surfaces to THIS caller.
+			await this.#ensureSession()
 
 			// Register the terminal waiter and live callbacks BEFORE send: the
 			// bridge emits turn.start ahead of its send response, so early deltas

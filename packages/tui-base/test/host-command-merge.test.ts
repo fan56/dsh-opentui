@@ -3,15 +3,23 @@
  *
  * Pure table test of the palette-level merge: local rows pass through
  * untouched, host rows map to `source: "host"` rows whose `run` proxies
- * `seam.hostCommands.execute` with the RAW name + typed args, duplicate
- * names are double-listed (local keeps its name, the host twin carries the
- * i18n `command.hostSource` suffix — asserted through an injected stub `t`,
- * never a hardcoded locale string), the output is alphabetically ordered
- * with local-before-host ties, and the 100-row cap applies to HOST rows
- * only (the local registry is never truncated).
+ * `seam.hostCommands.execute` with the GESTURE name + typed args. Wire
+ * names arrive BARE (dsh CommandDescriptor omits the slash) and are
+ * normalized to the palette's slash form (`/name`) at the merge — the
+ * normalized name is THE identity for filtering (`filterCommands` is
+ * `/`-anchored), exact dispatch and Tab completion. Duplicate names are
+ * double-listed under the SAME name (local first): the host twin marks its
+ * origin through the render-only `displayName` (the i18n
+ * `command.hostSource` suffix — asserted through an injected stub `t`,
+ * never a hardcoded locale string), so the suffix never pollutes the
+ * match key. Output is alphabetically ordered with local-before-host
+ * ties, and the 100-row cap applies to HOST rows only (the local registry
+ * is never truncated).
  */
 import { describe, expect, test } from "bun:test"
 import {
+	dispatchLine,
+	filterCommands,
 	mergeHostCommands,
 	type SlashCommand,
 	type SlashCommandContext,
@@ -80,19 +88,23 @@ describe("mergeHostCommands", () => {
 		expect(typeof host?.run).toBe("function")
 	})
 
-	test("duplicate name: double-listed — local keeps its raw name, host twin gets the i18n source suffix (stub t asserts the key)", () => {
+	test("duplicate name: double-listed under the SAME gesture name — the host twin carries the i18n source suffix in displayName (stub t asserts the key)", () => {
 		const { t, calls } = stubT()
 		const local = localRow("/help")
 		const merged = mergeHostCommands([local], [hostRow("/help")], { t })
 		expect(merged).toHaveLength(2)
-		expect(names(merged)).toEqual(["/help", "/help ‹host›"])
-		const twin = merged.find((c) => c.name === "/help ‹host›")
+		// BOTH rows keep the slash name — it is the match key; the suffix
+		// moved to the render-only displayName.
+		expect(names(merged)).toEqual(["/help", "/help"])
+		const twin = merged[1]
 		expect(twin?.source).toBe("host")
-		// the RAW name rides the suffix params — execute must proxy the raw form
+		expect(twin?.displayName).toBe("/help ‹host›")
+		// the gesture name rides the suffix params — execute must proxy the same form
 		expect(calls).toContainEqual({ key: "command.hostSource", params: { name: "/help" } })
-		// and the local row is the untouched original
+		// and the local row is the untouched original, first in the tie
 		expect(merged[0]?.run).toBe(local.run)
 		expect(merged[0]?.source).not.toBe("host")
+		expect(merged[0]?.displayName).toBeUndefined()
 	})
 
 	test("output is alphabetically ordered; name-identical ties keep local before host", () => {
@@ -103,7 +115,12 @@ describe("mergeHostCommands", () => {
 			[hostRow("/mid"), hostRow("/dup")],
 			{ t },
 		)
-		expect(names(merged)).toEqual(["/alpha", "/dup", "/dup ‹host›", "/mid", "/zeta"])
+		// the duplicate twin now shares the bare gesture name, so the table
+		// lists "/dup" twice (local row first, then the host twin)
+		expect(names(merged)).toEqual(["/alpha", "/dup", "/dup", "/mid", "/zeta"])
+		expect(merged[1]?.source).not.toBe("host")
+		expect(merged[2]?.source).toBe("host")
+		expect(merged[2]?.displayName).toBe("/dup ‹host›")
 	})
 
 	test("host rows past 100 are capped; the local registry is never truncated (34 locals)", () => {
@@ -163,5 +180,72 @@ describe("mergeHostCommands", () => {
 		await run(ctx, "") // must resolve — the palette fires run fire-and-forget
 		expect(said).toEqual(["failed:/boom"])
 		expect(calls).toContainEqual({ key: "command.hostExecuteFailed", params: { name: "/boom" } })
+	})
+
+	test("bare wire name is normalized to the slash gesture: {name:'dcp'} merges as /dcp", () => {
+		const { t } = stubT()
+		const merged = mergeHostCommands([localRow("/alpha")], [hostRow("dcp")], { t })
+		// length = local + host — the row is LISTED, not dropped
+		expect(merged).toHaveLength(2)
+		const dcp = merged.find((c) => c.source === "host")
+		expect(dcp?.name).toBe("/dcp")
+		expect(dcp?.description).toBe("host dcp")
+		expect(dcp?.displayName).toBeUndefined() // no local collision → no suffix
+	})
+
+	test("the normalized /dcp is reachable through the palette's /-prefix filter", () => {
+		const { t } = stubT()
+		const merged = mergeHostCommands([localRow("/alpha")], [hostRow("dcp")], { t })
+		// filterCommands is the palette's own filter — slash-anchored; before
+		// the normalization a bare wire name matched NOTHING here (the bug).
+		const hits = filterCommands(merged, "/dc")
+		expect(hits.map((c) => c.name)).toEqual(["/dcp"])
+		// and the raw table assertion the task pins: startsWith("/dc") hits
+		expect(merged.filter((c) => c.name.startsWith("/dc"))).toHaveLength(1)
+	})
+
+	test("bare-name duplicate (local /help + host help): both rows listed, dispatchLine('/help') still hits the LOCAL row", () => {
+		const { t } = stubT()
+		const local = localRow("/help")
+		const merged = mergeHostCommands([local], [hostRow("help")], { t })
+		// both columns present under the same gesture name
+		expect(merged).toHaveLength(2)
+		expect(names(merged)).toEqual(["/help", "/help"])
+		// exact dispatch resolves the FIRST exact match — the local row
+		const dispatch = dispatchLine(merged, "/help")
+		expect(dispatch.kind).toBe("command")
+		if (dispatch.kind !== "command") return
+		expect(dispatch.command).toBe(local)
+		expect(dispatch.command.source).not.toBe("host")
+		// with args too: "/help me out" keeps hitting the local /help
+		const withArgs = dispatchLine(merged, "/help me out")
+		expect(withArgs.kind).toBe("command")
+		if (withArgs.kind === "command") {
+			expect(withArgs.command).toBe(local)
+			expect(withArgs.argText).toBe("me out")
+		}
+	})
+
+	test("displayName rides ONLY the duplicate twin: unique host rows keep the bare gesture name with no suffix", () => {
+		const { t, calls } = stubT()
+		const merged = mergeHostCommands(
+			[localRow("/help")],
+			[hostRow("help"), hostRow("dcp"), hostRow("opencode-status")],
+			{ t },
+		)
+		const twins = merged.filter((c) => c.name === "/help" && c.source === "host")
+		expect(twins).toHaveLength(1)
+		expect(twins[0]?.displayName).toBe("/help ‹host›")
+		// the unique host rows: gesture name preserved, displayName unset —
+		// the suffix never leaks onto non-duplicate rows
+		const dcp = merged.find((c) => c.name === "/dcp")
+		expect(dcp?.source).toBe("host")
+		expect(dcp?.displayName).toBeUndefined()
+		const ocs = merged.find((c) => c.name === "/opencode-status")
+		expect(ocs?.displayName).toBeUndefined()
+		// hostSource was translated exactly once (the single twin)
+		expect(calls.filter((c) => c.key === "command.hostSource")).toEqual([
+			{ key: "command.hostSource", params: { name: "/help" } },
+		])
 	})
 })

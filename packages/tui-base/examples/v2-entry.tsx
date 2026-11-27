@@ -365,11 +365,14 @@ function V2SessionPageBody(props: {
 	// so the palette rows and Tab completion read the CURRENT rows.
 	const [skillRows, setSkillRows] = createSignal<SkillRow[]>(props.skills ?? [])
 	// Host command palette rows (the seam's `hostCommands` face): an
-	// INDEPENDENT signal — never a promise into this memo — written only while
-	// the palette is CLOSED (slashSync below), so an open palette's rows and
-	// highlight index can never jump mid-typing. The revision signal is the
-	// explicit reactive dependency; the row array identity alone would miss a
-	// reused-array write.
+	// INDEPENDENT signal — never a promise into this memo — rewritten whenever
+	// a pull settles, open or closed (the discipline below). Applying while
+	// the palette is OPEN is safe: applyHostRows resets the controller's
+	// highlight to the first row of the freshly merged table, so the visible
+	// list can grow mid-typing without the selection ever silently pointing
+	// at a different command. The revision signal is the explicit reactive
+	// dependency; the row array identity alone would miss a reused-array
+	// write.
 	const [hostRows, setHostRows] = createSignal<readonly SeamHostCommandRow[]>([])
 	const [hostRowsRevision, setHostRowsRevision] = createSignal(0)
 	const slashCommands = createMemo(() => {
@@ -1107,32 +1110,43 @@ function V2SessionPageBody(props: {
 		// session switch. The banner path still goes through recovery.newSession().
 		clearRecoveryUi: () => recovery.clearRecoveryState(),
 	}))
-	// Host-command refresh discipline — palette open→closed transitions ONLY;
-	// the keystroke path itself never touches the network. Opening the palette
-	// invalidates the bridge's host-command cache (`refresh()`) and kicks off
-	// ONE async pull; the pulled rows land in the `hostRows` signal only while
-	// the palette is CLOSED — while it is open they wait in `pendingHostRows`
-	// (the visible list and the highlight index must never mutate under the
-	// user's cursor) — and any sync that finds the palette closed flushes
-	// whatever is pending (covering closes that bypass this wrapper: esc /
-	// submit through the key filter land on the next sync, and a fetch that
-	// settles after the close applies directly).
+	// Host-command refresh discipline — ONE pull per palette open (the open
+	// edge); the keystroke path itself never touches the network. Opening the
+	// palette invalidates the bridge's host-command cache (`refresh()`) and
+	// kicks off ONE async pull; the pulled rows land in the `hostRows` signal
+	// WHENEVER they settle — open or closed. The first "/" of a session thus
+	// paints plugin commands as soon as the pull lands, no close/reopen
+	// needed (the old pending-until-close rule made them invisible on the
+	// first open). Safety of the open write: applyHostRows resets the
+	// highlight to row 0 of the freshly merged table (see below), so the
+	// selection can never execute a command the cursor never sat on. A pull
+	// that settles after a close also just applies — there is no visible
+	// highlight to protect. While a pull is in flight the signal keeps the
+	// PREVIOUS rows (never cleared), so an open palette does not flash an
+	// empty list — the merge keeps the locals until the new table arrives.
 	let paletteWasOpen = false
-	let pendingHostRows: readonly SeamHostCommandRow[] | undefined
 	const applyHostRows = (rows: readonly SeamHostCommandRow[]) => {
-		pendingHostRows = undefined
 		setHostRows(rows)
 		setHostRowsRevision((n) => n + 1)
+		// Selection resolution (reset-to-0, the simpler of the two safe
+		// options): the merged table changed identity AND order mid-open, so
+		// a carried-over index could point at a different row than the one
+		// highlighted a keystroke ago — Enter would run the wrong command.
+		// Index 0 always denotes the top of the NEW table, which is exactly
+		// what the user then sees highlighted. Closed, there is no visible
+		// highlight to protect.
+		if (slash.controller.open) slash.controller.resetSelection()
 	}
 	const pullHostRows = () => {
 		const face = seam.hostCommands
+		// Known-degraded face: skip the doomed wire round (the palette's
+		// status line already says unavailable). `refresh()` on a later open
+		// edge re-probes and can flip availability back — this early return
+		// never latches.
 		if (!face?.available()) return
 		void face
 			.list()
-			.then((rows) => {
-				if (slash.controller.open) pendingHostRows = rows
-				else applyHostRows(rows)
-			})
+			.then((rows) => applyHostRows(rows))
 			.catch(() => {})
 	}
 	const slashSync = (buffer: string) => {
@@ -1142,8 +1156,6 @@ function V2SessionPageBody(props: {
 		if (open && !wasOpen) {
 			seam.hostCommands?.refresh()
 			pullHostRows()
-		} else if (!open && pendingHostRows !== undefined) {
-			applyHostRows(pendingHostRows)
 		}
 		paletteWasOpen = open
 	}
