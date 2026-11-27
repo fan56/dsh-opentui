@@ -274,4 +274,67 @@ describe("LIVE TRANSCRIPT client fold", () => {
 		await tick()
 		expect(failing.seam.subagentTranscriptStatus("c2")).toBe("read-failed")
 	})
+
+	test("E12: idle parent turn accepts the first background batch when turnId is empty", () => {
+		const h = makeHarness()
+		h.emit(spawn("p", "c1"))
+		h.emit(transcript("p", "c1", 0, [assistant("idle-0")], "", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("idle-1")], "", "run-1"))
+		expect(h.seam.subagentTranscript("c1")).toEqual(["idle-0", "idle-1"])
+	})
+
+	test("E13: turnId epoch change preserves seq restarts for the same child run", () => {
+		const h = makeHarness()
+		h.emit(spawn("p", "c1"))
+		h.emit(transcript("p", "c1", 0, [assistant("T1-0")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("T1-1")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 0, [assistant("idle-0")], "", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("idle-1")], "", "run-1"))
+		expect(h.seam.subagentTranscript("c1")).toEqual(["T1-0", "T1-1", "idle-0", "idle-1"])
+	})
+
+	test("E14: duplicate seq within the same run/turn epoch remains deduped", () => {
+		const h = makeHarness()
+		h.emit(spawn("p", "c1"))
+		h.emit(transcript("p", "c1", 0, [assistant("epoch-0")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 0, [assistant("epoch-0 duplicate")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("epoch-1")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("epoch-1 duplicate")], "T1", "run-1"))
+		expect(h.seam.subagentTranscript("c1")).toEqual(["epoch-0", "epoch-1"])
+	})
+
+	test("E15: new runId resets seen even when turnId and seq are unchanged", () => {
+		const h = makeHarness()
+		h.emit(spawn("p", "c1"))
+		h.emit(transcript("p", "c1", 0, [assistant("run-A-0")], "T1", "run-A"))
+		h.emit(transcript("p", "c1", 0, [assistant("run-B-0")], "T1", "run-B"))
+		h.emit(transcript("p", "c1", 0, [assistant("run-B-0 duplicate")], "T1", "run-B"))
+		expect(h.seam.subagentTranscript("c1")).toEqual(["run-A-0", "run-B-0"])
+	})
+
+	test("E16: empty runId and turnId are rejected without resetting the active epoch", () => {
+		const h = makeHarness()
+		h.emit(spawn("p", "c1"))
+		h.emit(transcript("p", "c1", 0, [assistant("unidentified")], "", ""))
+		expect(h.seam.subagentTranscript("c1")).toEqual([])
+		h.emit(transcript("p", "c1", 0, [assistant("valid-0")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("unidentified again")], "", ""))
+		h.emit(transcript("p", "c1", 0, [assistant("valid-0 duplicate")], "T1", "run-1"))
+		h.emit(transcript("p", "c1", 1, [assistant("valid-1")], "T1", "run-1"))
+		expect(h.seam.subagentTranscript("c1")).toEqual(["valid-0", "valid-1"])
+	})
+
+	test("E17: settled and non-running children still reject live transcript", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		h.emit(transcript("p", "ghost", 0, [assistant("ghost row")], "T1", "run-ghost"))
+		expect(h.seam.subagentTranscript("ghost")).toEqual([])
+		h.emit(spawn("p", "c1"))
+		await tick()
+		h.emit(transcript("p", "c1", 0, [assistant("live")]))
+		h.emit(settle("p", "c1"))
+		h.emit(transcript("p", "c1", 1, [assistant("post-settle")], "T1", "run-1"))
+		expect(h.seam.subagentTranscript("c1")).toEqual(["live"])
+		expect(h.seam.subagentViews().find((view) => view.id === "c1")?.status).toBe("completed")
+	})
 })

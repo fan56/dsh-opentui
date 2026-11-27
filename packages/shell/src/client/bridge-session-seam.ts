@@ -2784,13 +2784,14 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #subagentTranscripts = new Map<string, string[]>()
 	/**
 	 * LIVE TRANSCRIPT — per-child dedupe/order of `agent.transcript` frames.
-	 * The dedupe identity is (childId, runId, seq). `runId` is the CHILD run
-	 * identity (catalog childCreatedAt / tool-workflow runId), NOT the parent
-	 * turn: one parent turn can settle a child and re-spawn it with seq back at
-	 * 0. A changed runId opens a fresh seen-set; a new `agent.spawn` also clears
-	 * the old run's seen/settle lock. The journal baseline lines stay.
+	 * The dedupe identity is (childId, runId, turnId, seq). `runId` is the
+	 * CHILD run identity, while `turnId` is the parent-turn epoch: the host's
+	 * child seq restarts when either identity changes (including an idle parent
+	 * turn with turnId=""). A changed runId or turnId opens a fresh seen-set;
+	 * a new `agent.spawn` also clears the old run's seen/settle lock. The
+	 * journal baseline lines stay.
 	 */
-	readonly #subagentTranscriptRuns = new Map<string, { runId: string; seen: Set<number> }>()
+	readonly #subagentTranscriptRuns = new Map<string, { runId: string; turnId: string; seen: Set<number> }>()
 	/** LIVE TRANSCRIPT — a settled child is journal-authoritative; no live append. */
 	readonly #subagentTranscriptSettled = new Set<string>()
 	/** LIVE TRANSCRIPT — a child whose journal read was attempted and failed. */
@@ -4706,23 +4707,23 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	/**
 	 * LIVE TRANSCRIPT — append one additive `agent.transcript` frame to the
-	 * child's viewer log. Dedupe identity is (childId, runId, seq): duplicate
-	 * frames (e.g. a replayed stdio frame) never double-paint; a NEW CHILD run
-	 * (new runId) opens a fresh seen-set even inside the same parent turn, where
-	 * `seq` restarts at 0. `turnId` remains required as the parent-turn tag and
-	 * is the fallback identity only for a pre-runId bridge frame. A settled or
-	 * unknown child is refused — after settle the journal read is the only
-	 * authority. Both caps are enforced on every append.
+	 * child's viewer log. Dedupe identity is (childId, runId, turnId, seq):
+	 * duplicate frames (e.g. a replayed stdio frame) never double-paint; a new
+	 * child run OR parent-turn epoch opens a fresh seen-set even when `seq`
+	 * restarts at 0. At least one of runId/turnId must identify the frame; an
+	 * idle parent turn (turnId="") remains valid when runId is non-empty. A
+	 * settled or unknown child is refused — after settle the journal read is
+	 * the only authority. Both caps are enforced on every append.
 	 */
 	#foldAgentTranscript(frame: BridgeEventFrame): void {
 		const payload = asRecord(frame.payload)
 		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
 		const childId = typeof payload.childId === "string" ? payload.childId : ""
 		const turnId = typeof payload.turnId === "string" ? payload.turnId : ""
-		const runId = typeof payload.runId === "string" && payload.runId !== "" ? payload.runId : turnId
+		const runId = typeof payload.runId === "string" ? payload.runId : ""
 		const seq = typeof payload.seq === "number" && Number.isFinite(payload.seq) ? payload.seq : -1
 		const rows = payload.rows
-		if (childId === "" || turnId === "" || seq < 0 || !Array.isArray(rows)) return
+		if (childId === "" || (runId === "" && turnId === "") || seq < 0 || !Array.isArray(rows)) return
 		if (this.#subagentTranscriptSettled.has(childId)) return
 		const view = this.#subagentViews.get(childId)
 		// No ghost rows: only a currently RUNNING child of this binding accepts
@@ -4737,8 +4738,8 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (frameSession !== "") this.#subagentSessionId = frameSession
 		} else if (frameSession !== "" && frameSession !== this.#subagentSessionId) return
 		let run = this.#subagentTranscriptRuns.get(childId)
-		if (run === undefined || run.runId !== runId) {
-			run = { runId, seen: new Set<number>() }
+		if (run === undefined || run.runId !== runId || run.turnId !== turnId) {
+			run = { runId, turnId, seen: new Set<number>() }
 			this.#subagentTranscriptRuns.set(childId, run)
 		}
 		if (run.seen.has(seq)) return
