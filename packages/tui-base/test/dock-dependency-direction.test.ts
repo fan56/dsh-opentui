@@ -30,9 +30,16 @@ interface ModuleReferences {
 	dynamic: string[]
 }
 
+interface DynamicReference {
+	from: string
+	target: string
+	specifier: string
+}
+
 interface StaticClosure {
 	parents: Map<string, string | null>
 	visited: string[]
+	dynamicReferences: DynamicReference[]
 }
 
 const referenceCache = new Map<string, ModuleReferences>()
@@ -128,25 +135,33 @@ function moduleReferences(file: string): ModuleReferences {
 	return references
 }
 
-/** Walk the static closure and retain parents for failure paths. */
+/** Walk the static closure, resolving literal dynamic imports from every reachable file. */
 function staticClosure(start: string): StaticClosure {
 	const cached = staticClosureCache.get(start)
 	if (cached !== undefined) return cached
 
 	const parents = new Map<string, string | null>([[start, null]])
+	const dynamicReferences: DynamicReference[] = []
 	const queue = [start]
 
 	while (queue.length > 0) {
 		const file = queue.shift()!
-		for (const specifier of moduleReferences(file).static) {
+		const references = moduleReferences(file)
+		for (const specifier of references.static) {
 			const dependency = resolveSpecifier(file, specifier)
 			if (dependency === null || !isInsideSrc(dependency) || parents.has(dependency)) continue
 			parents.set(dependency, file)
 			queue.push(dependency)
 		}
+		for (const specifier of references.dynamic) {
+			const dependency = resolveSpecifier(file, specifier)
+			if (dependency !== null && isInsideSrc(dependency)) {
+				dynamicReferences.push({ from: file, target: dependency, specifier })
+			}
+		}
 	}
 
-	const closure = { parents, visited: [...parents.keys()] }
+	const closure = { parents, visited: [...parents.keys()], dynamicReferences }
 	staticClosureCache.set(start, closure)
 	return closure
 }
@@ -181,6 +196,32 @@ function expectNoStaticPath(start: string, target: string): void {
 		)
 	}
 	expect(path).toBeNull()
+}
+
+function expectNoDynamicPath(start: string, targets: readonly string[]): void {
+	const targetSet = new Set(targets)
+	const violations: string[] = []
+	for (const reference of staticClosure(start).dynamicReferences) {
+		if (!targetSet.has(reference.target)) continue
+		const path = staticPathTo(start, reference.from)
+		if (path === null) {
+			throw new Error(`Missing static closure parent path for ${displayPath(reference.from)}`)
+		}
+		violations.push(
+			`${path.map(displayPath).join(" -> ")} --dynamic import ${reference.specifier}--> ${displayPath(reference.target)}`,
+		)
+	}
+	if (violations.length > 0) {
+		throw new Error(
+			[
+				"Dock dependency direction violation",
+				`start: ${displayPath(start)}`,
+				`targets: ${targets.map(displayPath).join(", ")}`,
+				`paths:\n${violations.join("\n")}`,
+			].join("\n"),
+		)
+	}
+	expect(violations).toEqual([])
 }
 
 function directReferencesTo(file: string, targets: readonly string[]): string[] {
@@ -224,15 +265,17 @@ describe("one-way dock dependency direction", () => {
 		expect(references).toEqual([])
 	})
 
-	test("the merged-dock static closure cannot reach widgets-dock", () => {
+	test("the merged-dock static closure has no static or dynamic path to widgets-dock", () => {
 		expect(staticPathTo(WIDGETS_DOCK, MERGED_DOCK)).not.toBeNull()
 		expectStaticClosureLowerBound(MERGED_DOCK)
 		expectNoStaticPath(MERGED_DOCK, WIDGETS_DOCK)
+		expectNoDynamicPath(MERGED_DOCK, [WIDGETS_DOCK])
 	})
 
-	test("the dock-line-primitives static closure cannot reach merged-dock or widgets-dock", () => {
+	test("the dock-line-primitives static closure has no static or dynamic path to either dock", () => {
 		expectStaticClosureLowerBound(DOCK_LINE_PRIMITIVES)
 		expectNoStaticPath(DOCK_LINE_PRIMITIVES, MERGED_DOCK)
 		expectNoStaticPath(DOCK_LINE_PRIMITIVES, WIDGETS_DOCK)
+		expectNoDynamicPath(DOCK_LINE_PRIMITIVES, [MERGED_DOCK, WIDGETS_DOCK])
 	})
 })
