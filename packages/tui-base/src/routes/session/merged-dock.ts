@@ -319,12 +319,12 @@ function coexistenceToolLine(tool: MergedToolRow, now: number, spin: () => numbe
 }
 
 /** Tool-only mode (D5/D8): the FULL `toolLineText` format (subject/detail
- * included), reused verbatim from widgets-dock. */
+ * included), reused verbatim from dock-line-primitives. */
 function toolOnlyLine(tool: MergedToolRow, now: number, spin: () => number): MergedDockLine {
 	const text = toolLineText(tool, spin, now)
 	const marker = toolMarker(tool.status)
 	const tone = toneForTool(tool.status)
-	// `toolLineText` returns `${marker} ${body}` (widgets-dock.tsx:538-542), so
+	// `toolLineText` returns `${marker} ${body}` (dock-line-primitives.ts), so
 	// the glyph is at offset 0. Split it into a tone-colored marker segment and
 	// an accent-colored body segment; joined text is byte-for-byte the original.
 	return {
@@ -354,7 +354,7 @@ export function latestThinkRow(rows: readonly MergedThinkRow[]): MergedThinkRow 
 }
 
 /** Think lines (D1/D5, gear-driven since 2026-11-19): the text is produced by
- * the shared `thinkBlockLines` (widgets-dock.tsx) with `maxLines = thinkLines`
+ * the shared `thinkBlockLines` (dock-line-primitives.ts) with `maxLines = thinkLines`
  * — the same `💭 thinking · <secs> · <snippet>` / `💭 thought · <secs> ·
  * <snippet>` format the old upper zone used, never a second hand-rolled
  * format. Continuation lines carry the 3-column indent from `thinkBlockLines`.

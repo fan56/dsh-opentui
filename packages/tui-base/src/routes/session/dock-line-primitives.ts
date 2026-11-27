@@ -1,9 +1,10 @@
 /**
- * Shared pure line primitives for the activity dock.
+ * Shared line primitives for the activity dock.
  *
  * This module holds the row helpers, row types and todo-brief clock shared by
  * the dock's data and view layers. It contains no view-layer code and no
- * renderer imports; every declaration here is a pure helper or a data type.
+ * renderer imports; every declaration here is a pure helper, a data type, or
+ * the module-level todo-brief clock (one mutable `Map`).
  */
 
 import type { SeamRow } from "./seam-rows"
@@ -66,7 +67,7 @@ export interface MergedDockLine {
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers (from the widgets view layer)
+// Helpers and the todo-brief clock (from the widgets view layer)
 // ---------------------------------------------------------------------------
 
 /** The stop anchor a view can compute WITHOUT touching the store: the row
