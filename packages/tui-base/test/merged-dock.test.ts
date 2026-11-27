@@ -327,6 +327,71 @@ describe("mergedDockLines — agent name (F5)", () => {
 	})
 })
 
+describe("mergedDockLines — agent last-line preview budget", () => {
+	const now = 4_000
+	const head = "└─ agent-a · 3.0s · round 3"
+	const renderAgent = (lastLine: string | undefined, innerWidth: number, overrides: Partial<MergedAgent> = {}) =>
+		mergedDockLines(
+			{ tools: [], todos: [], agents: [agent("a", { lastLine, ...overrides })] },
+			{ innerWidth, now },
+		).find((line) => line.kind === "agent")!
+
+	test("uses the remaining terminal width for a long ASCII preview", () => {
+		const innerWidth = 103
+		const lastLine = `${"0123456789".repeat(12)}-VISIBLE-LONG-PREVIEW-END`
+		const text = textOf(renderAgent(lastLine, innerWidth)).trimEnd()
+		expect(stringWidth(text)).toBeGreaterThanOrEqual(innerWidth - 1)
+		expect(text.endsWith("-VISIBLE-LONG-PREVIEW-END")).toBe(true)
+	})
+
+	test("keeps a grapheme-safe CJK/emoji suffix at the cutoff", () => {
+		const innerWidth = 61
+		const lastLine = `${"前".repeat(20)}👩🏽‍💻e\u0301`
+		const text = textOf(renderAgent(lastLine, innerWidth)).trimEnd()
+		const prefix = `${head} · `
+		expect(text.startsWith(prefix)).toBe(true)
+		const tail = text.slice(prefix.length)
+		const budget = innerWidth - stringWidth(head) - stringWidth(" · ")
+		const suffix = "👩🏽‍💻e\u0301"
+		const n = Math.floor((budget - stringWidth(suffix)) / stringWidth("前"))
+		expect(tail).toBe(`${"前".repeat(n)}${suffix}`)
+		expect(stringWidth(tail)).toBe(budget)
+		expect(stringWidth(`前${tail}`)).toBeGreaterThan(budget)
+		expect(lastLine.endsWith(tail)).toBe(true)
+		expect(stringWidth(text)).toBe(innerWidth)
+	})
+
+	test("does not throw and still fits when a long CJK label makes the tail budget negative", () => {
+		const innerWidth = 40
+		const render = () => renderAgent("visible tail", innerWidth, { label: "界".repeat(80) })
+		expect(render).not.toThrow()
+		expect(stringWidth(textOf(render()))).toBe(innerWidth)
+	})
+
+	test("omits the dangling separator for missing or whitespace-only tails", () => {
+		for (const lastLine of [undefined, "", " \t\r\n \r\n"]) {
+			const text = textOf(renderAgent(lastLine, 80)).trimEnd()
+			expect(text).toBe(head)
+			expect(text.endsWith(" · ")).toBe(false)
+		}
+	})
+
+	test("keeps a short tail without a dangling separator", () => {
+		const text = textOf(renderAgent("done", 80)).trimEnd()
+		expect(text).toBe(`${head} · done`)
+		expect(text.endsWith(" · ")).toBe(false)
+	})
+
+	test("shows only the last non-empty streamed line with whitespace folded", () => {
+		const lastLine = "stale first line\r\n  final   token\t sequence  \r\n \t\r\n"
+		const text = textOf(renderAgent(lastLine, 80)).trimEnd()
+		expect(text).toBe(`${head} · final token sequence`)
+		expect(text).not.toContain("stale first line")
+		expect(text).not.toMatch(/[\r\n\t]/u)
+		expect(text).not.toContain("  ")
+	})
+})
+
 describe("mergedDockLines — think row above tool (D1/D5)", () => {
 	const now = 4_000 // 3.0s elapsed for entries started at 1000
 

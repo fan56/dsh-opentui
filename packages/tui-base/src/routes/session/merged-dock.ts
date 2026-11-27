@@ -273,6 +273,18 @@ function widthTail(text: string, maxWidth: number): string {
 	return out
 }
 
+/** Last non-blank streamed line, folded onto one row so a trailing delta's
+ * newline cannot blank the preview and repeated whitespace cannot inflate it. */
+function normalizedLastLine(text: string | undefined): string {
+	if (text === undefined) return ""
+	const lines = text.replace(/\r\n?/g, "\n").split("\n")
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i]!.trim()
+		if (line !== "") return line.replace(/\s+/gu, " ")
+	}
+	return ""
+}
+
 function secsFrom(startedAt: number | undefined, elapsedSec: number | undefined, now: number): string {
 	if (startedAt !== undefined) return `${((now - startedAt) / 1000).toFixed(1)}s`
 	if (elapsedSec !== undefined) return `${elapsedSec.toFixed(1)}s`
@@ -375,13 +387,25 @@ function thinkLinesFor(row: MergedThinkRow, now: number, spin: () => number, thi
 
 /** Agent sub-line (D6): `├─ `/`└─ ` branch, indented just after the index,
  * `<label> · <Xs> · round <N> · <lastLine tail>`. */
-function agentLine(agent: MergedAgent, position: number, count: number, parentIndex?: number, now = Date.now()): MergedDockLine {
+function agentLine(
+	agent: MergedAgent,
+	position: number,
+	count: number,
+	innerWidth: number,
+	parentIndex?: number,
+	now = Date.now(),
+): MergedDockLine {
 	const branch = position === count - 1 ? "└─ " : "├─ "
 	const indent = parentIndex === undefined ? "" : " ".repeat(stringWidth(`${TODO_STATUS_GLYPHS.in_progress} ${parentIndex} `))
 	const elapsed = secsFrom(agent.startedAt, agent.elapsedSec, now)
-	const tail = widthTail(agent.lastLine ?? "", 32)
 	const namePrefix = subagentNamePrefix(agent.name, agent.label)
-	const content = `${agent.label} · ${elapsed} · round ${agent.rounds} · ${tail}`
+	const prefix = `${indent}${branch}${namePrefix}`
+	const labelPart = `${agent.label} · ${elapsed} · round ${agent.rounds}`
+	const head = `${prefix}${labelPart}`
+	const lastLine = normalizedLastLine(agent.lastLine)
+	const tailBudget = lastLine === "" ? 0 : innerWidth - stringWidth(head) - stringWidth(" · ")
+	const tail = tailBudget <= 0 ? "" : widthTail(lastLine, tailBudget)
+	const content = tail.trim() === "" ? labelPart : `${labelPart} · ${tail}`
 	return {
 		kind: "agent",
 		index: parentIndex,
@@ -474,7 +498,7 @@ function buildMergedDock(
 		if (brief !== "") upperLines.push({ kind: "todo", segments: [{ text: brief, tone: "running" }] })
 		// The subagent list takes ALL remaining lines under the existing scroll
 		// clipping. No parent todo row: the todo is the brief above.
-		lowerRaw = agents.map((agent, i) => agentLine(agent, i, agents.length, undefined, now))
+		lowerRaw = agents.map((agent, i) => agentLine(agent, i, agents.length, options.innerWidth, undefined, now))
 	} else if (scene === "B") {
 		// Think exclusive: gear-driven think lines; tool/todo/subagent all hidden.
 		upperLines = thinkAtGear
