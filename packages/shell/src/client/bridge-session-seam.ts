@@ -146,6 +146,29 @@ import {
 // driven by additive `agent.progress` rounds, delivered through the seam's real
 // child steer/interrupt faces (settings-defaults-029 default-50 blocker).
 import { SubagentRoundPolicy, parseSubagentRoundLimits } from "../subagent-policy.ts"
+import { BridgeProtocolError } from "./seam-projections/bridge-protocol-error.ts"
+import {
+	projectBridgePruneApply,
+	projectBridgePurgeCommit,
+	projectBridgePurgePrepare,
+	projectBridgePrunePlan,
+	projectBridgePruneRestore,
+	projectBridgePruneRestoreList,
+} from "./seam-projections/prune-purge.ts"
+import type { BridgePrunePlan } from "./seam-projections/prune-purge.ts"
+import { projectBridgeSessionList, projectCurrentCwd } from "./seam-projections/session-list.ts"
+
+export { BridgeProtocolError } from "./seam-projections/bridge-protocol-error.ts"
+export {
+	projectBridgePruneApply,
+	projectBridgePurgeCommit,
+	projectBridgePurgePrepare,
+	projectBridgePrunePlan,
+	projectBridgePruneRestore,
+	projectBridgePruneRestoreList,
+} from "./seam-projections/prune-purge.ts"
+export type { BridgePrunePlan, BridgePrunePlanEntry } from "./seam-projections/prune-purge.ts"
+export { projectBridgeSessionList, projectCurrentCwd } from "./seam-projections/session-list.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -166,19 +189,6 @@ const CONFIRM_REQUIRED = (method: string) =>
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
 // ---------------------------------------------------------------------------
-
-/** A decoded `response{ok:false,error}` frame. `code` is the ADR-0010 code. */
-export class BridgeProtocolError extends Error {
-	readonly code: string
-	readonly detail?: unknown
-
-	constructor(code: string, message: string, detail?: unknown) {
-		super(message)
-		this.name = "BridgeProtocolError"
-		this.code = code
-		if (detail !== undefined) this.detail = detail
-	}
-}
 
 /** One `event{type,payload}` frame from the bridge. */
 export interface BridgeEventFrame {
@@ -510,215 +520,6 @@ function accountClientMeta(): { version: string; locale: string; timezoneOffsetS
 	}
 }
 
-/** retention P1 — read-only prune plan (dry run). The wire reply is projected
- *  through a whitelist: no host path or extra field leaks past these shapes,
- *  and a malformed reply is a protocol error (never a fake empty plan). */
-export interface BridgePrunePlanEntry {
-	sessionId: string
-	decision: "prune" | "skip"
-	reason?: string
-	location?: string
-	ageDays?: number
-}
-export interface BridgePrunePlan {
-	generatedAt: number
-	retentionDays: number
-	entries: readonly BridgePrunePlanEntry[]
-	counts: { prune: number; skip: number; byReason: Record<string, number> }
-	/** Opaque host receipts echoed verbatim by applyPrune (never re-minted). */
-	fingerprint?: string
-	configFingerprint?: string
-}
-
-export function projectBridgePrunePlan(value: unknown): BridgePrunePlan {
-	const record = asRecord(value)
-	if (!Array.isArray(record.entries)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no entries array")
-	}
-	const entries: BridgePrunePlanEntry[] = []
-	for (const raw of record.entries) {
-		const row = asRecord(raw)
-		if (typeof row.sessionId !== "string" || (row.decision !== "prune" && row.decision !== "skip")) continue
-		const entry: BridgePrunePlanEntry = { sessionId: row.sessionId, decision: row.decision }
-		if (typeof row.reason === "string") entry.reason = row.reason
-		if (typeof row.location === "string") entry.location = row.location
-		if (typeof row.ageDays === "number" && Number.isFinite(row.ageDays)) entry.ageDays = row.ageDays
-		entries.push(entry)
-	}
-	// OLD CRITERION (SUPERSEDED, oldfox P1 CONCERN): a missing generatedAt /
-	// retentionDays / counts was filled with 0, and counts were copied from
-	// the wire AFTER entries were silently filtered. Both hid protocol and
-	// dataflow faults. Missing/invalid required fields now throw a protocol
-	// error (never a fake 0), and counts are recomputed from POST-FILTER
-	// entries so the plan is always internally consistent.
-	if (typeof record.generatedAt !== "number" || !Number.isFinite(record.generatedAt)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid generatedAt")
-	}
-	if (typeof record.retentionDays !== "number" || !Number.isFinite(record.retentionDays)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid retentionDays")
-	}
-	const countsRaw = record.counts
-	if (
-		countsRaw === null || typeof countsRaw !== "object" || Array.isArray(countsRaw) ||
-		typeof (countsRaw as Record<string, unknown>).prune !== "number" ||
-		typeof (countsRaw as Record<string, unknown>).skip !== "number" ||
-		(countsRaw as Record<string, unknown>).byReason === null ||
-		typeof (countsRaw as Record<string, unknown>).byReason !== "object" ||
-		Array.isArray((countsRaw as Record<string, unknown>).byReason)
-	) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.plan returned no valid counts")
-	}
-	const byReason: Record<string, number> = {}
-	let prune = 0
-	let skip = 0
-	for (const entry of entries) {
-		if (entry.decision === "prune") {
-			prune += 1
-		} else {
-			skip += 1
-			const reason = entry.reason ?? "unknown"
-			byReason[reason] = (byReason[reason] ?? 0) + 1
-		}
-	}
-	return {
-		generatedAt: record.generatedAt,
-		retentionDays: record.retentionDays,
-		entries,
-		counts: { prune, skip, byReason },
-		...(typeof record.fingerprint === "string" ? { fingerprint: record.fingerprint } : {}),
-		...(typeof record.configFingerprint === "string" ? { configFingerprint: record.configFingerprint } : {}),
-	}
-}
-
-// ---------------------------------------------------------------------------
-// retention P2/P3 — SECOND whitelists for the write-side replies. Every host
-// path / journal / manifest field is DROPPED here: the TUI never displays an
-// absolute path, and a malformed reply is a protocol error (never a fake OK).
-// Transport errors are NOT caught by the seam faces — they propagate as-is.
-// ---------------------------------------------------------------------------
-
-export function projectBridgePruneApply(value: unknown): SessionPruneApplyResult {
-	const record = asRecord(value)
-	if (typeof record.opId !== "string" || record.opId === "") {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.apply returned no valid opId")
-	}
-	if (!Array.isArray(record.applied) || !Array.isArray(record.failed)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.apply returned no applied/failed arrays")
-	}
-	const applied: { id: string }[] = []
-	for (const raw of record.applied) {
-		const row = asRecord(raw)
-		if (typeof row.id === "string" && row.id !== "") applied.push({ id: row.id })
-	}
-	const failed: { id: string; code: string; message: string }[] = []
-	for (const raw of record.failed) {
-		const row = asRecord(raw)
-		if (typeof row.id !== "string" || typeof row.code !== "string" || typeof row.message !== "string") continue
-		failed.push({ id: row.id, code: row.code, message: row.message.slice(0, 300) })
-	}
-	return {
-		opId: record.opId,
-		applied,
-		failed,
-		markedOrphans: Array.isArray(record.markedOrphans) ? record.markedOrphans.length : 0,
-	}
-}
-
-export function projectBridgePurgePrepare(value: unknown): SessionPurgePrepareResult {
-	const record = asRecord(value)
-	if (typeof record.opId !== "string" || typeof record.token !== "string" || record.token === "") {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.purge prepare returned no opId/token")
-	}
-	if (!Array.isArray(record.candidates) || !Array.isArray(record.rejected)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.purge prepare returned no candidates/rejected arrays")
-	}
-	const candidates: Array<SessionPurgePrepareResult["candidates"][number]> = []
-	for (const raw of record.candidates) {
-		const row = asRecord(raw)
-		if (typeof row.id !== "string" || row.id === "") continue
-		if (typeof row.ageDays !== "number" || !Number.isFinite(row.ageDays)) continue
-		if (typeof row.appliedAt !== "number" || !Number.isFinite(row.appliedAt)) continue
-		candidates.push({ id: row.id, ageDays: row.ageDays, appliedAt: row.appliedAt })
-	}
-	const rejected: Array<SessionPurgePrepareResult["rejected"][number]> = []
-	for (const raw of record.rejected) {
-		const row = asRecord(raw)
-		if (typeof row.code !== "string" || typeof row.message !== "string") continue
-		rejected.push({
-			...(typeof row.id === "string" ? { id: row.id } : {}),
-			code: row.code,
-			message: row.message.slice(0, 300),
-		})
-	}
-	return { opId: record.opId, token: record.token, candidates, rejected }
-}
-
-export function projectBridgePurgeCommit(value: unknown): SessionPurgeCommitResult {
-	const record = asRecord(value)
-	if (typeof record.opId !== "string" || record.opId === "") {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.purge commit returned no valid opId")
-	}
-	if (!Array.isArray(record.purged) || !Array.isArray(record.failed)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.purge commit returned no purged/failed arrays")
-	}
-	const purged: { id: string }[] = []
-	for (const raw of record.purged) {
-		const row = asRecord(raw)
-		if (typeof row.id === "string" && row.id !== "") purged.push({ id: row.id })
-	}
-	const failed: Array<SessionPurgeCommitResult["failed"][number]> = []
-	for (const raw of record.failed) {
-		const row = asRecord(raw)
-		if (typeof row.code !== "string" || typeof row.message !== "string") continue
-		failed.push({
-			...(typeof row.id === "string" ? { id: row.id } : {}),
-			code: row.code,
-			message: row.message.slice(0, 300),
-		})
-	}
-	return { opId: record.opId, purged, failed }
-}
-
-// ---------------------------------------------------------------------------
-// retention B4/C7 — SECOND whitelist for the restore replies. Every host path /
-// run / manifest / journal field is DROPPED: the TUI sees only id + time +
-// optional size, and a malformed reply is a protocol error (never a fake list).
-// ---------------------------------------------------------------------------
-
-export function projectBridgePruneRestoreList(value: unknown): SessionPruneRestoreList {
-	const record = asRecord(value)
-	if (!Array.isArray(record.entries) || !Array.isArray(record.rejected)) {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.restore list returned no entries/rejected arrays")
-	}
-	const entries: SessionPruneRestoreList["entries"][number][] = []
-	for (const raw of record.entries) {
-		const row = asRecord(raw)
-		if (typeof row.id !== "string" || row.id === "") continue
-		if (typeof row.movedAt !== "number" || !Number.isFinite(row.movedAt)) continue
-		entries.push({
-			id: row.id,
-			movedAt: row.movedAt,
-			...(typeof row.size === "number" && Number.isFinite(row.size) && row.size > 0 ? { size: row.size } : {}),
-		})
-	}
-	const rejected: SessionPruneRestoreList["rejected"][number][] = []
-	for (const raw of record.rejected) {
-		const row = asRecord(raw)
-		if (typeof row.code !== "string" || typeof row.message !== "string") continue
-		rejected.push({ code: row.code, message: row.message.slice(0, 300) })
-	}
-	return { entries, rejected }
-}
-
-export function projectBridgePruneRestore(value: unknown): SessionPruneRestoreResult {
-	const record = asRecord(value)
-	if (typeof record.id !== "string" || record.id === "" || record.restored !== true ||
-		typeof record.opId !== "string" || record.opId === "") {
-		throw new BridgeProtocolError("INTERNAL", "session.prune.restore returned no valid id/restored/opId")
-	}
-	return { id: record.id, restored: true, opId: record.opId }
-}
-
 /** Bridge codes that are ordinary steer refusals (not transport failures).
  *  Everything else propagates unchanged — a rejected steer is never retried. */
 const STEER_REJECTION_CODES = new Set([
@@ -737,56 +538,6 @@ function unsupported(capability: string): never {
 		`${capability} is not backed by the in-process bridge`,
 		{ capability },
 	)
-}
-
-/**
- * `session.list` wire rows → `SeamSessionSummary[]`.
- *
- * Mirrors remote-session-ops.ts:271-305 (retention filter, origin subagent out,
- * title at `projections.values.title` sliced to 40, cwd/sizeBytes/blank
- * pass-through, updatedAt-desc sort, `slice(0, limit)`) and
- * session-seam-adapter.ts:174-184 (RemoteSessionRow → SeamSessionSummary).
- * The seam has no `retentionDays` arm, so the cutoff is off (retentionDays=0).
- */
-export function projectBridgeSessionList(items: unknown, limit = 12): SeamSessionSummary[] {
-	const rows = Array.isArray(items) ? items : []
-	const out: SeamSessionSummary[] = []
-	for (const item of rows) {
-		const row = asRecord(item)
-		// subagent children are not user-resumable (same rule as remote).
-		if (row.origin === "subagent") continue
-		const id = typeof row.sessionId === "string" ? row.sessionId : ""
-		if (!id) continue
-		const updatedAt = typeof row.updatedAt === "number" ? String(row.updatedAt) : ""
-		const values = asRecord(asRecord(row.projections).values)
-		const title = typeof values.title === "string" ? values.title : ""
-		out.push({
-			id,
-			title: title.slice(0, 40),
-			...(updatedAt ? { updatedAt } : {}),
-			...(typeof row.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
-			...(typeof row.sizeBytes === "number" && Number.isFinite(row.sizeBytes) ? { sizeBytes: row.sizeBytes } : {}),
-			...(typeof row.blank === "boolean" ? { blank: row.blank } : {}),
-		})
-	}
-	return out.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit)
-}
-
-/**
- * 026 — `session/list` wire rows -> the current session's working directory.
- * SECOND whitelist: only a non-empty string `cwd` on the row whose `sessionId`
- * equals the bound current session crosses; the row's other fields / a hostile
- * object / an empty string are dropped (undefined = honest absence). The wire
- * is already hand-wired (`session/list`), so this adds NO capability id.
- */
-export function projectCurrentCwd(items: unknown, sessionId: string | undefined): string | undefined {
-	if (sessionId === undefined || sessionId === "" || !Array.isArray(items)) return undefined
-	for (const item of items) {
-		const row = asRecord(item)
-		if (row.sessionId !== sessionId) continue
-		return typeof row.cwd === "string" && row.cwd !== "" ? row.cwd : undefined
-	}
-	return undefined
 }
 
 /** One `journal.replay` row (the bridge's read-only durable row shape). */
