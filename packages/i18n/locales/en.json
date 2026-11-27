@@ -1134,5 +1134,9 @@
   "command.pruneRestore.done": "restored {id} from trash",
   "command.pruneRestore.conflict": "{id} could not be restored: a session with that id already exists",
   "command.pruneRestore.failed": "restore failed: {code} - {message}",
-  "notice.prune.available": "{n} session(s) can be reclaimed - /prune to review"
+  "notice.prune.available": "{n} session(s) can be reclaimed - /prune to review",
+  "command.hostSource": "{name} (plugin)",
+  "command.hostExecuted": "{name} executed (no output)",
+  "command.hostExecuteFailed": "host command {name} failed",
+  "command.hostUnavailable": "host command list unavailable"
 }

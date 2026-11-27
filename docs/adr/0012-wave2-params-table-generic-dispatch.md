@@ -28,8 +28,10 @@ Status: Draft（草案；W2-0 底座已落地，逐 id 放行随 W2-1 起各批�
 - wire 名规约：新 id 一律生成 `<namespace>.<name>` 双向表，既有 wire 名零迁移。
 - 调用参数按 `.d.ts` 顺序权威做位置重建；可选参缺省留 `undefined` 空位，后续索引不左移（防静默错型，R3）。
 - 错误面：hostInvoke 新文案 `NOT_WIRED: <id> <reason>` / `BAD_PARAMS: <id> <param> <reason>` / `BAD_KIND: <id> <reason>`；handleLine/seam 映射不变。
-- 可观测性：通用 arm 与 per-id arm 不相交；`check-capcontract` gate #10 对账手写集 ∪ 通用集与 ledger `in_wired`。
+- 可观测性：通用 arm 与 per-id arm 不相交；`check-capcontract` gate #10 对账 `CAP_HOST_WIRED_IDS` 手写集与 ledger `in_wired`（实际实现只对账手写集、不含通用放行集——D2 草案期「手写集 ∪ 通用集」的表述与实现有此一处差异，特此校准）。
 - 影响面裁剪（AMEND-4 终稿）：W2-0 落地时 `CAP_GENERIC_ADAPTERS` 为空、wired 计数不变（28）、bridge 可观测行为零变化，故 verify70/E2E 判定域不受本刀影响；generic arm 入 bundle 后 fingerprint 变更，0.24 时代真机证据对新 fingerprint 失效，波2 真机证据自 W2-1 起按新 bundle 重取，W2-6 收尾做一次新 bundle 上的 verify70 收口（或显式 NOT RUN + 理由）。
+
+- **W2-6 放行记录（2026-11-27）— `@deepseek-ai/dsh-commands#commands/list`（W2-6 第 2 项）**：判定依据 = unary、非拒绝族（不在 D4 deny-list 的 `account` / `credentials` / `settings` 三族内）、params 与 scope 行在生成表齐备、result jsonSchema 无敏感键（未触发 D4 手写投影例外）。该 id **只走 generic arm（`CAP_GENERIC_ADAPTERS` 白名单），不加入 `CAP_HOST_WIRED_IDS` 手写集**：加入 hand-wired 会让路由进入 per-family 手写链，而手写链没有 `dsh-commands` family，调用会抛 `NOT_WIRED`；generic arm 按生成表直调，无需手写 adapter，也使该 id 天然不在 gate #10 的手写集对账范围内（ledger `in_wired` 标注不随之变化）。
 
 ## 4. 后果（Consequences）
 
