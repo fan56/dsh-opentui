@@ -262,4 +262,77 @@ describe("BridgeSessionSeam.hostCommands (027)", () => {
 		expect(await h.seam.hostCommands.list()).toEqual(ROWS_A1)
 		expect(h.requests.filter((r) => r.method === "commands.list")).toHaveLength(3)
 	})
+
+	// ---- lazy-session ensure (#ensureSession): a fresh client (no binding)
+	// must open ONE session before the agentId-addressed commands.list ----
+
+	test("a fresh client (no binding) opens ONE session before commands.list — wire order pinned", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "s-new" } })
+		h.replies.set("commands.list", { kind: "value", value: ROWS_A1 })
+
+		// No resumeSession()/newSession() staging: the face must ensure a
+		// session on its own — exactly one open, then the list on that id.
+		expect(await h.seam.hostCommands.list()).toEqual(ROWS_A1)
+		expect(h.requests.map((r) => r.method)).toEqual(["session.open", "commands.list"])
+		expect(h.requests.filter((r) => r.method === "session.open")).toHaveLength(1)
+		expect(h.lastRequest("commands.list")?.params).toEqual({ agentId: "s-new" })
+	})
+
+	test("two concurrent list() calls merge onto ONE session.open (in-flight ensure)", async () => {
+		const h = makeHarness()
+		const openGate = deferred<unknown>()
+		h.replies.set("session.open", {
+			kind: "async",
+			fn: async () => {
+				await openGate.promise
+				return { kind: "value", value: { sessionId: "s-new" } }
+			},
+		})
+		h.replies.set("commands.list", { kind: "value", value: ROWS_A1 })
+
+		// The palette open edge fires refresh() + list() together: both list()
+		// calls must ride the SAME ensure promise — one open total.
+		const p1 = h.seam.hostCommands.list()
+		const p2 = h.seam.hostCommands.list()
+		expect(h.requests.filter((r) => r.method === "session.open")).toHaveLength(1)
+		openGate.resolve(undefined)
+		expect(await p1).toEqual(ROWS_A1)
+		expect(await p2).toEqual(ROWS_A1)
+		expect(h.requests.map((r) => r.method)).toEqual(["session.open", "commands.list"])
+	})
+
+	test("a failed session.open degrades list() to [] (never rejects) and stays retryable", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", {
+			kind: "error",
+			error: new BridgeProtocolError("SESSION_LOCKED", "held by another client"),
+		})
+		expect(await h.seam.hostCommands.list()).toEqual([])
+		expect(h.requests.map((r) => r.method)).toEqual(["session.open"])
+		expect(h.warnFor("hostCommands.list").length).toBeGreaterThan(0)
+
+		// The failed ensure cleared its merge slot: the next face call re-stages
+		// {mode:"new"} and retries the open (self-heal, same as turn()).
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "s-new" } })
+		h.replies.set("commands.list", { kind: "value", value: ROWS_A1 })
+		expect(await h.seam.hostCommands.list()).toEqual(ROWS_A1)
+		expect(h.requests.filter((r) => r.method === "session.open")).toHaveLength(2)
+	})
+
+	test("execute on a fresh client ensures the session too, then proxies the line", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "s-new" } })
+		h.replies.set("commands.execute", {
+			kind: "value",
+			value: { commandId: "c1", result: { kind: "success", text: "compacted" } },
+		})
+		expect(await h.seam.hostCommands.execute("/compact")).toEqual({ text: "compacted" })
+		expect(h.requests.map((r) => r.method)).toEqual(["session.open", "commands.execute"])
+		expect(h.lastRequest("commands.execute")?.params).toEqual({
+			agentId: "s-new",
+			line: "/compact",
+			submittedAttachments: [],
+		})
+	})
 })
