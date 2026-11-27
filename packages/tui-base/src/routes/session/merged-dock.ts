@@ -26,8 +26,13 @@ import {
 	todoTreeLines,
 	toolLineText,
 	toolMarker,
-	type DockAccent,
-} from "./widgets-dock"
+	TODO_STATUS_GLYPHS,
+	type MergedDockLine,
+	type MergedTone,
+} from "./dock-line-primitives"
+
+export { TODO_STATUS_GLYPHS } from "./dock-line-primitives"
+export type { MergedTone, MergedDockSegment, MergedDockLineKind, MergedDockLine } from "./dock-line-primitives"
 
 // ---------------------------------------------------------------------------
 // Constants & public types
@@ -40,16 +45,6 @@ export const MERGED_DOCK_TOTAL_LINES = 10
 
 /** Upper tool zone in tool-only mode is min 1 / max 3 lines (D8). */
 export const MERGED_DOCK_TOOL_ONLY_MAX = 3
-
-/** Status glyph definitions (D6). Only `in_progress` is rendered under the
- * active-only policy, but all four are defined and retained — `cancelled` is
- * `⊘`, distinct from `○` — do not delete them. */
-export const TODO_STATUS_GLYPHS = {
-	pending: "○",
-	in_progress: "●",
-	completed: "✓",
-	cancelled: "⊘",
-} as const
 
 /** A todo carrying its ORIGINAL 1-based plan index (D6/D7: plan order, no
  * renumbering, no rank reshuffle). */
@@ -73,45 +68,6 @@ export interface MergedDockData {
 	 * leaves it unset so `todoBriefLine` uses the unified text-signature
 	 * first-seen map (task set establishment time, status flips ignored). */
 	todoStartedAt?: number
-}
-
-export type MergedTone = "ok" | "running" | "failed" | "muted"
-
-export interface MergedDockSegment {
-	text: string
-	tone: MergedTone
-	/** Semantic accent (think violet / tool cyan) painted on THIS segment's
-	 * text, overriding `tone`. A segment without an accent paints in its tone
-	 * (this is how the tool status marker keeps its running/ok/failed color).
-	 * Mirrors `DockLine.accent` in widgets-dock.tsx:601-604. */
-	accent?: DockAccent
-}
-
-export type MergedDockLineKind = "think" | "tool" | "todo" | "agent" | "more-top" | "more-bottom"
-
-export interface MergedDockLine {
-	kind: MergedDockLineKind
-	/** Original 1-based plan index for todo lines (absent on other kinds). */
-	index?: number
-	segments: MergedDockSegment[]
-	/** Stable entrance-fade key — spinner glyphs churn the text, so the id is
-	 * derived from the row key, not the rendered text (D3). Think/tool only.
-	 * Consumed by `skinLineFadeT` / `skinDockLineFg` (widgets-dock.tsx:279,
-	 * :305). */
-	id?: string
-	/** Exit-fade anchor in ms-epoch, from `skinStopAt(row)` — undefined while
-	 * the row is live/running (D3). Think/tool only. */
-	fadeOutAt?: number
-	/** Leading status glyph (⚙/✔/✘) inside the joined segment text, painted
-	 * with `tone` while the body uses its `accent` (legacy `dockLineNode`
-	 * marker mechanism, widgets-dock.tsx:1336-1372). Tool lines only. */
-	marker?: string
-	/** Offset of `marker` inside the joined segment text. Always 0 here — the
-	 * glyph leads both the coexistence and tool-only layouts. */
-	markerAt?: number
-	/** Italic whole line (think rows). Italic is a whole-line property, so this
-	 * is the single source of truth the view reads (no segment-level italic). */
-	italic?: boolean
 }
 
 export interface MergedDockOptions {
@@ -363,12 +319,12 @@ function coexistenceToolLine(tool: MergedToolRow, now: number, spin: () => numbe
 }
 
 /** Tool-only mode (D5/D8): the FULL `toolLineText` format (subject/detail
- * included), reused verbatim from widgets-dock. */
+ * included), reused verbatim from dock-line-primitives. */
 function toolOnlyLine(tool: MergedToolRow, now: number, spin: () => number): MergedDockLine {
 	const text = toolLineText(tool, spin, now)
 	const marker = toolMarker(tool.status)
 	const tone = toneForTool(tool.status)
-	// `toolLineText` returns `${marker} ${body}` (widgets-dock.tsx:538-542), so
+	// `toolLineText` returns `${marker} ${body}` (dock-line-primitives.ts), so
 	// the glyph is at offset 0. Split it into a tone-colored marker segment and
 	// an accent-colored body segment; joined text is byte-for-byte the original.
 	return {
@@ -398,7 +354,7 @@ export function latestThinkRow(rows: readonly MergedThinkRow[]): MergedThinkRow 
 }
 
 /** Think lines (D1/D5, gear-driven since 2026-11-19): the text is produced by
- * the shared `thinkBlockLines` (widgets-dock.tsx) with `maxLines = thinkLines`
+ * the shared `thinkBlockLines` (dock-line-primitives.ts) with `maxLines = thinkLines`
  * — the same `💭 thinking · <secs> · <snippet>` / `💭 thought · <secs> ·
  * <snippet>` format the old upper zone used, never a second hand-rolled
  * format. Continuation lines carry the 3-column indent from `thinkBlockLines`.
