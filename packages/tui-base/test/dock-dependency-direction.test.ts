@@ -2,8 +2,10 @@
  * Permanent guard for the one-way dock split:
  *   widgets-dock -> merged-dock -> dock-line-primitives
  *
- * The transitive checks use the TypeScript AST (including type-only imports and
- * export-from declarations), not source text or direct-import spot checks.
+ * The transitive checks walk relative imports and this package's package.json
+ * imports; external bare packages are excluded. AST collection includes
+ * import/export-from, import types, and literal dynamic imports with optional
+ * import attributes, rather than relying on source-text spot checks.
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, statSync } from "node:fs"
@@ -15,13 +17,26 @@ const SESSION_DIR = join(SRC_DIR, "routes", "session")
 const MERGED_DOCK = join(SESSION_DIR, "merged-dock.ts")
 const WIDGETS_DOCK = join(SESSION_DIR, "widgets-dock.tsx")
 const DOCK_LINE_PRIMITIVES = join(SESSION_DIR, "dock-line-primitives.ts")
+const PACKAGE_ROOT = join(import.meta.dir, "..")
+const MIN_STATIC_CLOSURE_SIZE = 10
+
+type PackageImports = Record<string, string | { bun?: unknown; default?: unknown }>
+
+const packageImports: PackageImports =
+	(JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as { imports?: PackageImports }).imports ?? {}
 
 interface ModuleReferences {
 	static: string[]
 	dynamic: string[]
 }
 
+interface StaticClosure {
+	parents: Map<string, string | null>
+	visited: string[]
+}
+
 const referenceCache = new Map<string, ModuleReferences>()
+const staticClosureCache = new Map<string, StaticClosure>()
 
 function displayPath(file: string): string {
 	return relative(SRC_DIR, file).split(sep).join("/")
@@ -36,21 +51,41 @@ function isInsideSrc(file: string): boolean {
 	return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
 }
 
-/** Resolve only relative TypeScript modules, with the source-tree forms used by this package. */
-function resolveRelativeSpecifier(fromFile: string, specifier: string): string | null {
-	if (!specifier.startsWith(".")) return null
-	const base = resolve(dirname(fromFile), specifier)
-	const candidates = [
-		base,
-		`${base}.ts`,
-		`${base}.tsx`,
-		join(base, "index.ts"),
-		join(base, "index.tsx"),
-	]
+function resolveSourceFile(base: string): string | null {
+	const candidates = [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx")]
 	return candidates.find(isFile) ?? null
 }
 
-/** Collect import/export-from and literal dynamic import specifiers from the AST. */
+function resolverCoverageError(fromFile: string, specifier: string): Error {
+	return new Error(
+		`Resolver coverage is insufficient; extend resolveSpecifier (解析器覆盖不足，请扩展 resolver): ${displayPath(fromFile)} -> ${specifier}`,
+	)
+}
+
+/** Resolve relative modules and package imports; external bare packages are intentionally ignored. */
+function resolveSpecifier(fromFile: string, specifier: string): string | null {
+	if (specifier.startsWith("#")) {
+		const target = packageImports[specifier]
+		const mapped =
+			typeof target === "string"
+				? target
+				: target !== null && typeof target === "object"
+					? "bun" in target
+						? target.bun
+						: target.default
+					: undefined
+		if (typeof mapped !== "string" || !mapped.startsWith(".")) throw resolverCoverageError(fromFile, specifier)
+		const dependency = resolveSourceFile(resolve(PACKAGE_ROOT, mapped))
+		if (dependency === null) throw resolverCoverageError(fromFile, specifier)
+		return dependency
+	}
+	if (!specifier.startsWith(".")) return null
+	const dependency = resolveSourceFile(resolve(dirname(fromFile), specifier))
+	if (dependency === null) throw resolverCoverageError(fromFile, specifier)
+	return dependency
+}
+
+/** Collect import/export-from, import types, and literal dynamic import specifiers from the AST. */
 function moduleReferences(file: string): ModuleReferences {
 	const cached = referenceCache.get(file)
 	if (cached !== undefined) return cached
@@ -72,9 +107,15 @@ function moduleReferences(file: string): ModuleReferences {
 		) {
 			references.static.push(node.moduleSpecifier.text)
 		} else if (
+			ts.isImportTypeNode(node) &&
+			ts.isLiteralTypeNode(node.argument) &&
+			ts.isStringLiteralLike(node.argument.literal)
+		) {
+			references.static.push(node.argument.literal.text)
+		} else if (
 			ts.isCallExpression(node) &&
 			node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-			node.arguments.length === 1 &&
+			node.arguments.length >= 1 &&
 			ts.isStringLiteralLike(node.arguments[0]!)
 		) {
 			references.dynamic.push(node.arguments[0]!.text)
@@ -87,30 +128,31 @@ function moduleReferences(file: string): ModuleReferences {
 	return references
 }
 
-/** Mechanically walk the complete static closure and retain parents for failure paths. */
-function staticPathTo(start: string, target: string): string[] | null {
+/** Walk the static closure and retain parents for failure paths. */
+function staticClosure(start: string): StaticClosure {
+	const cached = staticClosureCache.get(start)
+	if (cached !== undefined) return cached
+
 	const parents = new Map<string, string | null>([[start, null]])
 	const queue = [start]
-	const unresolved: string[] = []
 
 	while (queue.length > 0) {
 		const file = queue.shift()!
 		for (const specifier of moduleReferences(file).static) {
-			if (!specifier.startsWith(".")) continue
-			const dependency = resolveRelativeSpecifier(file, specifier)
-			if (dependency === null) {
-				unresolved.push(`${displayPath(file)} -> ${specifier}`)
-				continue
-			}
-			if (!isInsideSrc(dependency) || parents.has(dependency)) continue
+			const dependency = resolveSpecifier(file, specifier)
+			if (dependency === null || !isInsideSrc(dependency) || parents.has(dependency)) continue
 			parents.set(dependency, file)
 			queue.push(dependency)
 		}
 	}
 
-	if (unresolved.length > 0) {
-		throw new Error(`Unresolved relative static imports while walking ${displayPath(start)}:\n${unresolved.join("\n")}`)
-	}
+	const closure = { parents, visited: [...parents.keys()] }
+	staticClosureCache.set(start, closure)
+	return closure
+}
+
+function staticPathTo(start: string, target: string): string[] | null {
+	const { parents } = staticClosure(start)
 	if (!parents.has(target)) return null
 
 	const path: string[] = []
@@ -120,6 +162,10 @@ function staticPathTo(start: string, target: string): string[] | null {
 		cursor = parents.get(cursor) ?? null
 	}
 	return path
+}
+
+function expectStaticClosureLowerBound(start: string): void {
+	expect(staticClosure(start).visited.length).toBeGreaterThanOrEqual(MIN_STATIC_CLOSURE_SIZE)
 }
 
 function expectNoStaticPath(start: string, target: string): void {
@@ -145,7 +191,7 @@ function directReferencesTo(file: string, targets: readonly string[]): string[] 
 		["dynamic", moduleReferences(file).dynamic],
 	] as const) {
 		for (const specifier of specifiers) {
-			const dependency = resolveRelativeSpecifier(file, specifier)
+			const dependency = resolveSpecifier(file, specifier)
 			if (dependency !== null && targetSet.has(dependency)) {
 				violations.push(`${displayPath(file)} --${kind}--> ${specifier} (${displayPath(dependency)})`)
 			}
@@ -179,10 +225,13 @@ describe("one-way dock dependency direction", () => {
 	})
 
 	test("the merged-dock static closure cannot reach widgets-dock", () => {
+		expect(staticPathTo(WIDGETS_DOCK, MERGED_DOCK)).not.toBeNull()
+		expectStaticClosureLowerBound(MERGED_DOCK)
 		expectNoStaticPath(MERGED_DOCK, WIDGETS_DOCK)
 	})
 
 	test("the dock-line-primitives static closure cannot reach merged-dock or widgets-dock", () => {
+		expectStaticClosureLowerBound(DOCK_LINE_PRIMITIVES)
 		expectNoStaticPath(DOCK_LINE_PRIMITIVES, MERGED_DOCK)
 		expectNoStaticPath(DOCK_LINE_PRIMITIVES, WIDGETS_DOCK)
 	})
