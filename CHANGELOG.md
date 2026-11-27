@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-11-27
+
+### Fixed
+
+- Subagent transcript viewer stayed empty for background agents: live
+  `agent.transcript` frames with an empty parent `turnId` were rejected by the
+  client; the seam now accepts them and dedupes by childId/runId/turnId/seq so
+  per-turn seq resets no longer drop rows (#23).
+- Activity panel subagent rows hard-capped the latest-line preview at 32
+  display columns; the preview now uses the remaining row width, normalizes
+  streamed multiline text, and omits dangling separators for empty tails (#24).
+
 ## [0.30.0] - 2026-11-27
 
 ### Added
