@@ -214,10 +214,13 @@ describe("S2/S3 — negative control", () => {
   // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
   //   /NOT_WIRED:.*ledger in_wired=58\/257/
   // 026 releases 1 commands id -> union count 28 + 31 = 59.
+  // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+  //   /NOT_WIRED:.*ledger in_wired=59\/257/
+  // host palette releases commands/list -> union count 28 + 32 = 60.
   test("non-wired CapIR id stays NOT_WIRED with ledger in_wired=28/257", async () => {
     const invoke = createCapHostInvoke(ctxWith({ account: stubAccount(), creds: stubCreds() }))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=59\/257/,
+      /NOT_WIRED:.*ledger in_wired=60\/257/,
     )
   })
 })

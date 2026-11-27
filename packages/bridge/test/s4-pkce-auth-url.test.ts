@@ -276,7 +276,10 @@ describe("S4 / E6 — negative controls", () => {
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   /NOT_WIRED:.*ledger in_wired=58\/257/
     // 026 releases 1 commands id -> union count 28 + 31 = 59.
-    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=59\/257/)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=59\/257/)
+    // host palette releases commands/list -> union count 28 + 32 = 60.
+    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=60\/257/)
   })
 
   test("bad signal param -> BAD_PARAMS (never reaches host stream)", async () => {

@@ -312,7 +312,10 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
@@ -368,10 +371,13 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(prodGhost).toContain('in_wired=51/257')
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(prodGhost).toContain('in_wired=58/257')
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(prodGhost).toContain('in_wired=59/257')
+    // host palette releases commands/list -> union count 28 + 32 = 60.
     const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
     const prodInvoke = createCapHostInvoke(ctx, prodConfig)
     const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
-    expect(prodGhost).toContain('in_wired=59/257')
+    expect(prodGhost).toContain('in_wired=60/257')
   })
 
   // W2-1 E4: the three released side-session ids are in the production set with
@@ -655,7 +661,10 @@ describe('W2-3a plugin-manager write ids — E0/E2/E4/E5', () => {
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
     // 026 releases 1 commands id -> 31; W2-3 write ids still all present.
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32; W2-3 write ids still all present.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     expect(CAP_WRITE_CONFIRM_IDS.size).toBe(8)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
@@ -848,7 +857,10 @@ describe('W2-4a directory ids — E2/E4/E5 (AMEND-2 wire SENTINEL)', () => {
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
       expect(CAP_SERVICE_TABLE[id as never]?.service).toBeDefined()
@@ -1024,7 +1036,10 @@ describe('W2-5a goals ids — E2/E4/E5 (AMEND-2 blind-spot family)', () => {
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
       expect(CAP_SERVICE_TABLE[id as never]?.service).toBe('goals')

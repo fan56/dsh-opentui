@@ -221,14 +221,29 @@ const W2_5_GOALS_ADAPTERS = [
 // a hand-written second whitelist. NOT a write-confirm id: the full-access
 // confirmation is a TUI modal (W2-3 confirm MODAL paradigm), not the bridge
 // __confirm double-gate.
+// 026 round log — OLD W2-5 array kept VERBATIM (do not delete):
+//   const W2_6_COMMANDS_ADAPTERS = [
+//     "@deepseek-ai/dsh-commands#commands/execute",
+//   ]
+// 027 — commands/list: host-registered slash-command catalog for the slash
+// palette. One more id, unary, service=commands, scope {context:agent,
+// wire:agentId}, result carries no sensitive keys, non-deny family (fail-loud
+// below). The generic wire mapping "commands.list" is already generated from
+// CapIR (CAP_GENERIC_WIRE_METHODS); 027 only opens CAP_GENERIC_ADAPTERS — no
+// CapIR change. NOT hand-projected (plain catalog rows); the seam applies a
+// per-row whitelist projection. NOT a write-confirm id (read-only catalog).
 const W2_6_COMMANDS_ADAPTERS = [
   "@deepseek-ai/dsh-commands#commands/execute",
+  "@deepseek-ai/dsh-commands#commands/list",
 ]
 // Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30).
 // 026 round log — OLD W2-5 union kept VERBATIM (do not delete):
 //   // Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30).
 //   const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS]
 // 026 releases 1 commands id -> 31.
+// 027 round log — OLD 026 union kept VERBATIM (do not delete):
+//   const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS, ...W2_6_COMMANDS_ADAPTERS]
+// 027 releases 1 commands id (commands/list) -> 32.
 const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS, ...W2_6_COMMANDS_ADAPTERS]
 for (const id of RELEASED_ADAPTERS) {
   if (!ids.includes(id)) fail("released adapter id not in CapIR: " + id)
