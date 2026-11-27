@@ -236,6 +236,48 @@ describe("SlashPaletteController", () => {
 		expect(controller.offset()).toBe(0)
 	})
 
+	test("RESET SELECTION: host rows landing mid-open re-anchor the highlight to row 0", () => {
+		// The v2-entry fix: host-command rows are now applied while the palette
+		// is OPEN (first-open visibility). The merged table changes identity
+		// AND order, so a carried-over index could highlight — and Enter
+		// execute — a different command than the cursor sat on. resetSelection
+		// re-anchors to 0: index 0 always denotes the top of the NEW table.
+		const before: SlashCommand[] = [
+			{ name: "/alpha", description: "local", run: () => {} },
+			{ name: "/zeta", description: "local", run: () => {} },
+		]
+		const after: SlashCommand[] = [
+			{ name: "/alpha", description: "local", run: () => {} },
+			{ name: "/mid", description: "host twin", run: () => {} },
+			{ name: "/zeta", description: "local", run: () => {} },
+		]
+		const controller = new SlashPaletteController()
+		controller.sync("/", before)
+		controller.move(1, before) // user highlights "/zeta" (index 1)
+		expect(controller.current(before)?.name).toBe("/zeta")
+		controller.resetSelection()
+		expect(controller.selected()).toBe(0)
+		expect(controller.offset()).toBe(0)
+		// over the NEW table the highlight is its first row — never a carried
+		// index into reordered rows
+		expect(controller.current(after)?.name).toBe("/alpha")
+		// and the window paints from the top (the highlight is visible)
+		expect(controller.filtered(after).map((c) => c.name)).toEqual(["/alpha", "/mid", "/zeta"])
+	})
+
+	test("RESET SELECTION: rescues a deep-scrolled window (selection + offset re-anchor)", () => {
+		const commands = wideCommands()
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		controller.moveEdge("end", commands)
+		expect(controller.offset()).toBe(3)
+		controller.resetSelection()
+		expect(controller.selected()).toBe(0)
+		expect(controller.offset()).toBe(0)
+		expect(controller.current(commands)?.name).toBe("/cmd00")
+		expect(controller.isRowActive(0)).toBe(true)
+	})
+
 	test("sync keeps the selection on the FULL list (only missing rows clamp it)", () => {
 		const commands: SlashCommand[] = wideCommands()
 		const controller = new SlashPaletteController()
