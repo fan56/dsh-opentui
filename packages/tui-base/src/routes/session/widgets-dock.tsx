@@ -82,7 +82,7 @@ import { useTerminalSize } from "./terminal-size"
 import { MouseButton, parseColor, TextAttributes, type MouseEvent, type Renderable, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import type { SeamSubagentView } from "../../seams/session"
-import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
+import { clipToWidth } from "./tool-summarize"
 import { parseTodos, type Todo } from "../../util/todo"
 import { stringWidth } from "../../util/string-width"
 import { takeWidth } from "../../util/locale"
@@ -109,15 +109,39 @@ import {
 	mergedPositionSuffix,
 	mergedTitle,
 	mergedWindowInfo,
-	TODO_STATUS_GLYPHS,
 	type MergedDockData,
-	type MergedDockLine,
 	type MergedDockOptions,
 	type MergedThinkRow,
 	type MergedToolRow,
 } from "./merged-dock"
+import {
+	activityScene,
+	resetTodoBriefClock,
+	skinStopAt,
+	thinkBlockLines,
+	todoBriefLine,
+	todoTreeLines,
+	toolLineText,
+	toolMarker,
+	type DockAccent,
+	type MergedDockLine,
+} from "./dock-line-primitives"
 import { Keymap } from "../../context/keymap"
 import { useIsPageOwner } from "../../context/input-ownership"
+
+export {
+	activityScene,
+	resetTodoBriefClock,
+	skinStopAt,
+	thinkBlockLines,
+	todoBriefLine,
+	todoTreeLines,
+	toolLineText,
+	toolMarker,
+	todoSetStartedAt,
+} from "./dock-line-primitives"
+
+export type { ActivityScene, DockAccent } from "./dock-line-primitives"
 
 // ---------------------------------------------------------------------------
 // Skin motion timing (skin contract §1 入场淡入/退场渐隐/提醒脉冲, batch δ).
@@ -225,9 +249,10 @@ export type ActivityPanelGear = (typeof ACTIVITY_PANEL_GEARS)[number]
 export const DEFAULT_ACTIVITY_PANEL_GEAR: ActivityPanelGear = "5"
 
 /** `all` is a legacy spelling; under the 10-line ceiling it equals the `10`
- * gear. A LITERAL (not `MERGED_DOCK_TOTAL_LINES`) on purpose: this module and
- * merged-dock.ts import each other, so a cross-module top-level initializer
- * would hit a TDZ ReferenceError when merged-dock is the first module loaded. */
+ * gear. Keep this public constant as the literal 10 for behavior preservation.
+ * Shared merged row types and pure helpers live in dock-line-primitives;
+ * widgets-dock may import merged-dock, while merged-dock no longer imports
+ * widgets-dock. */
 export const ACTIVITY_PANEL_ALL_LINES = 10
 
 /** The selected gear; undefined = unset → `DEFAULT_ACTIVITY_PANEL_GEAR` ("5")
@@ -439,13 +464,6 @@ export function skinPulseBrightness(elapsedMs: number): number {
 	const cycle = SKIN_PULSE_MS / SKIN_PULSE_CYCLES
 	const phase = (elapsedMs % cycle) / cycle // 0..1 within the cycle
 	return 1 - SKIN_PULSE_DIM * (1 - Math.abs(2 * phase - 1))
-}
-
-/** The stop anchor a view can compute WITHOUT touching the store: the row
- * froze elapsedSec at its stop, so stop ≈ startedAt + elapsedSec*1000 (H5).
- * undefined when either side is missing (replay rows) — no fade, solid color. */
-export function skinStopAt(row: { startedAt?: number; elapsedSec?: number }): number | undefined {
-	return row.startedAt !== undefined && row.elapsedSec !== undefined ? row.startedAt + row.elapsedSec * 1000 : undefined
 }
 
 /** Per-line entrance-fade registry (module level — CLOSURE LAW): first sight
@@ -677,27 +695,6 @@ export function todosSummaryFromTodos(todos: readonly Todo[]): string {
 	return active ? `${head} · ${active.content}` : head
 }
 
-/** Scene-C todo tree (compact terminal): the `● Todos (d/n)` header plus one
- * `├─ {glyph} {content}` row per todo (`└─ ` on the last). Returned as lower-zone
- * lines so the merged dock gives them its 10-line hard cap + scroll window;
- * they are rebuilt from the same `MergedDockData.todos` as `todosSummaryFromTodos`.
- * Empty list OR every todo completed → zero lines (clear-when-done, same law as
- * the one-line summary). Status glyphs reuse `TODO_STATUS_GLYPHS`. */
-export function todoTreeLines(todos: readonly Todo[]): MergedDockLine[] {
-	if (todos.length === 0) return []
-	const done = todos.filter((todo) => todo.status === "completed").length
-	if (done === todos.length) return []
-	const lines: MergedDockLine[] = [
-		{ kind: "todo", segments: [{ text: t("overlay.widgets.todosHeader", { done, total: todos.length }), tone: "running", accent: "todo" }] },
-	]
-	todos.forEach((todo, i) => {
-		const branch = i === todos.length - 1 ? "└─ " : "├─ "
-		const glyph = TODO_STATUS_GLYPHS[todo.status] ?? TODO_STATUS_GLYPHS.pending
-		lines.push({ kind: "todo", segments: [{ text: `${branch}${glyph} ${todo.content}`, tone: "running", accent: "todo" }] })
-	})
-	return lines
-}
-
 /** R2 tab2 line builder. Routes `latestTodos(rows)` through `mergedDockLines`
  * (scene C calls `todoTreeLines` internally) so the SAME `fitAll`/`fitLine`/
  * `takeWidth` width law from `merged-dock.ts:255` applies to every tab line —
@@ -855,51 +852,6 @@ export function DockTabStripView(props: { strip: DockTabStrip }): JSX.Element {
 	)
 }
 
-// ------------------------------------------- scene-A todo brief timing (指令4)
-// `todo done/total Ns` — no current-task text. The duration is seconds since
-// the CURRENT TASK SET was established: the moment the set of task TEXTS first
-// appeared. Only texts are compared (a 1/3→2/3 status flip is NOT a new set),
-// and they are sorted (reordering is NOT a new set). A different text set gets
-// a fresh anchor ("换集重置"); within one set status flips do not reset.
-// A single module-level map — text signature → first-seen wall clock — is the
-// ONLY anchor source; there is no rows-based "earliest startedAt" primary and
-// no array-change fallback. Module scope keeps the CLOSURE LAW; the map is
-// cleared on session switch (`resetTodoBriefClock`, wired to the dock unmount
-// cleanup), so a signature never leaks into a later session.
-
-/** Text-only signature of a task set — status flips and ordering ignored. */
-const todoSetSignature = (todos: readonly Todo[]): string => todos.map((todo) => todo.content).sort().join("\u0001")
-
-/** Text signature → wall clock when that task set was FIRST seen this session. */
-const todoSetFirstSeen = new Map<string, number>()
-
-/** The current task set's establishment time: first-seen time of its text
- * signature. Pure apart from the module map (never component state). */
-export function todoSetStartedAt(todos: readonly Todo[], now: number = Date.now()): number {
-	const sig = todoSetSignature(todos)
-	const first = todoSetFirstSeen.get(sig)
-	if (first !== undefined) return first
-	todoSetFirstSeen.set(sig, now)
-	return now
-}
-
-/** The one-line scene-A todo brief: `todo done/total Ns`. An explicit
- * `startedAt` is a pure-caller/test seam; the dock leaves it unset so the
- * unified text-signature first-seen map above is the single production clock. */
-export function todoBriefLine(todos: readonly Todo[], now: number = Date.now(), startedAt?: number): string {
-	if (todos.length === 0) return ""
-	const done = todos.filter((todo) => todo.status === "completed").length
-	const anchor = startedAt ?? todoSetStartedAt(todos, now)
-	const secs = Math.max(0, Math.floor((now - anchor) / 1000))
-	return t("overlay.widgets.todosBrief", { done, total: todos.length, secs })
-}
-
-/** Session-switch hook: drop every first-seen anchor (no signature survives
- * into the next session). */
-export function resetTodoBriefClock(): void {
-	todoSetFirstSeen.clear()
-}
-
 // ------------------------------------------- R8 subagent brief (per-batch timer)
 // `subagent *{running} {elapsedSec}s` — running count ONLY, no denominator
 // (user 2026-11-23 拍板). The clock is PER BATCH: anchor at the 0→N transition,
@@ -1038,68 +990,6 @@ export function todosTableLines(rows: readonly SeamRow[], width: number, termina
 	return out
 }
 
-/** Status glyph for a tool row: running ⚙, failed ✘, settled ✔. The icon
- * keeps its own semantic tone; the line text carries the tool accent. */
-export function toolMarker(status: Extract<SeamRow, { kind: "tool" }>["status"]): string {
-	return status === "running" ? "⚙" : status === "failed" ? "✘" : "✔"
-}
-
-/** One dock tool line (pure, dsh-tui-pi ToolPanel height '1' parity):
- * `<⚙|✔|✘> <name> <subject> · Xs · <tail>`. NOT the old `⠋ ⚙ name(subject)`
- * form: the status icon IS the marker, the subject follows the name with a
- * space, a running tool's tail is the arg summary, a settled one's the
- * result tail (the raw JSON never renders). `now` is injectable so the
- * elapsed column (and tests) do not depend on a real wall clock. */
-export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () => number, now: number = Date.now()): string {
-	const subject = toolSubject(row.args)
-	const title = subject === "" ? row.name : `${row.name} ${subject}`
-	const elapsed =
-		row.status === "running"
-			? row.startedAt !== undefined
-				? ` · ${((now - row.startedAt) / 1000).toFixed(1)}s`
-				: ""
-			: row.elapsedSec !== undefined
-				? ` · ${row.elapsedSec.toFixed(1)}s`
-				: ""
-	const marker = toolMarker(row.status)
-	void spin()
-	const tail = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
-	const body = `${title}${elapsed}${tail !== "" ? ` · ${tail}` : ""}`
-	return `${marker} ${body}`
-}
-
-/** Up to `maxLines` display lines for one think row (pure, testable).
- *
- * The block always shows the TAIL — the last N non-blank lines, the same law
- * tui-pi's ThinkPanel uses (`TAIL_LINES = 3`). Live AND collapsed keep the
- * same tail: collapsing only swaps the prefix (`💭 thinking · ` → `💭 thought · `)
- * so the block never jumps back to the head at the collapse instant. The
- * first displayed line carries the `💭 … · Xs · ` prefix; continuation lines
- * are indented 3 columns (the width of `💭 `) so they sit under the content.
- *
- * Rows without panel state (replay shapes) paint nothing. */
-export function thinkBlockLines(
-	row: Extract<SeamRow, { kind: "reasoning" }>,
-	spin: () => number,
-	maxLines: number = DOCK_WIDGET_MAX_LINES,
-	now: number = Date.now(),
-): string[] {
-	const lines = row.text.replace(/\r/g, "").split("\n").filter((line) => line.trim() !== "")
-	const n = Math.max(1, Math.floor(maxLines))
-	if (row.streaming === true) {
-		const secs = row.startedAt !== undefined ? `${((now - row.startedAt) / 1000).toFixed(1)}s` : "0.0s"
-		void spin()
-		const picked = lines.length === 0 ? [""] : lines.slice(-n)
-		return picked.map((line, index) => (index === 0 ? t("overlay.widgets.thinkStreaming", { secs, line }) : `   ${line}`))
-	}
-	if (row.elapsedSec !== undefined) {
-		const secs = `${row.elapsedSec.toFixed(1)}s`
-		const picked = lines.length === 0 ? [""] : lines.slice(-n)
-		return picked.map((line, index) => (index === 0 ? t("overlay.widgets.thinkCollapsed", { secs, line }) : `   ${line}`))
-	}
-	return []
-}
-
 /** The live think line (one line, pure): `💭 thinking · Xs · <tail>` while
  * streaming, `💭 thought · Xs · <first line>` once collapsed. Rows without
  * panel state (replay shapes) paint nothing. Kept as the single-line view
@@ -1110,22 +1000,6 @@ export function thinkLineText(
 	now: number = Date.now(),
 ): string | undefined {
 	return thinkBlockLines(row, spin, 1, now)[0]
-}
-
-/** The 2026-11-19 rule table's three scenes. */
-export type ActivityScene = "A" | "B" | "C"
-
-/**
- * Pure scene decision (2026-11-19 rule table). PRIORITY = SUBAGENT ACTIVE >
- * THINK EXCLUSIVE: a RUNNING subagent opens scene A regardless of think; only
- * when there is none does a VISIBLE think (live OR inside its exit hold) open
- * scene B. Historical / non-running subagent rows never open A — per 指令3 a
- * leftover subagent row yields to an active think (scene B). No subagent and
- * no think → scene C.
- */
-export function activityScene(hasRunningSubagent: boolean, hasVisibleThink: boolean): ActivityScene {
-	if (hasRunningSubagent) return "A"
-	return hasVisibleThink ? "B" : "C"
 }
 
 /** Whether a think row is "VISIBLE" in the scene-table sense: a live streaming
@@ -1531,26 +1405,6 @@ export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA 
 	}
 	return ACTIVITY_FRAME_BORDER_FALLBACK
 }
-
-/**
- * Semantic dock line accents — each activity line family gets its own color
- * family so it reads as its own panel, not as default body copy:
- *   - think: VIOLET (`purple` ramp; dsh-tui-pi's `thinking` text token),
- *   - tool:  CYAN/TEAL (`cyan` ramp; dsh-tui-pi's blue tool panel family but
- *     shifted off the footer blue so it never reads as chrome),
- *   - todo:  GREEN (`green` ramp) — the compact todo tree rows,
- *   - agent: BLUE (`blue` ramp) — running subagent rows.
- * todo/agent are deliberately cool and far off `warning.base` (#e0af68,
- * the shared `tone:"running"` amber), so the two lower-zone row kinds stay
- * distinguishable both from that amber and from each other. Never reuse a
- * semantic alias (`accent`/`interactive`) here: on themes that alias both to
- * one hue that would collapse todo/agent (and tool) back to one color.
- * Every accent is picked from the theme's named hue ramps, preferring a soft
- * mid step and walking the ramp until the text clears 4.5:1 on the theme
- * surface (dark: later steps are dimmer; light: later steps are lighter).
- * Status glyphs (⚙/✔/✘) never use this — they keep their tone color.
- */
-export type DockAccent = "think" | "tool" | "todo" | "agent"
 
 /** Preferred steps: a soft mid swatch first, then the rest of the ramp. */
 const DOCK_ACCENT_STEPS: Record<DockAccent, readonly number[]> = {
