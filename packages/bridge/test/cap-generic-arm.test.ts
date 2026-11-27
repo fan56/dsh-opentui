@@ -75,6 +75,57 @@ async function rejectionMessage(fn: () => Promise<unknown>): Promise<string> {
   throw new Error('expected rejection but call resolved')
 }
 
+/**
+ * 027 — commands/list generic-arm envelope. The host's plain ARRAY cannot
+ * cross the generic arm as a bare array: projectGenericWireReply wraps any
+ * non-record result as `{ value: T }`. Pinned against the REAL generated
+ * table row (wire name → id, adapters, deny namespaces) — the client-side
+ * ops unwrap convention in remote-session-ops.commandsList is the mirror
+ * image of exactly this shape.
+ */
+describe('027 commands.list — generic-arm array envelope (real table row)', () => {
+  const COMMANDS_LIST_ID = CAP_GENERIC_WIRE_METHODS['commands.list']
+
+  test('a non-empty array wraps as { value: [...] }; the ops unwrap convention restores it', () => {
+    // Real release state: the dot-name resolves to the commands/list id, the
+    // id is in the adapter set, denied namespaces don't cover it, and it is
+    // NOT a hand-projection exception (the generic projection is load-bearing).
+    expect(COMMANDS_LIST_ID).toBe('@deepseek-ai/dsh-commands#commands/list')
+    expect(CAP_GENERIC_ADAPTERS.has(COMMANDS_LIST_ID as never)).toBe(true)
+    expect(CAP_PROJECTED_BY_HAND.has(COMMANDS_LIST_ID as never)).toBe(false)
+
+    const config = makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      projectedByHand: CAP_PROJECTED_BY_HAND,
+      confirmIds: CAP_WRITE_CONFIRM_IDS,
+    })
+    const rows = [
+      { name: 'compact', description: 'Compact the context' },
+      { name: 'plugin-cmd', description: 'plugin one' },
+    ]
+    const reply = projectGenericWireReply(config, COMMANDS_LIST_ID, rows, sanitizeFrameForWire)
+
+    // The envelope (bun:test has no toHaveProperty): a record carrying the
+    // rows under `value` — NOT the bare array the host service returned.
+    expect(typeof reply).toBe('object')
+    expect(reply !== null && 'value' in reply).toBe(true)
+    expect(reply).not.toBeInstanceOf(Array)
+    expect((reply as { value: unknown }).value).toEqual(rows)
+
+    // Mirror of the ops unwrap convention (remote-session-ops.commandsList):
+    // a non-null non-array record with `value` unwraps to reply.value, so the
+    // client restores the SAME non-empty array the host produced.
+    const unwrapped =
+      reply !== null && typeof reply === 'object' && !Array.isArray(reply) && 'value' in reply
+        ? (reply as { value: unknown }).value
+        : reply
+    expect(Array.isArray(unwrapped)).toBe(true)
+    expect((unwrapped as unknown[]).length).toBe(2)
+  })
+})
+
 describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => {
   // E4 core: positional reconstruction fidelity. This is the R3 silent-misplacement
   // guard: named params are read BY TABLE ORDER into positional args, values and
@@ -312,7 +363,10 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
@@ -368,10 +422,13 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(prodGhost).toContain('in_wired=51/257')
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(prodGhost).toContain('in_wired=58/257')
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(prodGhost).toContain('in_wired=59/257')
+    // host palette releases commands/list -> union count 28 + 32 = 60.
     const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
     const prodInvoke = createCapHostInvoke(ctx, prodConfig)
     const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
-    expect(prodGhost).toContain('in_wired=59/257')
+    expect(prodGhost).toContain('in_wired=60/257')
   })
 
   // W2-1 E4: the three released side-session ids are in the production set with
@@ -655,7 +712,10 @@ describe('W2-3a plugin-manager write ids — E0/E2/E4/E5', () => {
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
     // 026 releases 1 commands id -> 31; W2-3 write ids still all present.
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32; W2-3 write ids still all present.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     expect(CAP_WRITE_CONFIRM_IDS.size).toBe(8)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
@@ -848,7 +908,10 @@ describe('W2-4a directory ids — E2/E4/E5 (AMEND-2 wire SENTINEL)', () => {
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
       expect(CAP_SERVICE_TABLE[id as never]?.service).toBeDefined()
@@ -1024,7 +1087,10 @@ describe('W2-5a goals ids — E2/E4/E5 (AMEND-2 blind-spot family)', () => {
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host-palette round log — OLD 026 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(31)
+    // host palette releases the commands/list id -> 32.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(32)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
       expect(CAP_SERVICE_TABLE[id as never]?.service).toBe('goals')

@@ -1134,5 +1134,9 @@
   "command.pruneRestore.done": "已从回收站恢复 {id}",
   "command.pruneRestore.conflict": "{id} 无法恢复：同 id 会话已存在",
   "command.pruneRestore.failed": "恢复失败：{code} - {message}",
-  "notice.prune.available": "{n} 个会话可回收，/prune 查看"
+  "notice.prune.available": "{n} 个会话可回收，/prune 查看",
+  "command.hostSource": "{name}（插件）",
+  "command.hostExecuted": "{name} 已执行（无输出）",
+  "command.hostExecuteFailed": "宿主命令 {name} 执行失败",
+  "command.hostUnavailable": "宿主命令列表不可用"
 }

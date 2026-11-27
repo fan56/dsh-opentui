@@ -76,7 +76,9 @@ export function overflowHint(total: number, offset = 0): string | undefined {
  *      executions first; both 0 on a fresh profile, so it falls through);
  *   3. NAME ASC, case-insensitive (the alphabetical default; a prefix sorts
  *      before its extension, e.g. `/task` before `/tasks`);
- *   4. raw name, a deterministic last resort for case-only differences.
+ *   4. raw name, a deterministic last resort for case-only differences;
+ *   5. SOURCE: local rows before host rows (a host-merged twin of a
+ *      duplicated name sorts after its local original).
  */
 function compareCommands(a: SlashCommand, b: SlashCommand, usage: CommandUsageView | undefined): number {
 	const ta = isSkillCommand(a) ? 1 : 0
@@ -89,7 +91,9 @@ function compareCommands(a: SlashCommand, b: SlashCommand, usage: CommandUsageVi
 	const lb = b.name.toLowerCase()
 	if (la !== lb) return la < lb ? -1 : 1
 	// Same word, different case: keep it deterministic.
-	return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+	if (a.name !== b.name) return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+	// Name-identical rows (the host merge): local < host.
+	return (a.source === "host" ? 1 : 0) - (b.source === "host" ? 1 : 0)
 }
 
 /** Renderer-free palette state: visibility, filter query, selection, window. */
@@ -273,6 +277,10 @@ export function SlashPalette(props: {
 	controller: SlashPaletteController
 	/** A live accessor when the registry can change (skills refresh). */
 	commands: SlashCommand[] | (() => SlashCommand[])
+	/** Optional dim status line (e.g. the host-command face being
+	 * unavailable). Painted in the reserved bottom row ONLY when no overflow
+	 * hint needs it — the `… N more` hint always wins the slot. */
+	statusLine?: () => string | undefined
 }) {
 	// Read through one function so a signal-backed accessor repaints the rows.
 	const commands = () => (typeof props.commands === "function" ? props.commands() : props.commands)
@@ -334,10 +342,11 @@ export function SlashPalette(props: {
 						)
 					}}
 				</For>
-				{/* Reserved overflow row: `… N more` for rows below the window
-				    and/or `… N more above` for rows scrolled off the top; blank
-				    box background when everything fits (stable height). */}
-				<Show when={overflowHint(props.controller.matches(commands()), props.controller.offset())}>
+				{/* Reserved bottom row: `… N more` for rows below the window and/or
+			    `… N more above` for rows scrolled off the top; otherwise the
+			    optional dim status line (host-command availability); blank box
+			    background when neither applies (stable height). */}
+				<Show when={overflowHint(props.controller.matches(commands()), props.controller.offset()) ?? props.statusLine?.()}>
 					{(hint) => (
 						<box height={1} flexShrink={0} width="100%" flexDirection="row">
 							<text flexShrink={0} wrapMode="none" fg={color.muted()}>

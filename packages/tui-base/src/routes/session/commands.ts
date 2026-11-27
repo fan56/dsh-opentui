@@ -20,7 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
-import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionSeam } from "../../seams/session"
+import type { SeamAccountState, SeamEffortOption, SeamHostCommandRow, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionSeam } from "../../seams/session"
 
 /** The sanctioned patch-write channel: the host settings mutate face. */
 type SettingsMutate = (ns: string, ops: SeamSettingsOp[], revision?: number) => Promise<SeamSettingsMutateResult>
@@ -168,7 +168,78 @@ export interface SlashCommand {
 	 * Omitted (the normal case) = executable command.
 	 */
 	kind?: "command" | "skill"
+	/**
+	 * Registry origin. Omitted / `"local"` = this client's own table
+	 * (coreCommands); `"host"` = a host-published row merged in by
+	 * mergeHostCommands (its `run` proxies `seam.hostCommands.execute`).
+	 * Pure ordering/marking metadata — dispatch itself is unchanged.
+	 */
+	source?: "local" | "host"
 	run(ctx: SlashCommandContext, argText: string): void | Promise<void>
+}
+
+// ------------------------------------------------------------ host commands --
+// Host-published command rows (the seam's `hostCommands` face) merged into
+// the local registry for the slash palette. Pure + table-testable: the row
+// mapping, the duplicate-name double-listing (the local row keeps its name,
+// the host twin gets an i18n source suffix), alphabetical order with
+// local-first ties, and the 100-row host cap (local rows are never capped).
+// `dispatchLine` and `coreCommands` stay untouched — this is a palette-level
+// merge, not a dispatch change.
+
+/** Max host rows merged into the palette; the rest are dropped. */
+const HOST_COMMAND_CAP = 100
+
+/**
+ * Merge host-published command rows into the local registry. Duplicate names
+ * are listed TWICE: the local row unchanged, the host twin under
+ * `t("command.hostSource", { name })` — the suffix rides i18n, never a
+ * hardcoded label. A host row's `run` proxies the RAW (unsuffixed) name plus
+ * the typed arguments through `hostCommands.execute`; the seam's echoed text
+ * is the feedback row, and the remaining arms degrade through i18n lines —
+ * `undefined` (seam contract: the command failed) and a throw both paint the
+ * failure copy, a settled no-text round paints the executed copy (never a
+ * rejection — the palette runs `run` fire-and-forget).
+ */
+export function mergeHostCommands(
+	local: readonly SlashCommand[],
+	host: readonly SeamHostCommandRow[],
+	deps: { t: (k: string, p?: Record<string, unknown>) => string },
+): SlashCommand[] {
+	const localNames = new Set(local.map((command) => command.name.toLowerCase()))
+	const hostRows: SlashCommand[] = host.slice(0, HOST_COMMAND_CAP).map((row) => {
+		const rawName = row.name
+		return {
+			name: localNames.has(rawName.toLowerCase())
+				? deps.t("command.hostSource", { name: rawName })
+				: rawName,
+			description: row.description,
+			source: "host",
+			run: async (ctx, argText) => {
+				const line = argText ? `${rawName} ${argText}` : rawName
+				try {
+					const result = await ctx.seam?.hostCommands?.execute(line)
+					// seam contract: `undefined` = the command FAILED — paint the
+					// failure copy, never the success one. `{}` (settled, no echo
+					// text) and `{text}` are both successes; a throw stays failed.
+					ctx.say(
+						result === undefined
+							? deps.t("command.hostExecuteFailed", { name: rawName })
+							: (result.text ?? deps.t("command.hostExecuted", { name: rawName })),
+					)
+				} catch {
+					ctx.say(deps.t("command.hostExecuteFailed", { name: rawName }))
+				}
+			},
+		}
+	})
+	return [...local, ...hostRows].sort((a, b) => {
+		const order = a.name.localeCompare(b.name)
+		if (order !== 0) return order
+		// Name-identical rows: local rows first (host rows already carry the
+		// suffixed display name, so this tie is a defensive last resort).
+		return (a.source === "host" ? 1 : 0) - (b.source === "host" ? 1 : 0)
+	})
 }
 
 /**

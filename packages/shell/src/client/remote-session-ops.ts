@@ -475,8 +475,17 @@ export class RemoteSessionOps {
 	/** Host slash commands (row 26) — agent-scoped; [] without a session. */
 	async commandsList(sessionId: string): Promise<{ name: string; description: string }[]> {
 		try {
-			const list = (await this.#rpc("commands/list", { agentId: sessionId })) as unknown
-			return (Array.isArray(list) ? list : [])
+			const reply = (await this.#rpc("commands/list", { agentId: sessionId })) as unknown
+			// The bridge's generic arm wraps non-record results as `{ value: T }`
+			// (cap-generic.ts projectGenericWireReply: the host's plain ARRAY
+			// cannot cross as a bare array) and passes plain records through.
+			// Accept BOTH shapes — same convention as unwrapWireValue in
+			// bridge-plugins-manager / bridge-directory.
+			const unwrapped =
+				reply !== null && typeof reply === "object" && !Array.isArray(reply) && "value" in reply
+					? (reply as { value: unknown }).value
+					: reply
+			return (Array.isArray(unwrapped) ? unwrapped : [])
 				.map((c) => {
 					const row = (typeof c === "object" && c !== null ? c : {}) as Record<string, unknown>
 					return { name: String(row.name ?? ""), description: String(row.description ?? "") }
@@ -489,6 +498,9 @@ export class RemoteSessionOps {
 
 	/** Execute one host slash command line (row 26). */
 	async commandsExecute(sessionId: string, line: string): Promise<{ text?: string } | undefined> {
+		// No `{ value }` unwrap here: the host execute result is a RECORD
+		// (`{commandId, result}`), which projectGenericWireReply passes through
+		// unwrapped — only arrays/primitives get the wrap commandsList handles.
 		const value = (await this.#rpc("commands/execute", { agentId: sessionId, line, submittedAttachments: [] })) as
 			| Record<string, unknown>
 			| undefined

@@ -23,6 +23,14 @@
  *     with fake data (notably `listSessions`: a UNSUPPORTED frame is passed
  *     through, NOT flattened to `[]`).
  *
+ * 027 hostCommands: the palette's host-command face rides the generic
+ * `commands.list` / `commands.execute` arm through a DEDICATED RemoteSessionOps
+ * instance (rpc adapter translates slash wire names to dot names; stream
+ * sockets fail loud). The existing `/permission` mirror write path
+ * (#permissionSwitch, 026) is deliberately NOT migrated onto this face —
+ * known tech debt: two commands/execute callers with different projection
+ * and error semantics; consolidation is a later round, not this one.
+ *
  * The stdio transport (spawning the host with DSH_OPENTUI_BRIDGE_STDIO=1,
  * correlating {id} responses, forwarding {type,payload} events) is injected
  * as `BridgeTransport` — wiring it at the composition root is a separate
@@ -43,6 +51,7 @@ import type {
 	SeamModelDiscoveryRequest,
 	SeamGoalRef,
 	SeamGoalView,
+	SeamHostCommandRow,
 	SeamLlmProviderRow,
 	PluginRowView,
 	SeamPermissionCatalog,
@@ -81,7 +90,7 @@ import type {
 	SessionSeam,
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
-import { journalToTranscriptRows } from "./remote-session-ops.ts"
+import { RemoteSessionOps, journalToTranscriptRows } from "./remote-session-ops.ts"
 // 025-w1a — /export sessionJournal face: HistoryJournalEntry is the /history
 // fold input (the exact shape remote sessionJournal() returns).
 import type { HistoryJournalEntry } from "../../../tui-base/src/routes/session/history-data.ts"
@@ -185,6 +194,13 @@ function writeConfirmed(confirm: PluginWriteConfirm | undefined): boolean {
 }
 const CONFIRM_REQUIRED = (method: string) =>
 	new BridgeProtocolError("CONFIRM_REQUIRED", `${method}: write requires a confirmed TUI modal token`)
+
+// 027 — hostCommands cache tuning: 15s TTL measured from request initiation
+// (palette re-opens inside the window ride the cache, keystrokes never hit the
+// wire), 100ms refresh debounce (palette open/close flapping must not hammer
+// the generic arm).
+const HOST_COMMANDS_TTL_MS = 15_000
+const HOST_COMMANDS_REFRESH_DEBOUNCE_MS = 100
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -2029,6 +2045,26 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#goalsRequest("goals.clear", { ref }, projectGoalRef),
 	}
 
+	/**
+	 * 027 — plugin-registered host slash commands for the slash palette
+	 * (commands/list + commands/execute over the generic arm). Rides a
+	 * dedicated RemoteSessionOps instance (see #hostCommandsOps). State:
+	 * per-agentId cache (15s TTL from request initiation) + coalesced in-flight;
+	 * every binding change / bridge death bumps the epoch and drops the cache;
+	 * a settle whose agent moved on discards its rows. Service-absent class
+	 * flips `available=false` (adapter-level observation — the ops layer's
+	 * commandsList catch swallows the raw error); BAD_PARAMS and other business
+	 * codes keep their own error and never poison availability.
+	 * NOTE: the 026 /permission mirror (#permissionSwitch) stays on its own
+	 * commands/execute call path — deliberate non-migration, see file header.
+	 */
+	hostCommands: NonNullable<SessionSeam["hostCommands"]> = {
+		list: (): Promise<SeamHostCommandRow[]> => this.#hostCommandsList(),
+		execute: (line: string): Promise<{ text?: string } | undefined> => this.#hostCommandsExecute(line),
+		available: (): boolean => this.#hostCommandsAvailable === true,
+		refresh: (): void => this.#hostCommandsRefresh(),
+	}
+
 	/** S5 /agents face — real `agents/*.md` corpus + model catalog, no mocks
 	 *  (oldfox S4 review §六.4). */
 	agents: NonNullable<SessionSeam["agents"]> = {
@@ -2234,6 +2270,168 @@ export class BridgeSessionSeam implements SessionSeam {
 			}
 			throw err
 		}
+	}
+
+	// ---- 027 — hostCommands helpers (plugin-registered slash commands) -----
+
+	/**
+	 * slash wire name → generic-arm dot name. The bridge generic arm indexes
+	 * by EXACT dot-name (CAP_GENERIC_WIRE_METHODS, no slash-name normalization),
+	 * so the adapter must translate. Failure semantics match the implementation:
+	 * a list-path reject is swallowed by ops.commandsList's catch into a silent
+	 * empty-array degradation; only service-absent errors flip `available`,
+	 * because the rpc adapter below is the ONLY level where the raw wire error
+	 * is observable before ops swallows it.
+	 */
+	static readonly #HOST_COMMANDS_WIRE: Readonly<Record<string, string>> = {
+		"commands/list": "commands.list",
+		"commands/execute": "commands.execute",
+	}
+
+	/** 027 — service-absent classification, mirrored from #goalsRequest: ONLY
+	 *  the UNSUPPORTED / NOT_WIRED / UNAVAILABLE family (or a code-less
+	 *  NOT_WIRED/unavailable message) means "the commands service is not on
+	 *  this host". BAD_PARAMS and business codes keep their own error. */
+	#hostCommandsServiceAbsent(err: unknown): boolean {
+		const code = err instanceof BridgeProtocolError ? err.code : undefined
+		const message = err instanceof Error ? err.message : String(err)
+		return (
+			code === "UNSUPPORTED" ||
+			code === "NOT_WIRED" ||
+			code === "UNAVAILABLE" ||
+			(code === undefined && (/^NOT_WIRED/.test(message) || /unavailable/i.test(message)))
+		)
+	}
+
+	/**
+	 * 027 — the DEDICATED RemoteSessionOps for this face (lazy; zero consumers
+	 * before this face existed). The rpc adapter does the three seam-only jobs:
+	 * (1) slash→dot translation via the explicit table above; (2) service-absent
+	 * classification at the ADAPTER level — remote-session-ops commandsList
+	 * catches→[] so the raw wire error is ONLY observable here; (3) a
+	 * never-factory socket (this face rides the two unary commands ids only;
+	 * any stream attempt is a programming error and must fail loud).
+	 */
+	#hostCommandsOps(): RemoteSessionOps {
+		if (this.#hostCommandsOpsRef === undefined) {
+			this.#hostCommandsOpsRef = new RemoteSessionOps({
+				rpc: (method: string, args?: Record<string, unknown>): Promise<unknown> => {
+					const dotted = BridgeSessionSeam.#HOST_COMMANDS_WIRE[method]
+					if (dotted === undefined) {
+						return Promise.reject(new Error(`hostCommands: unexpected wire method ${method}`))
+					}
+					// Availability is observed HERE, at the wire-round outcome — the
+					// only level where the raw error is visible (ops.commandsList
+					// swallows into []). A settled round flips true, a service-absent
+					// round flips false; the face's own settle must NOT re-arm the
+					// flag, or the swallowed [] would immediately undo the flip and
+					// the palette's unavailable status line could never paint.
+					return this.#transport.request(dotted, args ?? {}).then(
+						(value: unknown) => {
+							this.#hostCommandsAvailable = true
+							return value
+						},
+						(err: unknown) => {
+							if (this.#hostCommandsServiceAbsent(err)) {
+								this.#hostCommandsAvailable = false
+								this.#degradeOnce("hostCommands.service", `commands service absent: ${err instanceof Error ? err.message : String(err)}`)
+							}
+							throw err
+						},
+					)
+				},
+				socketFactory: (): never => {
+					throw new Error("hostCommands: stream sockets unsupported (unary-only face)")
+				},
+			})
+		}
+		return this.#hostCommandsOpsRef
+	}
+
+	/**
+	 * 027 — cached list(). Per-agentId key; TTL runs from REQUEST INITIATION
+	 * (not settle) via the confirm clock. In-flight coalesces per agentId; a
+	 * settle whose agent moved on (binding changed under the request) discards
+	 * its rows — never cached, never painted.
+	 */
+	async #hostCommandsList(): Promise<SeamHostCommandRow[]> {
+		const agentId = this.currentSessionId() ?? this.stagedSessionId()
+		if (agentId === undefined || agentId === "") return []
+		const now = this.#confirmClock.now()
+		const cached = this.#hostCommandsCache.get(agentId)
+		if (cached && now - cached.fetchedAt < HOST_COMMANDS_TTL_MS) return cached.rows
+		const inFlight = this.#hostCommandsInFlight.get(agentId)
+		if (inFlight) return inFlight
+		const startedAt = now
+		const request: Promise<SeamHostCommandRow[]> = this.#hostCommandsOps()
+			.commandsList(agentId)
+			.then((rows) => {
+				// settle-time guard: the binding moved under the request — the rows
+				// belong to a session nobody is on anymore; discard, don't cache.
+				// (Availability is NOT re-armed here: ops.commandsList swallows a
+				// service-absent wire error into this same [], so the settle cannot
+				// tell "empty catalog" from "no service" — the adapter owns the flag.)
+				const current = this.currentSessionId() ?? this.stagedSessionId()
+				if (current !== agentId) return []
+				this.#hostCommandsCache.set(agentId, { rows, fetchedAt: startedAt })
+				return rows
+			})
+			.finally(() => {
+				if (this.#hostCommandsInFlight.get(agentId) === request) this.#hostCommandsInFlight.delete(agentId)
+			})
+		this.#hostCommandsInFlight.set(agentId, request)
+		return request
+	}
+
+	/**
+	 * 027 — execute one host command line. The ops layer has NO catch (its
+	 * commandsExecute propagates), so this face owns the degrade: any failure
+	 * resolves `undefined` (the caller paints the failure copy) + once-log.
+	 * A settled round passes through: `{text}` when the host echoed text, `{}`
+	 * (success, no text) otherwise.
+	 */
+	async #hostCommandsExecute(line: string): Promise<{ text?: string } | undefined> {
+		const agentId = this.currentSessionId() ?? this.stagedSessionId()
+		if (agentId === undefined || agentId === "") {
+			this.#degradeOnce("hostCommands.execute", "execute without an active session")
+			return undefined
+		}
+		try {
+			const result = await this.#hostCommandsOps().commandsExecute(agentId, line)
+			return result?.text ? { text: result.text } : {}
+		} catch (err) {
+			this.#degradeOnce("hostCommands.execute", `execute failed: ${err instanceof Error ? err.message : String(err)}`)
+			return undefined
+		}
+	}
+
+	/**
+	 * 027 — debounced refresh (palette open transition). Synchronously drops
+	 * the cache so the caller's next list() goes back to the wire, then
+	 * schedules ONE eager re-probe per debounce window (open/close flapping
+	 * must not hammer the generic arm). No epoch bump: an in-flight request
+	 * kicked by the caller is exactly the fetch we want to coalesce with.
+	 */
+	#hostCommandsRefresh(): void {
+		this.#hostCommandsCache.clear()
+		if (this.#hostCommandsRefreshTimer !== undefined) return
+		this.#hostCommandsRefreshTimer = setTimeout(() => {
+			this.#hostCommandsRefreshTimer = undefined
+			const agentId = this.currentSessionId() ?? this.stagedSessionId()
+			if (agentId !== undefined && agentId !== "") void this.#hostCommandsList()
+		}, HOST_COMMANDS_REFRESH_DEBOUNCE_MS)
+		this.#hostCommandsRefreshTimer.unref?.()
+	}
+
+	/**
+	 * 027 — binding change / bridge death: bump the epoch (a settle from the
+	 * previous binding observes it and discards) and drop cache + in-flight,
+	 * so rows of the previous agent never leak into the next palette.
+	 */
+	#resetHostCommands(): void {
+		this.#hostCommandsEpoch += 1
+		this.#hostCommandsCache.clear()
+		this.#hostCommandsInFlight.clear()
 	}
 
 	/**
@@ -2627,6 +2825,21 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** L2b C3: poll clock for the confirm-then-emit loop (real timer by default). */
 	readonly #confirmClock: BridgeConfirmClock
 
+	// ---- 027 hostCommands face state (plugin-registered slash commands) ----
+	/** Lazy dedicated ops instance (slash→dot rpc adapter + never socket factory). */
+	#hostCommandsOpsRef: RemoteSessionOps | undefined
+	/** Per-agentId row cache; TTL measured from request initiation. */
+	readonly #hostCommandsCache = new Map<string, { rows: SeamHostCommandRow[]; fetchedAt: number }>()
+	/** Per-agentId in-flight coalescing. */
+	readonly #hostCommandsInFlight = new Map<string, Promise<SeamHostCommandRow[]>>()
+	/** Bumped on every binding change / bridge death (cache-drop epochs). */
+	#hostCommandsEpoch = 0
+	/** Honest observation of THIS process: only the service-absent error class
+	 *  flips it false; a settled success flips it back true. */
+	#hostCommandsAvailable = true
+	/** Debounced refresh timer (palette open/close flapping guard). */
+	#hostCommandsRefreshTimer: ReturnType<typeof setTimeout> | undefined
+
 	// status state machine (no dedicated status frame — ticket §1 #1).
 	#connection: SeamStatus["connection"] = "disconnected"
 	#turn: SeamStatus["turn"] = "idle"
@@ -2964,6 +3177,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		// currentSessionId() === undefined. #sessionAttached intentionally stays
 		// true to remember that the close is owed; do NOT clear it here.
 		this.#currentSessionId = undefined
+		this.#resetHostCommands()
 		this.#resetModelRoute()
 		this.#pendingOpen = { mode: "new" }
 		// P1-1: starting a fresh session abandons the DEAD session entirely —
@@ -3101,6 +3315,7 @@ export class BridgeSessionSeam implements SessionSeam {
 
 		const boundId = typeof opened.sessionId === "string" ? opened.sessionId : sessionId
 		this.#currentSessionId = boundId
+		this.#resetHostCommands()
 		if (this.#pendingOpen?.mode === "resume" && this.#pendingOpen.id === boundId) this.#pendingOpen = undefined
 		if (this.#lastAppliedSessionId !== boundId) {
 			this.#lastAppliedSessionId = boundId
@@ -5140,7 +5355,10 @@ export class BridgeSessionSeam implements SessionSeam {
 						: { mode: "new" }
 				try {
 					const opened = asRecord(await this.#transport.request("session.open", params))
-					if (typeof opened.sessionId === "string") this.#currentSessionId = opened.sessionId
+					if (typeof opened.sessionId === "string") {
+						this.#currentSessionId = opened.sessionId
+						this.#resetHostCommands()
+					}
 					// A4: lastAppliedSeq is per-session. A different binding starts a
 					// fresh journal, so the next recovery must replay from 1.
 					if (this.#lastAppliedSessionId !== this.#currentSessionId) {
@@ -5244,6 +5462,11 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		this.#sessionAttached = false
 		this.#currentSessionId = undefined
+		this.#resetHostCommands()
+		if (this.#hostCommandsRefreshTimer !== undefined) {
+			clearTimeout(this.#hostCommandsRefreshTimer)
+			this.#hostCommandsRefreshTimer = undefined
+		}
 		this.#resetModelRoute()
 	}
 
@@ -5857,6 +6080,15 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#bridgeLink = "dead"
 			this.#connection = "disconnected"
 			this.#turn = "idle"
+			// 027: a dead bridge invalidates the hostCommands catalog — the next
+			// palette open must re-probe instead of serving cached rows.
+			this.#resetHostCommands()
+			// Same cleanup as dispose: a pending refresh settle must not fire
+			// against a dead bridge and resurrect stale state.
+			if (this.#hostCommandsRefreshTimer !== undefined) {
+				clearTimeout(this.#hostCommandsRefreshTimer)
+				this.#hostCommandsRefreshTimer = undefined
+			}
 			// S3: a dead bridge ends every host push subscription; record the
 			// disconnect per (session,method) subscription (BL-1) so a later
 			// resume can re-arm each one from seq 0.

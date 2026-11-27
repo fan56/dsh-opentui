@@ -69,7 +69,8 @@ import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/tur
 import { DockProvider, DockSeat, useDock } from "../src/routes/session/dock-host"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
-import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
+import { presetLabelFor, coreCommands, mergeHostCommands, type PickOneExtras } from "../src/routes/session/commands"
+import type { SeamHostCommandRow } from "../src/seams/session"
 import { join } from "node:path"
 import { agentsHomeEnvWarning, discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SkillsPanel, openSkillsPanel } from "../src/routes/session/skills-panel"
@@ -363,7 +364,18 @@ function V2SessionPageBody(props: {
 	// (plugin-provided skills live only there). The registry below is a memo
 	// so the palette rows and Tab completion read the CURRENT rows.
 	const [skillRows, setSkillRows] = createSignal<SkillRow[]>(props.skills ?? [])
-	const slashCommands = createMemo(() => withSkillCommands(coreCommands(), skillRows()))
+	// Host command palette rows (the seam's `hostCommands` face): an
+	// INDEPENDENT signal — never a promise into this memo — written only while
+	// the palette is CLOSED (slashSync below), so an open palette's rows and
+	// highlight index can never jump mid-typing. The revision signal is the
+	// explicit reactive dependency; the row array identity alone would miss a
+	// reused-array write.
+	const [hostRows, setHostRows] = createSignal<readonly SeamHostCommandRow[]>([])
+	const [hostRowsRevision, setHostRowsRevision] = createSignal(0)
+	const slashCommands = createMemo(() => {
+		hostRowsRevision()
+		return mergeHostCommands(withSkillCommands(coreCommands(), skillRows()), hostRows(), { t })
+	})
 	// Splash hero plugin rows (tui-pi welcome parity): seeded from the seam's
 	// sync plugins() cache (the boot warm may not have landed yet), then the
 	// push bridge re-reads on every refresh — the adapter's revision signal is
@@ -1095,6 +1107,46 @@ function V2SessionPageBody(props: {
 		// session switch. The banner path still goes through recovery.newSession().
 		clearRecoveryUi: () => recovery.clearRecoveryState(),
 	}))
+	// Host-command refresh discipline — palette open→closed transitions ONLY;
+	// the keystroke path itself never touches the network. Opening the palette
+	// invalidates the bridge's host-command cache (`refresh()`) and kicks off
+	// ONE async pull; the pulled rows land in the `hostRows` signal only while
+	// the palette is CLOSED — while it is open they wait in `pendingHostRows`
+	// (the visible list and the highlight index must never mutate under the
+	// user's cursor) — and any sync that finds the palette closed flushes
+	// whatever is pending (covering closes that bypass this wrapper: esc /
+	// submit through the key filter land on the next sync, and a fetch that
+	// settles after the close applies directly).
+	let paletteWasOpen = false
+	let pendingHostRows: readonly SeamHostCommandRow[] | undefined
+	const applyHostRows = (rows: readonly SeamHostCommandRow[]) => {
+		pendingHostRows = undefined
+		setHostRows(rows)
+		setHostRowsRevision((n) => n + 1)
+	}
+	const pullHostRows = () => {
+		const face = seam.hostCommands
+		if (!face?.available()) return
+		void face
+			.list()
+			.then((rows) => {
+				if (slash.controller.open) pendingHostRows = rows
+				else applyHostRows(rows)
+			})
+			.catch(() => {})
+	}
+	const slashSync = (buffer: string) => {
+		const wasOpen = paletteWasOpen
+		slash.controller.sync(buffer, slash.commands)
+		const open = slash.controller.open
+		if (open && !wasOpen) {
+			seam.hostCommands?.refresh()
+			pullHostRows()
+		} else if (!open && pendingHostRows !== undefined) {
+			applyHostRows(pendingHostRows)
+		}
+		paletteWasOpen = open
+	}
 	// A8 banner "new session": reuse the SAME /new command path a typed
 	// `/new` takes (seam.newSession + clear + reload) — no second session
 	// reset implementation. quit stays the boot-owned shutdown path.
@@ -1491,14 +1543,22 @@ function V2SessionPageBody(props: {
 							isTurnAborted: () => turnAborted || turnTracker.isAborted(),
 							isTurnFailed: () => turnTracker.isFailed(),
 							slashKeyFilter: slash.slashKeyFilter,
-							slashSync: (buffer: string) => slash.controller.sync(buffer, slash.commands),
+							slashSync,
 							interceptSubmit: slash.interceptSubmit,
 							// Tab completion is composer-only while no dialog owns the
 							// screen: an approval/dialog-select layer keeps its own Tab
 							// (undefined = fall through, do not steal the key).
 							slashComplete: (buffer: string, cursor: number) =>
 								dialog.stack.length > 0 ? undefined : slash.slashComplete(buffer, cursor),
-							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: () => slash.commands }),
+							slashPalette: () =>
+								createComponent(SlashPalette, {
+									controller: slash.controller,
+									commands: () => slash.commands,
+									statusLine: () =>
+										seam.hostCommands?.available() === false
+											? t("command.hostUnavailable")
+											: undefined,
+								}),
 							slashHeight: () => slash.controller.rows(),
 						}),
 					],

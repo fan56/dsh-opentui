@@ -224,6 +224,18 @@ export interface SeamGoalView {
 	blockedReason?: { code: string; message: string }
 }
 
+/**
+ * 027 — one plugin-registered host slash command row (`commands/list`, agent
+ * scope). Plain catalog data (name/description/definition id) — the seam
+ * whitelists these three fields per row, nothing else crosses.
+ */
+export interface SeamHostCommandRow {
+	name: string
+	description: string
+	/** Host definition id when the wire carries one (dot form, e.g. `my.cmd`). */
+	definitionId?: string
+}
+
 /** One reasoning-effort ladder entry (ModelReasoningEffort parity — the
  * same shape the remote catalog's `reasoning.efforts` carries). */
 export interface SeamEffortOption {
@@ -1108,6 +1120,22 @@ export interface SessionSeam {
 		pause(ref: SeamGoalRef): Promise<SeamGoalView | undefined>
 		resume(ref: SeamGoalRef): Promise<SeamGoalView | undefined>
 		clear(ref: SeamGoalRef): Promise<SeamGoalRef | undefined>
+	}
+	/**
+	 * 027 — plugin-registered host slash commands (`commands/list` +
+	 * `commands/execute` over the generic arm), the host side of the slash
+	 * palette merge. Optional — a seam without it (or `available() === false`)
+	 * keeps the palette local-only with an honest unavailable status line.
+	 * `list()` is cached per agentId (15s TTL from request initiation, in-flight
+	 * coalesced); `refresh()` debounced-invalidates so a palette re-open goes
+	 * back to the wire. `execute()` NEVER rejects: `{text?}` on a settled round,
+	 * `undefined` when the command failed — the caller paints the failure copy.
+	 */
+	hostCommands?: {
+		list(): Promise<SeamHostCommandRow[]>
+		execute(line: string): Promise<{ text?: string } | undefined>
+		available(): boolean
+		refresh(): void
 	}
 	currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined>
 	/**

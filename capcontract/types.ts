@@ -2341,6 +2341,7 @@ export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
   "@deepseek-ai/dsh-goal#goals/resume",
   "@deepseek-ai/dsh-goal#goals/clear",
   "@deepseek-ai/dsh-commands#commands/execute",
+  "@deepseek-ai/dsh-commands#commands/list",
 ] as const)
 
 /** W2-3 write ids (R6): generic-arm refuses these unless a confirm marker is present. */
