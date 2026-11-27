@@ -337,7 +337,11 @@ export function SlashPalette(props: {
 									fg={active() ? row().textColor : color.base()}
 									attributes={paletteRowAttributes(command, active())}
 								>
-									{command.name}{" "}
+									{/* Display name wins the PAINT only: filtering, exact
+									    submit, Tab completion and dispatch all key on `name`
+									    (the raw command identity), so a suffixed duplicate
+									    twin stays reachable by its `/`-prefix. */}
+									{command.displayName ?? command.name}{" "}
 									{/* The description rides the row's own selected fg when the
 									    row is highlighted — the page-muted gray on the focused
 									    action background fails contrast (1.31:1 dsh-blue dark,

@@ -47,12 +47,15 @@ function findTextarea(node: any): any {
 
 /** Locals sort AROUND the host row: the merged "/" table is
  * ["/alpha", "/mid" (host), "/zeta"] — the host row lands in the MIDDLE, so
- * a carried highlight index 1 flips from "/zeta" to "/mid" without the reset. */
+ * a carried highlight index 1 flips from "/zeta" to "/mid" without the reset.
+ * The host row rides the REAL wire shape — the dsh `commands/list` name has
+ * NO leading slash ("mid"); the merge must produce the palette gesture form
+ * "/mid" (the bare-name regression this suite pins). */
 const LOCAL_COMMANDS: SlashCommand[] = [
 	{ name: "/alpha", description: "local alpha", run: () => {} },
 	{ name: "/zeta", description: "local zeta", run: () => {} },
 ]
-const HOST_ROWS: SeamHostCommandRow[] = [{ name: "/mid", description: "host plugin command" }]
+const HOST_ROWS: SeamHostCommandRow[] = [{ name: "mid", description: "host plugin command" }]
 /** The pull delay: longer than a keystroke flush, shorter than the settle. */
 const PULL_DELAY_MS = 80
 

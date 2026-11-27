@@ -175,6 +175,14 @@ export interface SlashCommand {
 	 * Pure ordering/marking metadata — dispatch itself is unchanged.
 	 */
 	source?: "local" | "host"
+	/**
+	 * Render-only label override (the palette paints `displayName ?? name`).
+	 * NEVER used for filtering, exact match, dispatch, Tab completion or
+	 * usage counting — those all key on `name`. The host merge sets it only
+	 * on a duplicate-name twin so the suffix cannot break `/`-prefix input
+	 * matching (the wire name must stay the match key).
+	 */
+	displayName?: string
 	run(ctx: SlashCommandContext, argText: string): void | Promise<void>
 }
 
@@ -191,11 +199,25 @@ export interface SlashCommand {
 const HOST_COMMAND_CAP = 100
 
 /**
- * Merge host-published command rows into the local registry. Duplicate names
- * are listed TWICE: the local row unchanged, the host twin under
- * `t("command.hostSource", { name })` — the suffix rides i18n, never a
- * hardcoded label. A host row's `run` proxies the RAW (unsuffixed) name plus
- * the typed arguments through `hostCommands.execute`; the seam's echoed text
+ * Merge host-published command rows into the local registry.
+ *
+ * NAME NORMALIZATION (the palette-vocabulary seam): the wire's
+ * `commands/list` rows carry the host's BARE command name (`dsh`
+ * CommandDescriptor: "Lowercase command name without the leading slash"),
+ * while this palette's whole vocabulary — filterCommands, dispatchLine,
+ * Tab completion, exact submit — is slash-anchored and every local row
+ * carries the leading `/`. The merge therefore keys each host row by its
+ * GESTURE form (`/name`; an already-slash-prefixed wire name passes
+ * through): filtering, execution and usage all ride the normalized `name`,
+ * never the raw wire bytes. The row's `run` proxies the SAME gesture name
+ * plus the typed arguments through `hostCommands.execute` — the host's
+ * parseCommand requires the leading slash, so the executed line is exactly
+ * the line the user typed.
+ *
+ * Duplicate names are listed TWICE: the local row unchanged, the host twin
+ * keeping the same `name` (so `/`-prefix matching still resolves it) with
+ * the i18n source suffix in `displayName` — the suffix rides i18n, never a
+ * hardcoded label, and never pollutes the match key. The seam's echoed text
  * is the feedback row, and the remaining arms degrade through i18n lines —
  * `undefined` (seam contract: the command failed) and a throw both paint the
  * failure copy, a settled no-text round paints the executed copy (never a
@@ -208,15 +230,19 @@ export function mergeHostCommands(
 ): SlashCommand[] {
 	const localNames = new Set(local.map((command) => command.name.toLowerCase()))
 	const hostRows: SlashCommand[] = host.slice(0, HOST_COMMAND_CAP).map((row) => {
-		const rawName = row.name
+		// Wire name → palette gesture name: the leading `/` the host omits
+		// (an already-prefixed name — the old test shape — passes through).
+		const name = row.name.startsWith("/") ? row.name : `/${row.name}`
+		const duplicate = localNames.has(name.toLowerCase())
 		return {
-			name: localNames.has(rawName.toLowerCase())
-				? deps.t("command.hostSource", { name: rawName })
-				: rawName,
+			name,
+			// Display-only suffix for the duplicate twin: rendering reads
+			// `displayName ?? name`, filtering/matching never does.
+			...(duplicate ? { displayName: deps.t("command.hostSource", { name }) } : {}),
 			description: row.description,
 			source: "host",
 			run: async (ctx, argText) => {
-				const line = argText ? `${rawName} ${argText}` : rawName
+				const line = argText ? `${name} ${argText}` : name
 				try {
 					const result = await ctx.seam?.hostCommands?.execute(line)
 					// seam contract: `undefined` = the command FAILED — paint the
@@ -224,11 +250,11 @@ export function mergeHostCommands(
 					// text) and `{text}` are both successes; a throw stays failed.
 					ctx.say(
 						result === undefined
-							? deps.t("command.hostExecuteFailed", { name: rawName })
-							: (result.text ?? deps.t("command.hostExecuted", { name: rawName })),
+							? deps.t("command.hostExecuteFailed", { name })
+							: (result.text ?? deps.t("command.hostExecuted", { name })),
 					)
 				} catch {
-					ctx.say(deps.t("command.hostExecuteFailed", { name: rawName }))
+					ctx.say(deps.t("command.hostExecuteFailed", { name }))
 				}
 			},
 		}
@@ -236,8 +262,9 @@ export function mergeHostCommands(
 	return [...local, ...hostRows].sort((a, b) => {
 		const order = a.name.localeCompare(b.name)
 		if (order !== 0) return order
-		// Name-identical rows: local rows first (host rows already carry the
-		// suffixed display name, so this tie is a defensive last resort).
+		// Gesture-name-identical rows (the host merge): local rows first (the
+		// host twin's suffix lives in displayName, so this tie is the ordering
+		// rule itself, with the sort key as a defensive last resort).
 		return (a.source === "host" ? 1 : 0) - (b.source === "host" ? 1 : 0)
 	})
 }
