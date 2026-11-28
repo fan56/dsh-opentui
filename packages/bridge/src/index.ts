@@ -5778,7 +5778,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     for (const [childId, row] of index.rows) {
       if (row.status !== 'running') continue
       if (row.parentSessionId !== parentSessionId) continue
-      const detail = issueChildCancel(childId)
+      const detail = row.mode === 'external' ? await issueExternalChildInterrupt(childId) : issueChildCancel(childId)
       children.push({
         childId,
         disposition: detail === undefined ? 'cancel-issued' : 'failed',

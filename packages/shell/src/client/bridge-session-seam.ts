@@ -4064,7 +4064,8 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/** Fold one external spawn. Live rows anchor timeout at discovery; replay
-	 * rows anchor only at durable createdAt and never synthesize a clock. */
+	 * rows anchor only at durable childCreatedAt (normalized to createdAt on the
+	 * live frame) and never synthesize a clock. */
 	#foldExternalSpawn(data: Record<string, unknown>, now: number, live: boolean): boolean {
 		const childId = typeof data.childId === "string" ? data.childId : ""
 		if (childId === "") return false
@@ -4072,10 +4073,12 @@ export class BridgeSessionSeam implements SessionSeam {
 			? data.label
 			: (typeof data.name === "string" && data.name !== "" ? data.name : `external ${childId.slice(0, 8)}`)
 		const name = typeof data.name === "string" && data.name !== "" ? data.name : undefined
-		const createdAt = typeof data.createdAt === "number" && Number.isFinite(data.createdAt)
-			? data.createdAt
+		const durableCreatedAt = data.childCreatedAt ?? data.createdAt
+		const createdAt = typeof durableCreatedAt === "number" && Number.isFinite(durableCreatedAt)
+			? durableCreatedAt
 			: undefined
 		const existing = this.#externalSubagentViews.get(childId)
+		const newerCreatedAt = createdAt !== undefined && createdAt > (existing?.createdAt ?? -Infinity)
 		let changed = false
 		if (existing === undefined) {
 			this.#externalSubagentViews.set(childId, {
@@ -4091,10 +4094,31 @@ export class BridgeSessionSeam implements SessionSeam {
 				this.#externalUnknownAt.set(childId, createdAt)
 			}
 			changed = true
+		} else if (this.#externalSettledIds.has(childId) && newerCreatedAt) {
+			// CATALOG-FAMILY REVIVE: a newer durable timestamp is a fresh external
+			// run after a real settle. Rebuild the row so the prior run's terminal
+			// display cannot leak; an unknown timeout is not a settle signal.
+			this.#externalSettledIds.delete(childId)
+			this.#externalUnknownAt.delete(childId)
+			this.#externalLiveIds.delete(childId)
+			const revivedName = name ?? existing.name
+			this.#externalSubagentViews.set(childId, {
+				id: existing.id, label, status: "running", rounds: 0,
+				...(revivedName !== undefined ? { name: revivedName } : {}),
+				...(createdAt !== undefined ? { createdAt } : {}),
+				mode: "external", noTranscript: true,
+			})
+			if (live) {
+				this.#externalLiveIds.add(childId)
+				this.#externalUnknownAt.set(childId, now)
+			} else if (createdAt !== undefined) {
+				this.#externalUnknownAt.set(childId, createdAt)
+			}
+			changed = true
 		} else if (existing.status === "running" && !this.#externalSettledIds.has(childId)) {
 			const labelChanged = label !== existing.label
 			const nameChanged = name !== undefined && name !== existing.name
-			const createdChanged = createdAt !== undefined && createdAt !== existing.createdAt
+			const createdChanged = newerCreatedAt
 			if (labelChanged || nameChanged || createdChanged) {
 				this.#externalSubagentViews.set(childId, {
 					...existing,

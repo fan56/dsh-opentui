@@ -386,8 +386,8 @@ describe("external interrupt and stopChildren", () => {
 		expect(h.policySessionGets).toEqual([])
 	})
 
-	test("settled external rows are already-settled and are excluded from stopChildren running count", async () => {
-		const h = makeHarness({ children: { "local-1": {}, "ext-running": {} } })
+	test("stopChildren interrupts running external rows without a host agent and excludes settled external rows", async () => {
+		const h = makeHarness({ children: { "local-1": {} } })
 		const parent = await openParent(h, 22)
 		emitExternalCatalog(h, parent, "ext-settled", 100)
 		emitSettledNotice(h, parent, "ext-settled", { stopReason: "completed" })
@@ -401,7 +401,13 @@ describe("external interrupt and stopChildren", () => {
 		const reply = await h.waitFor(23)
 
 		expect(reply.ok).toBe(true)
-		expect(reply.result.children.map((child: Frame) => child.childId).sort()).toEqual(["ext-running", "local-1"])
+		expect(reply.result.children).toHaveLength(2)
+		expect(reply.result.children).toEqual(expect.arrayContaining([
+			{ childId: "ext-running", disposition: "cancel-issued" },
+			{ childId: "local-1", disposition: "cancel-issued" },
+		]))
+		expect(h.interruptCalls).toEqual(["ext-running"])
+		expect(h.cancelCallsOf("ext-running")).toHaveLength(0)
 		expect(h.cancelCallsOf("local-1")).toHaveLength(1)
 		expect(getSubagentIndex(h.ctx).get("ext-settled")?.status).toBe("settled")
 	})

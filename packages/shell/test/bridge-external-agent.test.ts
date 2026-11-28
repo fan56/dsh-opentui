@@ -124,8 +124,8 @@ describe("external agent seam", () => {
 		const h = makeHarness()
 		const rows = [
 			{ seq: 1, type: "subagent/catalog", payload: { childId: "local", label: "L", childCreatedAt: 1_000 } },
-			{ seq: 2, type: "subagent/catalog", payload: { childId: "ext", label: "E", createdAt: Date.now(), mode: "external" } },
-			{ seq: 3, type: "subagent/catalog", payload: { childId: "near", label: "N", createdAt: Date.now(), mode: "external" } },
+			{ seq: 2, type: "subagent/catalog", payload: { childId: "ext", label: "E", childCreatedAt: Date.now(), mode: "external" } },
+			{ seq: 3, type: "subagent/catalog", payload: { childId: "near", label: "N", childCreatedAt: Date.now(), mode: "external" } },
 			{ seq: 4, type: "user/message", payload: { source: { kind: "subagent-settled", senderSessionId: "ext", stopReason: "aborted", summary: "S", endedAt: 2_000 } } },
 			{ seq: 5, type: "user/message", payload: { source: { kind: "subagent-settled-extra", senderSessionId: "near", stopReason: "completed", endedAt: 2_000 } } },
 			{ seq: 6, type: "user/message", payload: { source: { kind: "subagent-settled", senderSessionId: "local", stopReason: "completed" } } },
@@ -148,7 +148,7 @@ describe("external agent seam", () => {
 		const h = makeHarness()
 		const rows = [
 			{ seq: 1, type: "user/message", payload: { source: { kind: "subagent-settled", senderSessionId: "ext", stopReason: "completed", endedAt: 2_000 } } },
-			{ seq: 2, type: "subagent/catalog", payload: { childId: "ext", label: "E", createdAt: 1_000, mode: "external" } },
+			{ seq: 2, type: "subagent/catalog", payload: { childId: "ext", label: "E", childCreatedAt: 1_000, mode: "external" } },
 		]
 		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 3 } })
 		await h.seam.storedTranscript("p")
@@ -157,16 +157,44 @@ describe("external agent seam", () => {
 		await h.seam.dispose()
 	})
 
-	test("replay createdAt older than fifteen minutes becomes unknown without endedAt", async () => {
+	test("replay uses durable childCreatedAt; older than fifteen minutes becomes unknown without endedAt", async () => {
 		const h = makeHarness()
 		const rows = [{ seq: 1, type: "subagent/catalog", payload: {
-			childId: "old", label: "Old", createdAt: Date.now() - EXTERNAL_UNKNOWN_MS - 1, mode: "external",
+			childId: "old", label: "Old", childCreatedAt: Date.now() - EXTERNAL_UNKNOWN_MS - 1_000, mode: "external",
 		} }]
 		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 2 } })
 		await h.seam.storedTranscript("p")
 		expect(row(h, "old")?.status).toBe("unknown")
 		expect(row(h, "old")?.endedAt).toBeUndefined()
 		expect(row(h, "old")?.elapsedSec).toBeUndefined()
+		await h.seam.dispose()
+	})
+
+	test("a newer external catalog revives a settled child and its next settle wins", async () => {
+		const h = makeHarness()
+		const now = Date.now()
+		const rows = [
+			{ seq: 1, type: "subagent/catalog", payload: {
+				childId: "ext", label: "old run", childCreatedAt: now - 2_000, mode: "external",
+			} },
+			{ seq: 2, type: "user/message", payload: { source: {
+				kind: "subagent-settled", senderSessionId: "ext", stopReason: "completed",
+				summary: "old summary", endedAt: now - 1_000,
+			} } },
+			{ seq: 3, type: "subagent/catalog", payload: {
+				childId: "ext", label: "new run", childCreatedAt: now, mode: "external",
+			} },
+		]
+		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 4 } })
+		await h.seam.storedTranscript("p")
+		expect(row(h, "ext")).toEqual({
+			id: "ext", label: "new run", status: "running", rounds: 0,
+			createdAt: now, mode: "external", noTranscript: true,
+		})
+		h.emit(settle("p", "ext", "error", now + 1_000, "new summary"))
+		expect(row(h, "ext")).toMatchObject({
+			status: "failed", summary: "new summary", endedAt: now + 1_000, createdAt: now,
+		})
 		await h.seam.dispose()
 	})
 
