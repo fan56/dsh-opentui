@@ -150,9 +150,14 @@ export type SeamRow =
 				children: {
 					id: string
 					label: string
+					name?: string
 					model?: string
 					status: "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unknown"
 					rounds: number
+					createdAt?: number
+					mode?: "external"
+					noTranscript?: true
+					summary?: string
 					startedAt?: number
 					elapsedSec?: number
 					injectedRound?: number

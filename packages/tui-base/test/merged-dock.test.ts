@@ -113,6 +113,14 @@ describe("attributeAgents — last-in_progress rule (D7)", () => {
 		expect(result.agents.map((a) => a.id)).toEqual(["a"])
 	})
 
+	test("external unknown is not running and never enters the dock", () => {
+		const result = attributeAgents([], [
+			agent("ext", { mode: "external", noTranscript: true, status: "unknown", startedAt: undefined }),
+			agent("live", { mode: "external", noTranscript: true, startedAt: undefined }),
+		])
+		expect(result.agents.map((a) => a.id)).toEqual(["live"])
+	})
+
 	test("parent completes → re-attach to new last in_progress, or flat if none", () => {
 		const before = [todo("A", "in_progress"), todo("B", "in_progress")]
 		expect(attributeAgents(before, agents).parent?.index).toBe(2)
@@ -324,6 +332,38 @@ describe("mergedDockLines — agent name (F5)", () => {
 			expect(textOf(line)).not.toContain(":")
 			expect(line.segments.some((segment) => segment.text.includes(": "))).toBe(false)
 		}
+	})
+})
+
+describe("mergedDockLines — external agent rows", () => {
+	const external = (overrides: Partial<MergedAgent> = {}): MergedAgent => agent("ext", {
+		label: "research",
+		mode: "external",
+		noTranscript: true,
+		startedAt: undefined,
+		elapsedSec: undefined,
+		lastLine: "hidden local tail",
+		model: "hidden-model",
+		...overrides,
+	})
+	const lineFor = (a: MergedAgent, innerWidth = 40) =>
+		mergedDockLines({ tools: [], todos: [], agents: [a] }, { innerWidth, now: 4_000 })
+			.find((line) => line.kind === "agent")!
+
+	test("short ext label has no fake 0.0s, rounds, model, or lastLine at 40 columns", () => {
+		const line = lineFor(external({ rounds: 14 }))
+		const text = textOf(line).trimEnd()
+		expect(text).toBe("└─ ext research")
+		expect(text).not.toContain("0.0s")
+		expect(text).not.toContain("round")
+		expect(text).not.toContain("hidden-model")
+		expect(text).not.toContain("hidden local tail")
+		expect(lineWidth(line)).toBe(40)
+	})
+
+	test("noTranscript alone selects the external branch", () => {
+		const line = lineFor(external({ mode: undefined, name: "researcher" }))
+		expect(textOf(line).trimEnd()).toBe("└─ researcher: ext research")
 	})
 })
 

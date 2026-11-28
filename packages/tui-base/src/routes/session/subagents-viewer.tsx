@@ -107,7 +107,7 @@ export function viewerRows(views: readonly SeamSubagentView[]): SeamSubagentView
 	const running = views.filter((view) => view.status === "running")
 	const settled = views
 		.filter((view) => view.status !== "running")
-		.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+		.sort((a, b) => (b.endedAt ?? b.createdAt ?? 0) - (a.endedAt ?? a.createdAt ?? 0))
 		.slice(0, SETTLED_CAP)
 	return [...running, ...settled]
 }
@@ -121,6 +121,7 @@ export function viewerRowText(
 	roundCap: number | undefined,
 	elapsedText: string | undefined,
 ): string {
+	const external = view.mode === "external" || view.noTranscript === true
 	const glyph =
 		view.status === "running"
 			? "⠋"
@@ -130,10 +131,13 @@ export function viewerRowText(
 					? "✗"
 					: view.status === "interrupted"
 						? "⊘"
-						: "—"
+						: view.status === "unknown"
+							? "?"
+							: "—"
 	const stop = subagentHardStopGlyph(view)
 	const namePrefix = subagentNamePrefix(view.name, view.label)
 	const label = `${stop ? `${stop} ` : ""}${namePrefix}${Locale.titlecase(view.label)}`
+	if (external) return `${glyph} ${t("panel.subagents.row.external")} ${label}`
 	const suffix = subagentMarkerSuffix(view)
 	const cap = roundCap !== undefined && roundCap > 0 ? `/${roundCap}` : ""
 	const elapsed = elapsedText !== undefined && elapsedText !== "" ? ` · ${elapsedText}` : ""
@@ -152,11 +156,42 @@ export function formatViewerElapsed(ms: number): string {
 /** One row's elapsed text: running rows tick live off startedAt, settled rows
  * read the frozen elapsedSec; absent facts render nothing (never a guess). */
 export function rowElapsedText(view: SeamSubagentView, now: number): string | undefined {
+	if (view.mode === "external" || view.noTranscript === true) return undefined
 	if (view.status === "running" && view.startedAt !== undefined) {
 		return formatViewerElapsed(Math.max(0, now - view.startedAt))
 	}
 	if (view.elapsedSec !== undefined) return `${view.elapsedSec.toFixed(1)}s`
 	return undefined
+}
+
+/** External rows have no local transcript/steer surface. Running rows retain
+ * the stop gesture; every terminal state (including unknown) hides it. */
+export function transcriptHint(view: SeamSubagentView | undefined): string {
+	if (view?.mode === "external" || view?.noTranscript === true) {
+		return view.status === "running"
+			? t("panel.subagents.hint.transcriptExternalRunning")
+			: t("panel.subagents.hint.transcriptExternalEnded")
+	}
+	return t("panel.subagents.hint.transcript")
+}
+
+/** Detail body for an external row: the producer summary when present,
+ * otherwise an explicit no-local-transcript empty state. */
+export function externalDetailText(view: SeamSubagentView): string {
+	return view.summary ?? t("panel.subagents.transcript.externalEmpty")
+}
+
+/** Enter/steer is meaningless for an external row. */
+export function viewerCanSteer(view: SeamSubagentView | undefined): boolean {
+	return view !== undefined && view.mode !== "external" && view.noTranscript !== true
+}
+
+/** Local rows keep the historical "nothing to stop" feedback path. External
+ * rows expose the stop gesture only while running. */
+export function viewerCanStop(view: SeamSubagentView | undefined): boolean {
+	if (view === undefined) return false
+	if (view.mode === "external" || view.noTranscript === true) return view.status === "running"
+	return true
 }
 
 /**
@@ -315,6 +350,7 @@ export function SubagentsViewer(props: {
 		const id = browsingId()
 		if (id === undefined) return []
 		const seam = props.seam
+		if (browsing()?.mode === "external" || browsing()?.noTranscript === true) return []
 		// Keep the receiver: the seam's face is a class method reading a private
 		// field. A bare `const face = seam.subagentTranscript; face(id)` loses
 		// `this` and crashes the ctrl+g transcript view (F2).
@@ -329,6 +365,7 @@ export function SubagentsViewer(props: {
 		void tick()
 		const id = browsingId()
 		if (id === undefined || props.seam.subagentTranscriptStatus === undefined) return undefined
+		if (browsing()?.mode === "external" || browsing()?.noTranscript === true) return undefined
 		return props.seam.subagentTranscriptStatus(id)
 	})
 	const emptyTranscriptKey = (): string => {
@@ -389,6 +426,10 @@ export function SubagentsViewer(props: {
 		const view = browsing()
 		const id = browsingId()
 		if (view === undefined || id === undefined) return
+		if (view.mode === "external" || view.noTranscript === true) {
+			flash(t("panel.subagents.status.steerExternal"))
+			return
+		}
 		if (view.status !== "running") {
 			flash(t("panel.subagents.status.steerEnded"))
 			return
@@ -518,8 +559,8 @@ export function SubagentsViewer(props: {
 		commands: [
 			{ bind: "up,k", title: t("panel.subagents.keymap.scrollUp"), group: "Subagents", run: () => scrollBy(-1) },
 			{ bind: "down,j", title: t("panel.subagents.keymap.scrollDown"), group: "Subagents", run: () => scrollBy(1) },
-			{ bind: "return", title: t("panel.subagents.keymap.steer"), group: "Subagents", run: openSteer },
-			{ bind: "x", title: t("panel.subagents.keymap.stopTwice"), group: "Subagents", run: stopChild },
+			...(viewerCanSteer(browsing()) ? [{ bind: "return", title: t("panel.subagents.keymap.steer"), group: "Subagents", run: openSteer }] : []),
+			...(viewerCanStop(browsing()) ? [{ bind: "x", title: t("panel.subagents.keymap.stopTwice"), group: "Subagents", run: stopChild }] : []),
 		],
 	}))
 
@@ -542,7 +583,12 @@ export function SubagentsViewer(props: {
 						? t("panel.subagents.status.failed")
 						: view.status === "interrupted"
 							? t("panel.subagents.status.interrupted")
-							: t("panel.subagents.status.cancelled")
+							: view.status === "unknown"
+								? t("panel.subagents.status.unknown")
+								: t("panel.subagents.status.cancelled")
+		if (view.mode === "external" || view.noTranscript === true) {
+			return clip(`${t("panel.subagents.row.external")} ${Locale.titlecase(view.label)} · ${status}`, bodyWidth)
+		}
 		const elapsed = rowElapsedText(view, now)
 		const rounds = t("panel.subagents.row.rounds", { count: String(view.rounds) })
 		const parts = [`${Locale.titlecase(view.label)} · ${status} · ${rounds}`]
@@ -598,6 +644,7 @@ export function SubagentsViewer(props: {
 		const muted = theme?.text.muted ?? kitTheme().text.muted
 		const base = theme?.text.base ?? kitTheme().text.base
 		const view = browsing()
+		const external = view?.mode === "external" || view?.noTranscript === true
 		const facePresent = props.seam.subagentTranscript !== undefined
 		const lines = transcript()
 		const win = window()
@@ -608,7 +655,15 @@ export function SubagentsViewer(props: {
 						{clipToWidth(headerText(view, Date.now()), bodyWidth)}
 					</text>
 					<Show
-						when={facePresent}
+						when={!external}
+						fallback={
+							<text fg={muted} wrapMode="none">
+								{view === undefined ? t("panel.subagents.transcript.externalEmpty") : clipToWidth(externalDetailText(view), bodyWidth)}
+							</text>
+						}
+					>
+						<Show
+							when={facePresent}
 						fallback={
 							<text fg={muted} wrapMode="none">
 								{t("panel.subagents.transcript.unavailable")}
@@ -638,16 +693,19 @@ export function SubagentsViewer(props: {
 										{`${win.start + 1}-${win.end}/${lines.length}${win.follow ? t("panel.subagents.transcript.following") : t("panel.subagents.transcript.detached")}`}
 									</text>
 								</box>
-							</Show>
+								</Show>
+								</Show>
 						</Show>
 					</Show>
-					<Show when={status() !== undefined}>
+				<Show when={status() !== undefined}>
+
 						<text fg={kitTheme().text.warning} wrapMode="none">
+
 							{clip(status()!, bodyWidth)}
 						</text>
 					</Show>
 				</PanelBody>
-				<PanelActions hint={t("panel.subagents.hint.transcript")} />
+				<PanelActions hint={transcriptHint(view)} />
 			</box>
 		)
 	}

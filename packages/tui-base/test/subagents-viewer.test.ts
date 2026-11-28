@@ -7,13 +7,17 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import {
 	doublePressArmed,
+	externalDetailText,
 	formatViewerElapsed,
 	MIN_DOUBLE_PRESS_GAP_MS,
 	rowElapsedText,
 	scrollTarget,
 	stopAllSummary,
 	steerEchoText,
+	transcriptHint,
 	transcriptWindow,
+	viewerCanSteer,
+	viewerCanStop,
 	viewerRowText,
 	viewerRows,
 } from "../src/routes/session/subagents-viewer"
@@ -81,6 +85,15 @@ describe("viewer rows", () => {
 		expect(rows.map((row) => row.id)).toEqual(["b", "a", "c"])
 	})
 
+	test("external terminal rows sort by endedAt ?? createdAt before the cap", () => {
+		const rows = viewerRows([
+			view({ id: "old", mode: "external", noTranscript: true, status: "unknown", createdAt: 1 }),
+			view({ id: "newer", mode: "external", noTranscript: true, status: "completed", createdAt: 3 }),
+			view({ id: "newest", mode: "external", noTranscript: true, status: "completed", endedAt: 9, createdAt: 2 }),
+		])
+		expect(rows.map((row) => row.id)).toEqual(["newest", "newer", "old"])
+	})
+
 	test("an empty roster stays empty (the viewer renders the honest fallback)", () => {
 		expect(viewerRows([])).toEqual([])
 	})
@@ -124,6 +137,24 @@ describe("viewer row text", () => {
 		expect(interrupted).toContain("⊘")
 		expect(interrupted).not.toBe(cancelled)
 	})
+
+	test("external rows use short ext, unknown glyph, and no model/rounds/elapsed/tail", () => {
+		const text = viewerRowText(view({
+			id: "ext", label: "research", mode: "external", noTranscript: true, status: "unknown",
+			model: "hidden-model", rounds: 12, startedAt: 1, elapsedSec: 99, lastLine: "hidden tail",
+		}), 50, "123.0s")
+		expect(text).toBe("? ext Research")
+		expect(text).not.toContain("hidden-model")
+		expect(text).not.toContain("round")
+		expect(text).not.toContain("123.0s")
+		expect(text).not.toContain("hidden tail")
+		expect(text.length).toBeLessThanOrEqual(40)
+	})
+
+	test("noTranscript alone also selects the external row shape", () => {
+		expect(viewerRowText(view({ id: "ext", label: "research", noTranscript: true }), undefined, "9.0s"))
+			.toBe("⠋ ext Research")
+	})
 })
 
 describe("interrupted status copy (i18n)", () => {
@@ -157,6 +188,50 @@ describe("elapsed text", () => {
 		expect(rowElapsedText(view({ id: "s2", status: "completed", elapsedSec: 9.5 }), now)).toBe("9.5s")
 		// Absent facts render nothing — never a guess.
 		expect(rowElapsedText(view({ id: "s3" }), now)).toBeUndefined()
+	})
+
+	test("external rows never render duration even when stale local clocks are present", () => {
+		const now = 1_000_000
+		expect(rowElapsedText(view({ id: "ext", mode: "external", noTranscript: true, startedAt: now - 5_000 }), now)).toBeUndefined()
+		expect(rowElapsedText(view({ id: "ext", mode: "external", noTranscript: true, elapsedSec: 9.5 }), now)).toBeUndefined()
+	})
+})
+
+describe("external viewer detail and key gates", () => {
+	const external = (overrides: Partial<SeamSubagentView> = {}): SeamSubagentView =>
+		view({ id: "ext", label: "research", mode: "external", noTranscript: true, ...overrides })
+
+	test("summary wins; otherwise the dedicated external empty state renders", () => {
+		setLanguage("en")
+		expect(externalDetailText(external({ summary: "found three papers" }))).toBe("found three papers")
+		expect(externalDetailText(external())).toBe("external agent — no local transcript is available")
+		setLanguage("zh-CN")
+		expect(externalDetailText(external())).toBe("外部 agent — 无本地记录")
+		setLanguage("en")
+	})
+
+	test("Enter/steer is disabled for every external row", () => {
+		expect(viewerCanSteer(external())).toBe(false)
+		expect(viewerCanSteer(external({ status: "completed" }))).toBe(false)
+		expect(viewerCanSteer(view({ id: "local" }))).toBe(true)
+	})
+
+	test("external stop is shown only while running; unknown and terminal rows hide it", () => {
+		expect(viewerCanStop(external())).toBe(true)
+		expect(viewerCanStop(external({ status: "unknown" }))).toBe(false)
+		expect(viewerCanStop(external({ status: "completed" }))).toBe(false)
+		expect(viewerCanStop(view({ id: "local", status: "completed" }))).toBe(true)
+	})
+
+	test("external footer removes steer and hides stop for unknown", () => {
+		setLanguage("en")
+		expect(transcriptHint(external())).toBe("x×2 stop · esc back")
+		expect(transcriptHint(external({ status: "unknown" }))).toBe("esc back")
+		expect(transcriptHint(external({ status: "unknown" }))).not.toContain("steer")
+		expect(transcriptHint(view({ id: "local" }))).toContain("enter steer")
+		setLanguage("zh-CN")
+		expect(transcriptHint(external({ status: "unknown" }))).toBe("esc 返回")
+		setLanguage("en")
 	})
 })
 
