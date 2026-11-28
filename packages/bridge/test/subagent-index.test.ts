@@ -122,6 +122,41 @@ describe("SubagentIndex — per-parent running enumeration (no global stop)", ()
   })
 })
 
+describe("SubagentIndex — external lifecycle", () => {
+  test("settled external rows stay external and settled across list reconciliation", () => {
+    const idx = new SubagentIndex()
+    idx.noteCatalog("ext-1", "parent", 100, "external")
+    idx.noteSettled("ext-1")
+
+    idx.syncFromList([
+      row("ext-1", "parent", true, "subagent", 999),
+      row("local-1", "parent", true),
+    ])
+
+    expect(idx.get("ext-1")).toEqual({
+      parentSessionId: "parent",
+      startedAt: 100,
+      status: "settled",
+      mode: "external",
+    })
+    expect(idx.runningChildrenOf("parent").map((x) => x.childId)).toEqual(["local-1"])
+  })
+
+  test("a newer external catalog starts a fresh run; a duplicate does not revive it", () => {
+    const idx = new SubagentIndex()
+    idx.noteCatalog("ext-1", "parent", 100, "external")
+    idx.noteSettled("ext-1")
+    idx.noteCatalog("ext-1", "parent", 100, "external")
+    expect(idx.get("ext-1")?.status).toBe("settled")
+
+    idx.noteCatalog("ext-1", "parent", 200, "external")
+    expect(idx.get("ext-1")).toMatchObject({ startedAt: 200, status: "running", mode: "external" })
+    idx.noteSettled("ext-1")
+    idx.noteRunning("ext-1")
+    expect(idx.get("ext-1")?.status).toBe("settled")
+  })
+})
+
 describe("getSubagentIndex — one table per ctx", () => {
   test("same ctx returns the same instance; a different ctx gets a fresh one", () => {
     const ctxA = {}

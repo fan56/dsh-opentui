@@ -1575,6 +1575,9 @@ const ACCOUNT_VIEW_WIRE_METHODS: ReadonlySet<string> = new Set([
  * Table lookup on the generated chain (NOT a hand-copied wire line). These are
  * DISTINCT from the ADR-0010 protocol frames `subagents.interrupt` /
  * `subagents.stopChildren` (binding-gated roster stop) — do not merge them.
+ * The protocol interrupt handler may DELEGATE an external child to this same
+ * host `interruptByUser` service, but its wire request/response contract stays
+ * the binding-gated roster shape.
  */
 const CAP_SUBAGENT_WIRE_METHODS: Readonly<Record<string, string>> = {
   'subagents.prompt': '@deepseek-ai/dsh-subagent#subagents/prompt',
@@ -3586,8 +3589,88 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  contained inside `syncChildApprovalPolicy` — one bad child never blocks the rest. */
   function syncKnownChildrenOfBinding(bindingSessionId: string): void {
     for (const [childId, row] of getSubagentIndex(ctx).rows) {
-      if (row.parentSessionId !== bindingSessionId) continue
+      if (row.parentSessionId !== bindingSessionId || row.mode === 'external') continue
       syncChildApprovalPolicy(childId, bindingSessionId)
+    }
+  }
+
+  /** Fold one exact external settle notice. Unknown ids and local rows are
+   *  deliberately ignored: a live notice can race ahead of the first catalog
+   *  snapshot, and the client owns orphan-cache fallback for that window. */
+  function foldExternalSettle(
+    parentSessionId: string,
+    source: Record<string, unknown>,
+    endedAt: number,
+    emit: boolean,
+  ): boolean {
+    if (source.kind !== 'subagent-settled') return false
+    const childId = typeof source.senderSessionId === 'string' ? source.senderSessionId : ''
+    if (childId === '') return false
+    const index = getSubagentIndex(ctx)
+    const row = index.get(childId)
+    if (row === undefined || row.mode !== 'external' || row.parentSessionId !== parentSessionId) return false
+    index.noteSettled(childId)
+    if (emit) {
+      const stopReason = typeof source.stopReason === 'string' && source.stopReason !== '' ? source.stopReason : undefined
+      const summary = typeof source.summary === 'string' && source.summary !== '' ? source.summary : undefined
+      emitEvent('agent.external.settle', {
+        sessionId: parentSessionId,
+        childId,
+        ...(stopReason !== undefined ? { stopReason } : {}),
+        ...(summary !== undefined ? { summary } : {}),
+        endedAt,
+      })
+    }
+    return true
+  }
+
+  /** Rebuild external-only index state from a durable parent journal. The host
+   *  does not replay `subagent/catalog`, so resume/rebind would otherwise lose
+   *  both the external id set and its settled bit. Newer live external runs
+   *  win over the async snapshot to avoid clobbering a newer run. */
+  function seedExternalSubagentsFromJournal(
+    parentSessionId: string,
+    rows: readonly { type: string; payload: unknown }[],
+  ): void {
+    const recovered = new Map<string, { createdAt: number; status: 'running' | 'settled' }>()
+    for (const row of rows) {
+      const data = row.payload !== null && typeof row.payload === 'object'
+        ? row.payload as Record<string, unknown>
+        : {}
+      if (row.type === 'subagent/catalog' && data.mode === 'external') {
+        const childId = typeof data.childId === 'string' ? data.childId : ''
+        const createdAt = data.childCreatedAt
+        if (childId === '' || typeof createdAt !== 'number' || !Number.isFinite(createdAt)) continue
+        const previous = recovered.get(childId)
+        if (previous === undefined || createdAt > previous.createdAt) {
+          recovered.set(childId, { createdAt, status: 'running' })
+        }
+        continue
+      }
+      if (row.type !== 'user/message') continue
+      const source = data.source !== null && typeof data.source === 'object'
+        ? data.source as Record<string, unknown>
+        : {}
+      const childId = typeof source.senderSessionId === 'string' ? source.senderSessionId : ''
+      const previous = recovered.get(childId)
+      if (source.kind === 'subagent-settled' && childId !== '' && previous !== undefined) {
+        previous.status = 'settled'
+      }
+    }
+    const index = getSubagentIndex(ctx)
+    for (const [childId, recoveredRow] of recovered) {
+      const live = index.get(childId)
+      if (live?.mode === 'external' && live.parentSessionId === parentSessionId) {
+        if (live.startedAt > recoveredRow.createdAt) continue
+        if (live.startedAt === recoveredRow.createdAt) {
+          // Heal the live notice-before-catalog race: the journal snapshot has
+          // the terminal for this exact run, while a newer live run stays ours.
+          if (recoveredRow.status === 'settled') index.noteSettled(childId)
+          continue
+        }
+      }
+      index.noteCatalog(childId, parentSessionId, recoveredRow.createdAt, 'external')
+      if (recoveredRow.status === 'settled') index.noteSettled(childId)
     }
   }
 
@@ -3622,7 +3705,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // NOTE: a fresh bridge has an EMPTY index here (resume), so (b) alone is
         // structurally insufficient — (i) bind/Stop re-sync and (ii) below fill it.
         for (const [childId, row] of getSubagentIndex(ctx).rows) {
-          if (row.parentSessionId !== sessionId) continue
+          if (row.parentSessionId !== sessionId || row.mode === 'external') continue
           syncChildApprovalPolicy(childId, sessionId, data.policy)
         }
       }
@@ -3677,7 +3760,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           // an awaited LLM step), so the re-pin lands before any gated tool runs.
           if (type === 'turn/start') {
             const row = index.get(sessionId)
-            if (row !== undefined && row.parentSessionId === binding.sessionId) {
+            if (row !== undefined && row.parentSessionId === binding.sessionId && row.mode !== 'external') {
               const childId = sessionId
               const parentId = binding.sessionId
               // R7 revive: this known child's own turn/start proves the host
@@ -3735,6 +3818,24 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // ghost roster row for a catalog event with no childId.
       const childId = typeof data.childId === 'string' ? data.childId : ''
       if (!childId) return
+      if (data.mode === 'external') {
+        const createdAt = data.childCreatedAt
+        // External discovery has a frozen, smaller contract. An incomplete
+        // external catalog row is not a local child and must not fall through
+        // to agent.spawn / approval / transcript indexing.
+        if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return
+        getSubagentIndex(ctx).noteCatalog(childId, sessionId, createdAt, 'external')
+        const label = typeof data.label === 'string' && data.label !== '' ? data.label : undefined
+        const name = typeof data.name === 'string' && data.name !== '' ? data.name : undefined
+        emitEvent('agent.external.spawn', {
+          sessionId: boundId,
+          childId,
+          ...(label !== undefined ? { label } : {}),
+          ...(name !== undefined ? { name } : {}),
+          createdAt,
+        })
+        return
+      }
       // L1 incremental build: a `subagent/catalog` row inserts the child into
       // the host-local index with its parent (the bound session) and the host's
       // real wall clock. This covers the gap before `session.list` publishes the
@@ -3879,6 +3980,21 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       }
     }
 
+    // External (ACP/agy) children settle through a durable parent notice, not a
+    // host child turn/end. Match the source kind EXACTLY: agent-message and other
+    // notice sources also carry senderSessionId and must never settle a row.
+    // This branch is before the parent turn gate so idle/background settlement
+    // still converges. Unknown ids are ignored (client orphan-cache fallback).
+    if (type === 'user/message' && binding !== undefined && sessionId === binding.sessionId) {
+      const source = data.source !== null && typeof data.source === 'object'
+        ? data.source as Record<string, unknown>
+        : {}
+      if (source.kind === 'subagent-settled') {
+        foldExternalSettle(binding.sessionId, source, Date.now(), true)
+        return
+      }
+    }
+
     // L1 incremental settle: a child's OWN `turn/end` rides the same root-scope
     // firehose but is dropped by the turn gate below (child != bound session).
     // Observe it BEFORE that gate and flip the indexed child to settled, so
@@ -3886,6 +4002,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     if (type === 'turn/end') {
       const index = getSubagentIndex(ctx)
       const row = index.get(sessionId)
+      if (row !== undefined && row.mode === 'external') return
       if (row !== undefined) {
         const boundId = binding?.sessionId
         // R7: a child's OWN terminal settles its live roster row immediately.
@@ -4069,7 +4186,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const agentSessionId = idString(rawSessionId)
     if (agentSessionId === binding.sessionId) return { turn: state, sessionId: binding.sessionId }
     const child = getSubagentIndex(ctx).get(agentSessionId)
-    if (child === undefined || child.parentSessionId !== binding.sessionId || child.status === 'settled') {
+    if (child === undefined || child.mode === 'external' || child.parentSessionId !== binding.sessionId || child.status === 'settled') {
       logger.warn(
         '[dsh-opentui-bridge] ask target rejected child session=%s parent=%s (unknown/foreign/settled) — fail-closed',
         agentSessionId, binding.sessionId,
@@ -4396,7 +4513,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
 
   /**
    * ADR-0011 D7 (respawn): repopulate this process's always-grant summary from
-   * the durable journal of a resumed session. Read-only (`open(id,'read')`),
+   * the durable journal of a resumed session, and seed external subagent state
+   * that the host never replays as a live catalog. Read-only (`open(id,'read')`),
    * best-effort and fully contained — a missing service, a corrupt log or an
    * unreadable payload degrades to an EMPTY summary and never fails the open.
    *
@@ -4406,7 +4524,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    * session close/replace, and a Set union keeps repeated opens idempotent.
    * Fired without awaiting so a slow/large journal never delays the reply.
    */
-  function restoreSessionGrantsFromJournal(sessionId: string): void {
+  function restoreSessionStateFromJournal(sessionId: string): void {
     void (async () => {
       let handle: PersistenceHandleLike | undefined
       try {
@@ -4432,6 +4550,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // The read is async: a close/replace may have moved the binding on.
         // Never repopulate a session that is no longer the active one (I1/A5).
         if (binding?.sessionId !== sessionId) return
+        seedExternalSubagentsFromJournal(sessionId, rows)
         const tools = alwaysGrantToolsFromJournal(sessionId, rows)
         if (tools.length > 0) {
           ask.restoreSessionGrants(sessionId, tools)
@@ -4494,7 +4613,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         startAccountRelay(binding.sessionId)
         // A4/D7: rebuild always-grants from the durable journal as well. Set
         // union makes this idempotent against the already-live in-memory grants.
-        restoreSessionGrantsFromJournal(binding.sessionId)
+        restoreSessionStateFromJournal(binding.sessionId)
         // R2-1(i): reconnect with a warm index — re-mirror the live parent policy
         // onto known children (F2 self-heal). Contained; never blocks the reply.
         try {
@@ -4598,7 +4717,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // blocks the open and degrades to an empty summary.
       if (mode === 'resume') {
         pushResumePendingSnapshot(sessionId)
-        restoreSessionGrantsFromJournal(sessionId)
+        restoreSessionStateFromJournal(sessionId)
       }
       // R2-1(i): after bind completes (fresh open OR resume), mirror the parent's
       // live policy onto every child the index already knows. On a TUI restart
@@ -5586,6 +5705,20 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  /** External children are not host AgentRegistry entries. Route their user
+   *  interrupt through the subagents service; its accepted acknowledgement is
+   *  intentionally a no-op success when the target is already gone. */
+  async function issueExternalChildInterrupt(childId: string): Promise<string | undefined> {
+    try {
+      const runtime = typeof ctx.get === 'function' ? ctx.get('subagents') as SubagentRuntimeLike | undefined : undefined
+      if (typeof runtime?.interruptByUser !== 'function') return 'subagents.interruptByUser unavailable'
+      const result = await interruptExternalWithTimeout(runtime.interruptByUser(childId))
+      return result
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+
   async function handleInterruptSubagent(req: ParsedRequest): Promise<void> {
     const gate = gateSubagentParent(req.params.parentSessionId)
     if (gate !== undefined) {
@@ -5616,7 +5749,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       replyOk(req.id, { childId, disposition: 'already-settled' })
       return
     }
-    const detail = issueChildCancel(childId)
+    const detail = row.mode === 'external'
+      ? await issueExternalChildInterrupt(childId)
+      : issueChildCancel(childId)
     replyOk(req.id, {
       childId,
       disposition: detail === undefined ? 'cancel-issued' : 'failed',
@@ -5643,7 +5778,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     for (const [childId, row] of index.rows) {
       if (row.status !== 'running') continue
       if (row.parentSessionId !== parentSessionId) continue
-      const detail = issueChildCancel(childId)
+      const detail = row.mode === 'external' ? await issueExternalChildInterrupt(childId) : issueChildCancel(childId)
       children.push({
         childId,
         disposition: detail === undefined ? 'cancel-issued' : 'failed',
@@ -5699,6 +5834,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           if (slice.length === 0) break
           events.push(...slice)
           offset += slice.length
+        }
+
+        // A pre-open replay or a recovery drain is also a journal restore point
+        // for external children. Seed from the FULL log, not the requested `from`
+        // window, and never import another bound session's roster.
+        if (binding === undefined || binding.sessionId === sessionId) {
+          seedExternalSubagentsFromJournal(sessionId, events.map((event) => ({
+            type: typeof event.type === 'string' ? event.type : '',
+            payload: event.data,
+          })))
         }
 
         let maxSeq = -1
@@ -6060,6 +6205,28 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return
     }
     replyError(req.id, 'UNSUPPORTED', `unsupported method: ${req.method}`)
+  }
+
+  const EXTERNAL_INTERRUPT_TIMEOUT_MS = 1_000
+
+  /** Bound the external acknowledgement so one hung child cannot block the
+   *  remaining stopChildren cancellations or hold the protocol response open. */
+  async function interruptExternalWithTimeout(
+    interrupt: { accepted: true } | Promise<{ accepted: true }>,
+  ): Promise<string | undefined> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        interrupt,
+        new Promise<undefined>((resolve) => {
+          timeout = setTimeout(() => resolve(undefined), EXTERNAL_INTERRUPT_TIMEOUT_MS)
+        }),
+      ])
+      if (result === undefined) return `subagents.interruptByUser timed out after ${EXTERNAL_INTERRUPT_TIMEOUT_MS}ms`
+      return result?.accepted === true ? undefined : 'subagents.interruptByUser was not accepted'
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
+    }
   }
 
   /** Enqueue a frame so async handlers answer in arrival order. */

@@ -569,8 +569,17 @@ export interface SeamSubagentView {
 	 * the agent name in `label`. Absent when the producer never supplied one. */
 	name?: string
 	model?: string
-	status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
+	status: "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unknown"
 	rounds: number
+	/** External (ACP/agy) rows originate outside the local child-session index.
+	 * `createdAt` is their durable spawn clock; no local duration is synthesized. */
+	createdAt?: number
+	/** External agent row: transcript/model/round controls are not applicable. */
+	mode?: "external"
+	/** External rows never read a child journal or accept live transcript rows. */
+	noTranscript?: true
+	/** Optional terminal summary supplied by `agent.external.settle`. */
+	summary?: string
 	/** Batch V2b (transcript subagent tree): the child's start wall clock —
 	 * running rows compute the live duration off it per spinner tick. */
 	startedAt?: number

@@ -32,12 +32,15 @@
  */
 
 export type SubagentStatus = 'running' | 'settled'
+export type SubagentMode = 'local' | 'external'
 
 export interface SubagentIndexRow {
   parentSessionId: string
   /** Host wall clock (epoch ms) — from `childCreatedAt` (catalog) or `updatedAt` (list). */
   startedAt: number
   status: SubagentStatus
+  /** External (ACP/agy) children are bridge-indexed only; local rows omit this. */
+  mode?: SubagentMode
   /** Last observed child-journal / turn seq, when the event carried one. */
   lastSeq?: number
 }
@@ -81,6 +84,15 @@ export class SubagentIndex {
       if (row.origin !== 'subagent') continue
       if (typeof row.sessionId !== 'string' || row.sessionId === '') continue
       subagentCount += 1
+      // External children are not host-session rows. If a host list happens to
+      // contain the same id, its running bit must not overwrite the bridge's
+      // external lifecycle (especially a settled row) — the external catalog /
+      // settle notices remain authoritative for that mode.
+      const cached = this.rows.get(row.sessionId)
+      if (cached?.mode === 'external') {
+        next.set(row.sessionId, cached)
+        continue
+      }
       next.set(row.sessionId, {
         parentSessionId: typeof row.parentSessionId === 'string' ? row.parentSessionId : '',
         startedAt: typeof row.updatedAt === 'number' ? row.updatedAt : 0,
@@ -98,18 +110,30 @@ export class SubagentIndex {
   }
 
   /** Insert (or refresh) a child from a `subagent/catalog` event on its parent. */
-  noteCatalog(childId: string, parentSessionId: string, startedAt?: number): void {
+  noteCatalog(childId: string, parentSessionId: string, startedAt?: number, mode?: SubagentMode): void {
     if (typeof childId !== 'string' || childId === '') return
     const existing = this.rows.get(childId)
     if (existing !== undefined) {
       // parent is immutable; only fill an absent timestamp from the event.
       if (!existing.startedAt && typeof startedAt === 'number') existing.startedAt = startedAt
+      if (mode === 'external' && existing.mode !== 'external') {
+        existing.mode = 'external'
+        existing.status = 'running'
+      }
+      // A newer external catalog timestamp identifies a fresh external run.
+      // Duplicate/late catalog rows never resurrect a settled child.
+      if (mode === 'external' && existing.mode === 'external' &&
+          typeof startedAt === 'number' && startedAt > existing.startedAt) {
+        existing.startedAt = startedAt
+        existing.status = 'running'
+      }
       return
     }
     this.rows.set(childId, {
       parentSessionId,
       startedAt: typeof startedAt === 'number' ? startedAt : 0,
       status: 'running',
+      ...(mode !== undefined ? { mode } : {}),
     })
   }
 
@@ -129,7 +153,9 @@ export class SubagentIndex {
   noteRunning(childId: string): void {
     if (typeof childId !== 'string' || childId === '') return
     const row = this.rows.get(childId)
-    if (row !== undefined) row.status = 'running'
+    // External lifecycle is driven by external catalog/settle frames, never by
+    // a host child's turn/start (the external id need not be a host session).
+    if (row !== undefined && row.mode !== 'external') row.status = 'running'
   }
 
   has(childId: string): boolean {

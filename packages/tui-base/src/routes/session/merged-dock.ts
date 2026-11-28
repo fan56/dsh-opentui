@@ -13,6 +13,7 @@
  */
 
 import type { SeamSubagentView } from "../../seams/session"
+import { t } from "../../i18n"
 import type { Todo } from "../../util/todo"
 import { graphemes, takeWidth } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
@@ -397,12 +398,15 @@ function agentLine(
 ): MergedDockLine {
 	const branch = position === count - 1 ? "└─ " : "├─ "
 	const indent = parentIndex === undefined ? "" : " ".repeat(stringWidth(`${TODO_STATUS_GLYPHS.in_progress} ${parentIndex} `))
-	const elapsed = secsFrom(agent.startedAt, agent.elapsedSec, now)
+	const external = agent.mode === "external" || agent.noTranscript === true
+	const elapsed = external ? undefined : secsFrom(agent.startedAt, agent.elapsedSec, now)
 	const namePrefix = subagentNamePrefix(agent.name, agent.label)
 	const prefix = `${indent}${branch}${namePrefix}`
-	const labelPart = `${agent.label} · ${elapsed} · round ${agent.rounds}`
+	const labelPart = external
+		? `${t("panel.subagents.row.external")} ${agent.label}`
+		: `${agent.label} · ${elapsed} · round ${agent.rounds}`
 	const head = `${prefix}${labelPart}`
-	const lastLine = normalizedLastLine(agent.lastLine)
+	const lastLine = external ? "" : normalizedLastLine(agent.lastLine)
 	const tailBudget = lastLine === "" ? 0 : innerWidth - stringWidth(head) - stringWidth(" · ")
 	const tail = tailBudget <= 0 ? "" : widthTail(lastLine, tailBudget)
 	const content = tail.trim() === "" ? labelPart : `${labelPart} · ${tail}`
