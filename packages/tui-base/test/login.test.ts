@@ -341,13 +341,14 @@ describe("/login command (batch H4)", () => {
 		expect(lines).toEqual(["login cancelled"])
 	})
 
-	test("route failure keeps the key unstored (registerRoute false → no credentials write)", async () => {
+	test("route failure keeps the key unstored (registerRoute false → no credentials write) and surfaces reason", async () => {
 		const face = new RecordingLoginFace()
 		face.registerOk = false
 		const { ctx, lines } = makeLoginCtx({ face, pick: ["third-party", "deepseek"], type: ["sk-test-1"] })
 		await runLogin(ctx as any, "")
 		expect(face.calls).toEqual(["route:deepseek:" + JSON.stringify({ apiKeyEnv: "DEEPSEEK_API_KEY" })])
 		expect(lines[0]).toContain("route registration failed — key not stored")
+		expect(lines[0]).toContain("host settings channel refused the route")
 	})
 
 	test("credentials failure is reported, route stays registered", async () => {
@@ -832,5 +833,110 @@ describe("/login real provider directory (W2-4)", () => {
 		} as unknown as SlashCommandContext
 		await command.run(ctx2, "")
 		expect(lines2.some((l) => /directory unavailable|built-in provider/i.test(l))).toBe(true)
+	})
+
+	test("Issue #29: directory preserves settingsNs, hides deepseek-account from API-key picker, and sets DEEPSEEK_API_KEY for deepseek-official", () => {
+		const entries = catalogEntriesFromDirectory(
+			[
+				{ id: "deepseek-official", name: "DeepSeek" },
+				{ id: "deepseek-account", name: "DeepSeek Account" },
+				{ id: "openai", name: "OpenAI" },
+			],
+			[
+				{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek" },
+				{ provider: "deepseek-account", displayName: "DeepSeek Account", settingsNs: "llm-deepseek-account" },
+				{ provider: "openai", displayName: "OpenAI", settingsNs: "llm-pi-ai" },
+			],
+			PROVIDER_CATALOG,
+		)
+		expect(entries.map((e) => e.id)).toEqual(["deepseek-official", "openai"])
+		const official = entries.find((e) => e.id === "deepseek-official")!
+		expect(official.settingsNs).toBe("llm-deepseek")
+		expect(official.keyRef).toBe("DEEPSEEK_API_KEY")
+		expect(entries.find((e) => e.id === "openai")!.settingsNs).toBe("llm-pi-ai")
+	})
+
+	test("Issue #29: /login deepseek-official stores key under DEEPSEEK_API_KEY (or custom llm-deepseek.apiKeyEnv) without writing llm-pi-ai", async () => {
+		const face = new RecordingLoginFace()
+		const lines: string[] = []
+		const prompts: string[] = []
+		let mutateCalled = false
+		const seam = {
+			login: face,
+			settings: {
+				describe: async () => ({
+					writable: true,
+					hasDocument: true,
+					source: "host",
+					namespaces: [{ ns: "llm-deepseek", revision: 1, value: { apiKeyEnv: "CUSTOM_DS_KEY" } }],
+				}),
+				mutate: async () => {
+					mutateCalled = true
+					return { ok: true }
+				},
+			},
+			providerDirectory: {
+				registered: async () => [{ id: "deepseek-official", name: "DeepSeek" }],
+				configurable: async () => [{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek" }],
+			},
+		} as unknown as SessionSeam
+		const ctx = {
+			seam,
+			say: (t: string) => lines.push(t),
+			promptText: async (title: string) => {
+				prompts.push(title)
+				return "sk-official-1"
+			},
+			pickOne: async () => undefined,
+		} as unknown as SlashCommandContext
+		const command = coreCommands().find((c) => c.name === "/login")!
+		await command.run(ctx, "deepseek-official")
+		expect(prompts[0]).toContain("CUSTOM_DS_KEY")
+		expect(mutateCalled).toBe(false)
+		expect(face.calls).toEqual(["login:CUSTOM_DS_KEY"])
+		expect(lines[0]).toContain("CUSTOM_DS_KEY")
+	})
+
+	test("Issue #29: /login deepseek-account routes to the DeepSeek account entrance", async () => {
+		const face = new RecordingLoginFace()
+		const account = new RecordingAccountFace()
+		const lines: string[] = []
+		const seam = { login: face, account } as unknown as SessionSeam
+		const ctx = {
+			seam,
+			say: (t: string) => lines.push(t),
+			promptText: async () => undefined,
+			pickOne: async () => "state",
+		} as unknown as SlashCommandContext
+		const command = coreCommands().find((c) => c.name === "/login")!
+		await command.run(ctx, "deepseek-account")
+		expect(account.calls).toEqual(["getState"])
+		expect(face.calls).toEqual([])
+		expect(lines[0]).toContain("account:")
+	})
+
+	test("Issue #29: unsupported non-llm-pi-ai settingsNs refuses cleanly without storing key", async () => {
+		const face = new RecordingLoginFace()
+		const lines: string[] = []
+		await commitLoginRoute(
+			(t) => lines.push(t),
+			face,
+			{ id: "other-native", name: "Other Native", hint: "api key", catalogRoute: true, settingsNs: "llm-other" },
+			"sk-other",
+		)
+		expect(face.calls).toEqual([])
+		expect(lines[0]).toContain("route registration failed — key not stored")
+		expect(lines[0]).toContain("llm-other")
+	})
+
+	test("Issue #29: /logout deepseek-official clears DEEPSEEK_API_KEY without touching routes", async () => {
+		const face = new RecordingLoginFace()
+		face.liveRoutes = [{ id: "deepseek-official", apiKeyEnv: "DEEPSEEK_API_KEY", displayName: "DeepSeek", declared: true }]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, type: [] })
+		const command = coreCommands().find((c) => c.name === "/logout")!
+		await command.run(ctx as unknown as SlashCommandContext, "deepseek-official")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "logout:DEEPSEEK_API_KEY"])
+		expect(lines).toEqual(["DeepSeek logged out — key removed (route kept)"])
 	})
 })

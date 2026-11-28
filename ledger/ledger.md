@@ -55,21 +55,21 @@ Corrections applied in provenance mapping data:
 
 | method | kind | source line | protocol nature |
 |---|---|---:|---|
-| bridge.ping | meta | 5892 | protocol version negotiation (no host call) |
-| bridge.hello | meta | 5901 | protocol version negotiation (no host call) |
-| session.prune.plan | business | 5935 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
-| session.prune.apply | business | 5941 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
-| session.prune.purge | business | 5947 | retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id |
-| session.prune.restore | business | 5953 | retention B4/C7 trash restore by entry id: read-only list of {id,movedAt,size?} (no path) + host re-validation of trash realpath/manifest/artifact header.id/live roster/live destination containment + refuse-if-exists + read-only flock probe + reverse rename; client path/policy rejected; no CapIR id |
-| subagents.interrupt | business | 6020 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| subagents.stopChildren | business | 6024 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
-| session.open | business | 6028 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
-| session.send | business | 6032 | single in-flight turn state machine + streaming turn |
-| session.steer | business | 6036 | 029 A: bridge-owned steer into the running turn; accepts only a live non-aborting turn with agent.status==='running', calls agent.steer(createBridgeUserMessage(text)) directly, no turn id / inFlightTurnId / turn.start, no followup downgrade; typed STEER_IDLE / STEER_ENDED / STEER_ABORTING rejections never reach the host |
-| session.close | business | 6040 | binding dispose |
-| turn.abort | business | 6044 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
-| ask.response | business | 6048 | bridge-internal AskRegistry settlement (no host call) |
-| journal.replay | business | 6052 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
+| bridge.ping | meta | 5930 | protocol version negotiation (no host call) |
+| bridge.hello | meta | 5939 | protocol version negotiation (no host call) |
+| session.prune.plan | business | 5973 | retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion |
+| session.prune.apply | business | 5979 | retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id |
+| session.prune.purge | business | 5985 | retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id |
+| session.prune.restore | business | 5991 | retention B4/C7 trash restore by entry id: read-only list of {id,movedAt,size?} (no path) + host re-validation of trash realpath/manifest/artifact header.id/live roster/live destination containment + refuse-if-exists + read-only flock probe + reverse rename; client path/policy rejected; no CapIR id |
+| subagents.interrupt | business | 6058 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| subagents.stopChildren | business | 6062 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| session.open | business | 6066 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
+| session.send | business | 6070 | single in-flight turn state machine + streaming turn |
+| session.steer | business | 6074 | 029 A: bridge-owned steer into the running turn; accepts only a live non-aborting turn with agent.status==='running', calls agent.steer(createBridgeUserMessage(text)) directly, no turn id / inFlightTurnId / turn.start, no followup downgrade; typed STEER_IDLE / STEER_ENDED / STEER_ABORTING rejections never reach the host |
+| session.close | business | 6078 | binding dispose |
+| turn.abort | business | 6082 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
+| ask.response | business | 6086 | bridge-internal AskRegistry settlement (no host call) |
+| journal.replay | business | 6090 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
 
 ## Wired manual host-copy (@manual count source — must be 0)
 

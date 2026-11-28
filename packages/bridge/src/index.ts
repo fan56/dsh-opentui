@@ -112,6 +112,14 @@ import {
 // resolveSettingsSurface() prefers the real settingsController, then adapts
 // ctx.settings (dsh-settings SettingsForms) via a pure projection module.
 import { adaptSettingsForms } from './settings-adapter'
+// Issue #29 — inproc host credentials adapter. Controller-absent fallback only:
+// resolveCredentialsSurface() prefers credentialsController, then adapts
+// ctx.credentials (dsh-credentials-local) via a pure projection module.
+import {
+  adaptCredentialsProvider,
+  projectCredentialInfoForWire,
+  sanitizeCredentialErrorMessage,
+} from './credentials-adapter'
 // 024 base task 4 — startup capability handshake. A lifecycle observer only:
 // it is started from apply() but adds NO `req.method ===` dispatch branch, so
 // the @manual wired surface (and its ledger registry) is unchanged.
@@ -1357,7 +1365,7 @@ export function createCapHostInvoke(
 
     // --- S2 credentials family (dsh-api-settings-controller#credentials/*) ---
     if (methodId.startsWith('@deepseek-ai/dsh-api-settings-controller#')) {
-      const creds = resolveCredentialsController(ctx)
+      const creds = resolveCredentialsSurface(ctx)
       if (creds === undefined) {
         throw new Error(`NOT_WIRED: credentialsController unavailable for ${methodId}`)
       }
@@ -1366,8 +1374,12 @@ export function createCapHostInvoke(
         case 'credentials/describe': {
           if (typeof creds.describe !== 'function') throw new Error(`NOT_WIRED: credentialsController.describe unavailable`)
           const p = params as { refs?: unknown } | undefined
-          if (!Array.isArray(p?.refs) || p.refs.some((r) => typeof r !== 'string')) {
-            throw new Error('BAD_PARAMS: credentials.describe refs must be a string array')
+          if (
+            !Array.isArray(p?.refs)
+            || p.refs.length > 64
+            || p.refs.some((r) => typeof r !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(r))
+          ) {
+            throw new Error('BAD_PARAMS: credentials.describe refs must be a valid credential ref array (max 64)')
           }
           return creds.describe(p.refs as string[])
         }
@@ -1514,6 +1526,15 @@ const CAP_SESSION_QUERY_WIRE_METHODS: Readonly<Record<string, string>> = {
 const CAP_SETTINGS_WIRE_METHODS: Readonly<Record<string, string>> = {
   'settings.describe': '@deepseek-ai/dsh-api-settings-controller#settings/describe',
   'settings.mutate': '@deepseek-ai/dsh-api-settings-controller#settings/mutate',
+}
+
+/** Issue #29 /credentials — client-facing wire method names → CapIR W ids for
+ *  the three credentials methods, served through the SAME generated capcontract
+ *  chain (table lookup, no `req.method ===` line — keeps @manual at 0). */
+const CAP_CREDENTIALS_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'credentials.describe': '@deepseek-ai/dsh-api-settings-controller#credentials/describe',
+  'credentials.set': '@deepseek-ai/dsh-api-settings-controller#credentials/set',
+  'credentials.unset': '@deepseek-ai/dsh-api-settings-controller#credentials/unset',
 }
 
 /**
@@ -2014,6 +2035,23 @@ function resolveCredentialsController(ctx: BridgeContext): CredentialsController
     svc = undefined
   }
   return svc !== undefined && typeof svc === 'object' ? (svc as CredentialsControllerLike) : undefined
+}
+
+/** Issue #29 — resolve the credentials surface: real controller first, then
+ *  the inproc `ctx.credentials` (dsh-credentials-local) adapter as a
+ *  controller-absent fallback. Contained ctx.get lookup; an absent/throwing
+ *  host degrades to NOT_WIRED rather than crashing. */
+function resolveCredentialsSurface(ctx: BridgeContext): CredentialsControllerLike | undefined {
+  const controller = resolveCredentialsController(ctx)
+  if (controller !== undefined) return controller
+  let provider: unknown
+  try {
+    provider = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined
+    if (provider === undefined) provider = (ctx as unknown as { credentials?: unknown }).credentials
+  } catch {
+    provider = undefined
+  }
+  return adaptCredentialsProvider(provider)
 }
 
 /** S5 — resolve `ctx.settingsController` (service key verified from rc.5
@@ -6113,6 +6151,41 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // "conflict", so the old case-insensitive test mislabelled it INTERNAL).
         const message = err instanceof Error ? err.message : String(err)
         replyError(req.id, classifySettingsFrameCode(err), message)
+      }
+      return
+    }
+    // Issue #29 /credentials: credentials frames ride the same generated
+    // capcontract chain (table lookup, no `req.method ===` line). `describe`
+    // replies are projected field-by-field (`masked` dropped); `set` errors
+    // scrub any secret value before crossing the wire.
+    const credentialsMethodId = CAP_CREDENTIALS_WIRE_METHODS[req.method]
+    if (credentialsMethodId !== undefined) {
+      const p = (req.params ?? {}) as { ref?: unknown; value?: unknown }
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: credentialsMethodId as never,
+          params: req.params ?? {},
+        })
+        if (credentialsMethodId.endsWith('/describe')) {
+          const raw = value !== null && typeof value === 'object' && !Array.isArray(value)
+            ? (value as Record<string, unknown>)
+            : {}
+          const projected: Record<string, unknown> = {}
+          for (const [ref, info] of Object.entries(raw)) {
+            projected[ref] = projectCredentialInfoForWire(info)
+          }
+          replyOk(req.id, projected)
+        } else {
+          replyOk(req.id, { ok: true })
+        }
+      } catch (err) {
+        const secretValue = typeof p.value === 'string' ? p.value : undefined
+        const refName = typeof p.ref === 'string' ? p.ref : 'credential'
+        const message = sanitizeCredentialErrorMessage(err, refName, secretValue)
+        const code = message.startsWith('BAD_PARAMS') ? 'BAD_PARAMS'
+          : message.startsWith('NOT_WIRED') || message.includes('unavailable') ? 'UNSUPPORTED'
+            : 'INTERNAL'
+        replyError(req.id, code, message)
       }
       return
     }

@@ -20,7 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
-import type { SeamAccountState, SeamEffortOption, SeamHostCommandRow, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionSeam } from "../../seams/session"
+import type { SeamAccountState, SeamConfigurableProviderRow, SeamEffortOption, SeamHostCommandRow, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamRegisterRoutePlan, SeamSessionSummary, SeamSettingsMutateResult, SeamSettingsOp, SessionSeam } from "../../seams/session"
 
 /** The sanctioned patch-write channel: the host settings mutate face. */
 type SettingsMutate = (ns: string, ops: SeamSettingsOp[], revision?: number) => Promise<SeamSettingsMutateResult>
@@ -519,11 +519,32 @@ function profileDirsAgree(seam: SessionSeam, say: (text: string) => void): boole
 	return false
 }
 
+async function resolveEntryKeyRef(entry: CatalogEntry, seam?: SessionSeam): Promise<string> {
+	if (entry.settingsNs === "llm-deepseek" || entry.id === "deepseek-official") {
+		try {
+			const doc = await seam?.settings?.describe()
+			if (doc?.source === "host") {
+				const row = doc.namespaces.find((n) => n.ns === "llm-deepseek")
+				if (row?.value && typeof row.value === "object" && !Array.isArray(row.value)) {
+					const env = (row.value as Record<string, unknown>).apiKeyEnv
+					if (typeof env === "string" && env.trim() !== "") return env.trim()
+				}
+			}
+		} catch {
+			// Fall back to entry.keyRef / DEEPSEEK_API_KEY when settings describe fails.
+		}
+		return entry.keyRef ?? "DEEPSEEK_API_KEY"
+	}
+	return entry.keyRef ?? deriveKeyRef(entry.id)
+}
+
 /**
  * The commit half both flows share (old-stack commitLogin): register the
- * route through the settings seam first, then store the key through the
- * credentials seam. Route failure keeps the key unstored (no garbage
- * credential without its route).
+ * route through the settings seam first (for llm-pi-ai routes), then store
+ * the key through the credentials seam. Route failure keeps the key unstored
+ * (no garbage credential without its route). Built-in host routes such as
+ * `llm-deepseek` (`deepseek-official`) do not live in `llm-pi-ai`, so they
+ * write only the host credential under their configured ref.
  */
 export async function commitLoginRoute(
 	say: (text: string) => void,
@@ -543,15 +564,35 @@ export async function commitLoginRoute(
 	// P0-3: refuse the WHOLE commit (route + key) before touching either file
 	// when the client's profile directory is not the one the host loads.
 	if (seam && !profileDirsAgree(seam, say)) return
+	const keyRef = entry.keyRef ?? (await resolveEntryKeyRef(entry, seam))
+	if (entry.settingsNs === "llm-deepseek" || entry.id === "deepseek-official") {
+		try {
+			await face.login(keyRef, key)
+		} catch (e) {
+			say(t("command.login.keyStoreFailed", { id: entry.id, detail: String(e instanceof Error ? e.message : e).slice(0, 150) }))
+			return
+		}
+		say(t("command.login.credentialStored", { name: entry.name, ref: keyRef }))
+		return
+	}
+	if (entry.settingsNs !== undefined && entry.settingsNs !== "llm-pi-ai") {
+		say(
+			t("command.login.routeRegistrationFailed", {
+				id: entry.id,
+				reason: `unsupported provider settings namespace "${entry.settingsNs}"`,
+			}),
+		)
+		return
+	}
 	const plan = await face.registerRoute(entry.id, providerProfileFor(entry))
-	const registered = await applyRoutePlan(plan, settings, () => {
-		say(t("command.login.routeRegistrationFailed", { id: entry.id }))
+	const registered = await applyRoutePlan(plan, settings, (reason) => {
+		say(t("command.login.routeRegistrationFailed", { id: entry.id, reason }))
 	})
 	if (!registered) {
 		return
 	}
 	try {
-		await face.login(deriveKeyRef(entry.id), key)
+		await face.login(keyRef, key)
 	} catch (e) {
 		say(t("command.login.keyStoreFailed", { id: entry.id, detail: String(e instanceof Error ? e.message : e).slice(0, 150) }))
 		return
@@ -640,7 +681,7 @@ export async function resolveLoginCatalog(
 	// silently (no notice — there was no real-directory promise to degrade).
 	if (!dir) return { entries: [...PROVIDER_CATALOG], degraded: false }
 	let registered: { id: string; name: string }[] = []
-	let configurable: { provider: string; displayName: string; error?: string }[] = []
+	let configurable: SeamConfigurableProviderRow[] = []
 	let failed = false
 	try {
 		registered = await dir.registered()
@@ -663,9 +704,17 @@ export async function commitCatalogLogin(
 	face: LoginFace,
 	entry: CatalogEntry,
 ): Promise<void> {
-	const key = await ctx.promptText?.(`API key for ${entry.name} (${deriveKeyRef(entry.id)})`, { mask: true })
+	const keyRef = await resolveEntryKeyRef(entry, ctx.seam)
+	const key = await ctx.promptText?.(`API key for ${entry.name} (${keyRef})`, { mask: true })
 	if (key === undefined) return
-	await commitLoginRoute(ctx.say, face, entry, key, ctx.seam.settings?.mutate?.bind(ctx.seam.settings), ctx.seam)
+	await commitLoginRoute(
+		ctx.say,
+		face,
+		{ ...entry, keyRef },
+		key,
+		ctx.seam.settings?.mutate?.bind(ctx.seam.settings),
+		ctx.seam,
+	)
 }
 
 /**
@@ -1144,6 +1193,10 @@ export function coreCommands(): SlashCommand[] {
 				// Argument form stays the direct catalog target (script / muscle-memory
 				// path) — byte-identical to the pre-three-entrance flow.
 				if (arg) {
+					if (arg === "deepseek-account") {
+						await runAccountEntrance(ctx)
+						return
+					}
 					// 025-w2-4 — real provider directory first, static catalog fallback.
 					const { entries, degraded } = await resolveLoginCatalog(ctx.seam, ctx.say)
 					if (degraded) ctx.say(t("command.login.directoryDegraded"))
