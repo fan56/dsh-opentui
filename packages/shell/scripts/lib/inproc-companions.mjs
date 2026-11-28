@@ -43,7 +43,7 @@ export const COMPANIONS = Object.freeze([
   Object.freeze({
     name: '@aiwayds/dsh-subagent-registry',
     short: 'registry',
-    declaredRange: '^0.24.0',
+    declaredRange: '^0.25.0',
     defaultOn: true,
     reason: 'registers the `use_agent` (by-name custom-agent dispatch) and `ask_agent` follow-up tools; the inproc delegation roster and the APPEND_SYSTEM.md "subagent" vocabulary need a named dispatch entry. Its own cordis.patch.yml mounts it when its bundle is selected.',
   }),
