@@ -198,20 +198,84 @@ describe("external agent seam", () => {
 		await h.seam.dispose()
 	})
 
-	test("live timeout uses discovery time, not createdAt, and duplicate spawn cannot extend it", async () => {
+	test("a newer external catalog revives a timed-out unknown child", async () => {
 		const h = makeHarness()
 		let now = 10_000_000
 		const clock = spyOn(Date, "now").mockImplementation(() => now)
 		try {
-			h.emit(spawn("p", "live", now - EXTERNAL_UNKNOWN_MS * 2))
+			h.emit(spawn("p", "ext", now))
+			now += EXTERNAL_UNKNOWN_MS
+			expect(row(h, "ext")?.status).toBe("unknown")
+			h.replies.set("journal.replay", { kind: "value", value: { rows: [{ seq: 1, type: "subagent/catalog", payload: {
+				childId: "ext", label: "new run", childCreatedAt: now, mode: "external",
+			} }], cursor: 2 } })
+			await h.seam.storedTranscript("p")
+			expect(row(h, "ext")).toMatchObject({ status: "running", label: "new run", createdAt: now })
+			expect(row(h, "ext")?.endedAt).toBeUndefined()
+		} finally {
+			clock.mockRestore()
+			await h.seam.dispose()
+		}
+	})
+
+	test("replay refreshes the unknown anchor when a newer catalog arrives in the same fold", async () => {
+		const h = makeHarness()
+		const now = Date.now()
+		const rows = [
+			{ seq: 1, type: "subagent/catalog", payload: {
+				childId: "ext", label: "old run", childCreatedAt: now - EXTERNAL_UNKNOWN_MS - 1_000, mode: "external",
+			} },
+			{ seq: 2, type: "subagent/catalog", payload: {
+				childId: "ext", label: "new run", childCreatedAt: now - 1_000, mode: "external",
+			} },
+		]
+		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 3 } })
+		await h.seam.storedTranscript("p")
+		expect(row(h, "ext")).toMatchObject({ status: "running", label: "new run", createdAt: now - 1_000 })
+		expect(row(h, "ext")?.endedAt).toBeUndefined()
+		await h.seam.dispose()
+	})
+
+	test("live timeout uses discovery time, not createdAt, and duplicate spawn cannot extend it", async () => {
+		const h = makeHarness()
+		let now = 10_000_000
+		const createdAt = now - EXTERNAL_UNKNOWN_MS * 2
+		const clock = spyOn(Date, "now").mockImplementation(() => now)
+		try {
+			h.emit(spawn("p", "live", createdAt))
 			now += EXTERNAL_UNKNOWN_MS - 1
 			expect(row(h, "live")?.status).toBe("running")
 			now += 1
 			expect(row(h, "live")?.status).toBe("unknown")
 			expect(row(h, "live")?.endedAt).toBeUndefined()
 			now += EXTERNAL_UNKNOWN_MS
-			h.emit(spawn("p", "live", now))
+			h.emit(spawn("p", "live", createdAt))
 			expect(row(h, "live")?.status).toBe("unknown")
+		} finally {
+			clock.mockRestore()
+			await h.seam.dispose()
+		}
+	})
+
+	test("a newer live createdAt refreshes a running anchor and revives unknown with an emit", async () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+		let now = 10_000_000
+		const clock = spyOn(Date, "now").mockImplementation(() => now)
+		try {
+			h.emit(spawn("p", "live", now - EXTERNAL_UNKNOWN_MS * 2))
+			now += EXTERNAL_UNKNOWN_MS - 1
+			h.emit(spawn("p", "live", now))
+			now += 1
+			expect(row(h, "live")?.status).toBe("running")
+			now += EXTERNAL_UNKNOWN_MS - 1
+			expect(row(h, "live")?.status).toBe("unknown")
+			const before = snapshots.length
+			h.emit(spawn("p", "live", now))
+			expect(row(h, "live")).toMatchObject({ status: "running", createdAt: now })
+			expect(snapshots).toHaveLength(before + 1)
+			expect(snapshots[snapshots.length - 1]?.[0]).toMatchObject({ id: "live", status: "running", createdAt: now })
 		} finally {
 			clock.mockRestore()
 			await h.seam.dispose()

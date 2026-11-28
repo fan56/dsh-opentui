@@ -5712,8 +5712,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     try {
       const runtime = typeof ctx.get === 'function' ? ctx.get('subagents') as SubagentRuntimeLike | undefined : undefined
       if (typeof runtime?.interruptByUser !== 'function') return 'subagents.interruptByUser unavailable'
-      const result = await runtime.interruptByUser(childId)
-      return result?.accepted === true ? undefined : 'subagents.interruptByUser was not accepted'
+      const result = await interruptExternalWithTimeout(runtime.interruptByUser(childId))
+      return result
     } catch (err) {
       return err instanceof Error ? err.message : String(err)
     }
@@ -6205,6 +6205,28 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return
     }
     replyError(req.id, 'UNSUPPORTED', `unsupported method: ${req.method}`)
+  }
+
+  const EXTERNAL_INTERRUPT_TIMEOUT_MS = 1_000
+
+  /** Bound the external acknowledgement so one hung child cannot block the
+   *  remaining stopChildren cancellations or hold the protocol response open. */
+  async function interruptExternalWithTimeout(
+    interrupt: { accepted: true } | Promise<{ accepted: true }>,
+  ): Promise<string | undefined> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        interrupt,
+        new Promise<undefined>((resolve) => {
+          timeout = setTimeout(() => resolve(undefined), EXTERNAL_INTERRUPT_TIMEOUT_MS)
+        }),
+      ])
+      if (result === undefined) return `subagents.interruptByUser timed out after ${EXTERNAL_INTERRUPT_TIMEOUT_MS}ms`
+      return result?.accepted === true ? undefined : 'subagents.interruptByUser was not accepted'
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
+    }
   }
 
   /** Enqueue a frame so async handlers answer in arrival order. */

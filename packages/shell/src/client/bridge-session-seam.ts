@@ -4094,10 +4094,10 @@ export class BridgeSessionSeam implements SessionSeam {
 				this.#externalUnknownAt.set(childId, createdAt)
 			}
 			changed = true
-		} else if (this.#externalSettledIds.has(childId) && newerCreatedAt) {
+		} else if ((this.#externalSettledIds.has(childId) || existing.status === "unknown") && newerCreatedAt) {
 			// CATALOG-FAMILY REVIVE: a newer durable timestamp is a fresh external
-			// run after a real settle. Rebuild the row so the prior run's terminal
-			// display cannot leak; an unknown timeout is not a settle signal.
+			// run after a real settle or display timeout. Rebuild the row so the
+			// prior run's terminal display cannot leak.
 			this.#externalSettledIds.delete(childId)
 			this.#externalUnknownAt.delete(childId)
 			this.#externalLiveIds.delete(childId)
@@ -4128,9 +4128,14 @@ export class BridgeSessionSeam implements SessionSeam {
 				})
 				changed = true
 			}
+			// A newer durable timestamp starts a fresh convergence window. Replay
+			// anchors use that timestamp; live discovery anchors use receipt time.
+			if (createdChanged && createdAt !== undefined) {
+				this.#externalUnknownAt.set(childId, live ? now : createdAt)
+				if (live) this.#externalLiveIds.add(childId)
 			// A replay-created running row gets ONE live-discovery anchor. Duplicate
 			// live spawns cannot postpone its deadline indefinitely.
-			if (live && !this.#externalLiveIds.has(childId)) {
+			} else if (live && !this.#externalLiveIds.has(childId)) {
 				this.#externalLiveIds.add(childId)
 				this.#externalUnknownAt.set(childId, now)
 			} else if (!live && !this.#externalUnknownAt.has(childId) && createdAt !== undefined) {

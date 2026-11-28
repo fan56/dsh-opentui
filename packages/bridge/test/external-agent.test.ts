@@ -39,6 +39,7 @@ interface HarnessOptions {
 	rows?: Frame[]
 	children?: Record<string, {}>
 	journal?: JournalRow[]
+	hangingInterrupts?: string[]
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -107,6 +108,7 @@ function makeHarness(options: HarnessOptions = {}) {
 	const subagents = {
 		async interruptByUser(childId: string) {
 			interruptCalls.push(childId)
+			if (options.hangingInterrupts?.includes(childId)) return new Promise<{ accepted: true }>(() => {})
 			return { accepted: true as const }
 		},
 	}
@@ -410,6 +412,27 @@ describe("external interrupt and stopChildren", () => {
 		expect(h.cancelCallsOf("ext-running")).toHaveLength(0)
 		expect(h.cancelCallsOf("local-1")).toHaveLength(1)
 		expect(getSubagentIndex(h.ctx).get("ext-settled")?.status).toBe("settled")
+	})
+
+	test("stopChildren times out a hung external interrupt without blocking a later local cancel", async () => {
+		const h = makeHarness({ children: { "local-1": {} }, hangingInterrupts: ["ext-hung"] })
+		const parent = await openParent(h, 24)
+		emitExternalCatalog(h, parent, "ext-hung", 100)
+		h.setRows([
+			childRow("ext-hung", parent, true),
+			childRow("local-1", parent, true),
+		])
+
+		h.send({ id: 25, method: "subagents.stopChildren", params: { parentSessionId: parent } })
+		const reply = await h.waitFor(25)
+
+		expect(reply.ok).toBe(true)
+		expect(reply.result.children).toEqual([
+			{ childId: "ext-hung", disposition: "failed", detail: "subagents.interruptByUser timed out after 1000ms" },
+			{ childId: "local-1", disposition: "cancel-issued" },
+		])
+		expect(h.interruptCalls).toEqual(["ext-hung"])
+		expect(h.cancelCallsOf("local-1")).toHaveLength(1)
 	})
 })
 
