@@ -14,6 +14,8 @@ export interface CatalogEntry {
 	name: string
 	hint: string
 	catalogRoute: boolean
+	settingsNs?: string
+	keyRef?: string
 	api?: string
 	baseURL?: string
 	models?: readonly { id: string; name?: string }[]
@@ -73,24 +75,68 @@ export const PROVIDER_CATALOG: CatalogEntry[] = [
  */
 export function catalogEntriesFromDirectory(
 	registered: readonly { id: string; name: string }[],
-	configurable: readonly { provider: string; displayName: string; error?: string }[],
+	configurable: readonly { provider: string; displayName: string; settingsNs?: string; declared?: boolean; error?: string }[],
 	staticCatalog: readonly CatalogEntry[] = PROVIDER_CATALOG,
 ): CatalogEntry[] {
+	const cfgById = new Map<string, (typeof configurable)[number]>()
+	for (const cfg of configurable) {
+		if (cfg.provider && !cfgById.has(cfg.provider)) cfgById.set(cfg.provider, cfg)
+	}
+	const isAccountProvider = (id: string, settingsNs?: string): boolean =>
+		settingsNs === "llm-deepseek-account" || (settingsNs === undefined && id === "deepseek-account")
+	const isDeepSeekOfficial = (id: string, settingsNs?: string): boolean =>
+		settingsNs === "llm-deepseek" || (settingsNs === undefined && id === "deepseek-official")
+
 	const out: CatalogEntry[] = []
 	const seen = new Set<string>()
 	for (const reg of registered) {
 		if (!reg.id || seen.has(reg.id)) continue
 		seen.add(reg.id)
+		const cfg = cfgById.get(reg.id)
+		if (isAccountProvider(reg.id, cfg?.settingsNs)) continue
+		if (isDeepSeekOfficial(reg.id, cfg?.settingsNs)) {
+			out.push({
+				id: reg.id,
+				name: cfg?.displayName || reg.name || "DeepSeek",
+				hint: "api key",
+				catalogRoute: true,
+				settingsNs: cfg?.settingsNs ?? "llm-deepseek",
+				keyRef: "DEEPSEEK_API_KEY",
+			})
+			continue
+		}
 		const stat = staticCatalog.find((e) => e.id === reg.id)
-		out.push(stat ?? { id: reg.id, name: reg.name || reg.id, hint: "api key", catalogRoute: true })
+		if (stat) {
+			out.push(cfg?.settingsNs ? { ...stat, settingsNs: cfg.settingsNs } : stat)
+		} else {
+			out.push({
+				id: reg.id,
+				name: reg.name || reg.id,
+				hint: "api key",
+				catalogRoute: true,
+				...(cfg?.settingsNs ? { settingsNs: cfg.settingsNs } : {}),
+			})
+		}
 	}
 	for (const cfg of configurable) {
 		if (!cfg.provider || seen.has(cfg.provider)) continue
 		seen.add(cfg.provider)
+		if (isAccountProvider(cfg.provider, cfg.settingsNs)) continue
+		if (isDeepSeekOfficial(cfg.provider, cfg.settingsNs)) {
+			out.push({
+				id: cfg.provider,
+				name: cfg.displayName || "DeepSeek",
+				hint: "api key",
+				catalogRoute: true,
+				settingsNs: cfg.settingsNs ?? "llm-deepseek",
+				keyRef: "DEEPSEEK_API_KEY",
+			})
+			continue
+		}
 		const stat = staticCatalog.find((e) => e.id === cfg.provider)
 		if (stat) {
 			// Known id not in `registered`: keep the static row (richer hint).
-			out.push(stat)
+			out.push(cfg.settingsNs ? { ...stat, settingsNs: cfg.settingsNs } : stat)
 			continue
 		}
 		out.push({
@@ -98,6 +144,7 @@ export function catalogEntriesFromDirectory(
 			name: cfg.displayName || cfg.provider,
 			hint: cfg.error ? "provider configuration issue" : "configurable provider",
 			catalogRoute: true,
+			...(cfg.settingsNs ? { settingsNs: cfg.settingsNs } : {}),
 		})
 	}
 	return out

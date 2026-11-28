@@ -153,4 +153,80 @@ describe("B1 S4 — seam settings.describe/mutate host-first route", () => {
 			expect(caps.reason).toBeTruthy()
 		} finally { degraded.cleanup() }
 	})
+
+	test("Issue #29: fresh seam mutate probes settings.describe once before mutating (no local-file latch)", async () => {
+		const h = makeSeam({
+			"settings.describe": HOST_DESCRIBE,
+			"settings.mutate": { kind: "value", value: {} },
+		})
+		try {
+			// No prior seam.settings.describe() call.
+			const result = await h.seam.settings!.mutate("llm-pi-ai", [{ op: "set", path: ["providers", "openai"], value: { apiKeyEnv: "OPENAI_API_KEY" } }])
+			expect(result).toEqual({ ok: true })
+			expect(h.requests.map((r) => r.method)).toEqual(["settings.describe", "settings.mutate"])
+		} finally { h.cleanup() }
+	})
+
+	test("Issue #29: fresh seam mutate refuses when probe fails (remains local-file)", async () => {
+		const h = makeSeam({
+			"settings.describe": { kind: "error", error: new Error("host down") },
+		})
+		try {
+			const result = await h.seam.settings!.mutate("subagent", [{ op: "set", path: ["maxActiveSubagents"], value: 9 }])
+			expect(result.ok).toBe(false)
+			if (!result.ok) {
+				expect(result.conflict).toBe(false)
+				expect(result.error).toContain("host down")
+			}
+			expect(h.requests.map((r) => r.method)).toEqual(["settings.describe"])
+		} finally { h.cleanup() }
+	})
+
+	test("Issue #29: seam.login routes credentials.* to host and reads routes from host settings", async () => {
+		const h = makeSeam({
+			"credentials.describe": {
+				kind: "value",
+				value: { DEEPSEEK_API_KEY: { configured: true, source: "file", writable: true } },
+			},
+			"credentials.set": { kind: "value", value: { ok: true } },
+			"credentials.unset": { kind: "value", value: { ok: true } },
+			"settings.describe": {
+				kind: "value",
+				value: {
+					writable: true,
+					hasDocument: true,
+					namespaces: [
+						{
+							ns: "llm-pi-ai",
+							revision: 3,
+							value: { providers: { openai: { apiKeyEnv: "OPENAI_API_KEY" } } },
+						},
+						{
+							ns: "llm-deepseek",
+							revision: 2,
+							value: { apiKeyEnv: "DEEPSEEK_API_KEY" },
+						},
+					],
+				},
+			},
+		})
+		try {
+			expect(await h.seam.login.credentialStatus("DEEPSEEK_API_KEY")).toEqual({ configured: true })
+			await h.seam.login.login("DEEPSEEK_API_KEY", "sk-synthetic-value")
+			await h.seam.login.logout("DEEPSEEK_API_KEY")
+			const routes = await h.seam.login.routes()
+			expect(routes).toEqual([
+				{ id: "openai", apiKeyEnv: "OPENAI_API_KEY", declared: false },
+				{ id: "deepseek-official", apiKeyEnv: "DEEPSEEK_API_KEY", displayName: "DeepSeek", declared: true },
+			])
+			expect(h.requests.map((r) => r.method)).toEqual([
+				"credentials.describe",
+				"credentials.set",
+				"credentials.unset",
+				"settings.describe",
+			])
+			expect(h.requests[1]!.params).toEqual({ ref: "DEEPSEEK_API_KEY", value: "sk-synthetic-value" })
+			expect(h.requests[2]!.params).toEqual({ ref: "DEEPSEEK_API_KEY" })
+		} finally { h.cleanup() }
+	})
 })

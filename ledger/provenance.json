@@ -195,105 +195,105 @@
       {
         "method": "bridge.ping",
         "kind": "meta",
-        "source_line": 5747,
+        "source_line": 5930,
         "capir_id": null,
         "note": "protocol version negotiation (no host call)"
       },
       {
         "method": "bridge.hello",
         "kind": "meta",
-        "source_line": 5756,
+        "source_line": 5939,
         "capir_id": null,
         "note": "protocol version negotiation (no host call)"
       },
       {
         "method": "session.prune.plan",
         "kind": "business",
-        "source_line": 5790,
+        "source_line": 5973,
         "capir_id": null,
         "note": "retention P1 read-only dry run: session.list drain + sessionPersistence.stat locations + read-only path gates; no CapIR id, no host write, no deletion"
       },
       {
         "method": "session.prune.apply",
         "kind": "business",
-        "source_line": 5796,
+        "source_line": 5979,
         "capir_id": null,
         "note": "retention P2 host-recomputed trash apply: fingerprint/max-age/config checks + host-side apply lock + rename-to-trash with rollback/journal; client entries/policy rejected; no CapIR id"
       },
       {
         "method": "session.prune.purge",
         "kind": "business",
-        "source_line": 5802,
+        "source_line": 5985,
         "capir_id": null,
         "note": "retention P3 trash-only deletion: server-issued single-use HMAC token + host re-validation of trash realpath/header/manifest/residence + full gate re-probe (live agent, live path, flock) + recursive delete with per-entry failure and crash manifest; client path/policy rejected; no CapIR id"
       },
       {
         "method": "session.prune.restore",
         "kind": "business",
-        "source_line": 5808,
+        "source_line": 5991,
         "capir_id": null,
         "note": "retention B4/C7 trash restore by entry id: read-only list of {id,movedAt,size?} (no path) + host re-validation of trash realpath/manifest/artifact header.id/live roster/live destination containment + refuse-if-exists + read-only flock probe + reverse rename; client path/policy rejected; no CapIR id"
       },
       {
         "method": "subagents.interrupt",
         "kind": "business",
-        "source_line": 5875,
+        "source_line": 6058,
         "capir_id": null,
         "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
       },
       {
         "method": "subagents.stopChildren",
         "kind": "business",
-        "source_line": 5879,
+        "source_line": 6062,
         "capir_id": null,
         "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
       },
       {
         "method": "session.open",
         "kind": "business",
-        "source_line": 5883,
+        "source_line": 6066,
         "capir_id": null,
         "note": "binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful"
       },
       {
         "method": "session.send",
         "kind": "business",
-        "source_line": 5887,
+        "source_line": 6070,
         "capir_id": null,
         "note": "single in-flight turn state machine + streaming turn"
       },
       {
         "method": "session.steer",
         "kind": "business",
-        "source_line": 5891,
+        "source_line": 6074,
         "capir_id": null,
         "note": "029 A: bridge-owned steer into the running turn; accepts only a live non-aborting turn with agent.status==='running', calls agent.steer(createBridgeUserMessage(text)) directly, no turn id / inFlightTurnId / turn.start, no followup downgrade; typed STEER_IDLE / STEER_ENDED / STEER_ABORTING rejections never reach the host"
       },
       {
         "method": "session.close",
         "kind": "business",
-        "source_line": 5895,
+        "source_line": 6078,
         "capir_id": null,
         "note": "binding dispose"
       },
       {
         "method": "turn.abort",
         "kind": "business",
-        "source_line": 5899,
+        "source_line": 6082,
         "capir_id": null,
         "note": "turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel"
       },
       {
         "method": "ask.response",
         "kind": "business",
-        "source_line": 5903,
+        "source_line": 6086,
         "capir_id": null,
         "note": "bridge-internal AskRegistry settlement (no host call)"
       },
       {
         "method": "journal.replay",
         "kind": "business",
-        "source_line": 5907,
+        "source_line": 6090,
         "capir_id": null,
         "note": "I-class persistence read (persistence.open(id,'read')); no same-name CapIR id"
       }

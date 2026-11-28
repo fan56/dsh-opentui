@@ -53,6 +53,7 @@ import type {
 	SeamGoalView,
 	SeamHostCommandRow,
 	SeamLlmProviderRow,
+	SeamLoginRoute,
 	PluginRowView,
 	SeamPermissionCatalog,
 	SeamPermissionSwitchResult,
@@ -1942,8 +1943,10 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	// B1 S4 — the source of the LAST settings.describe. Not a long-term
 	// environment assertion: every describe re-probes the host; this only lets
-	// mutate decide "host vs local-file" without a second round-trip. Starts at
-	// local-file so a mutate before any describe refuses instead of assuming a host.
+	// mutate decide "host vs local-file" without a second round-trip. Starts
+	// unprobed so a fresh-process mutate probes once first instead of staying
+	// latched in local-file mode.
+	#settingsProbed = false
 	#settingsSource: SeamSettingsSource = "local-file"
 	#settingsSourceDetail: SeamSettingsDocument["sourceDetail"] | undefined = undefined
 
@@ -1958,11 +1961,13 @@ export class BridgeSessionSeam implements SessionSeam {
 		try {
 			const reply = await this.#transport.request("settings.describe")
 			const document = projectHostSettingsDocument(reply)
+			this.#settingsProbed = true
 			this.#settingsSource = "host"
 			this.#settingsSourceDetail = undefined
 			return document
 		} catch (error) {
 			const reason = settingsFailureReason(error)
+			this.#settingsProbed = true
 			this.#settingsSource = "local-file"
 			this.#settingsSourceDetail = { profile: this.#profile, reason }
 			const local = this.#settingsStore.describe()
@@ -1975,15 +1980,18 @@ export class BridgeSessionSeam implements SessionSeam {
 	 *  fallback is rendering-only (host rows read-only, numbers shown as n/a). */
 	settings: NonNullable<SessionSeam["settings"]> = {
 		describe: (): Promise<SeamSettingsDocument> => this.#describeSettings(),
-		mutate: (ns: string, ops: SeamSettingsOp[], revision?: number): Promise<SeamSettingsMutateResult> => {
+		mutate: async (ns: string, ops: SeamSettingsOp[], revision?: number): Promise<SeamSettingsMutateResult> => {
+			if (!this.#settingsProbed) {
+				await this.#describeSettings()
+			}
 			if (this.#settingsSource !== "host") {
 				// Honest refusal: in local-file mode we never write the local patch
 				// to fake a host success (design §4.2(b)); no new capability-error wording.
-				return Promise.resolve({
+				return {
 					ok: false,
 					conflict: false,
 					error: `host settings unavailable (local-file mode); the write was not applied${this.#settingsSourceDetail?.reason ? `: ${this.#settingsSourceDetail.reason}` : ""}`,
-				})
+				}
 			}
 			return this.#transport
 				.request("settings.mutate", { ns, ops, expectedRevision: revision })
@@ -2108,17 +2116,53 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
-	 * 025-w1a — /login //logout provider face (coordinator ruling: local real
-	 * implementation, NOT account/PKCE and NOT a dead credentials CapIR frame).
-	 * Routes from the profile patch's llm-pi-ai.providers dict; credentialStatus
-	 * is boolean-only (env ref or owner-only local key store); login/logout are
-	 * local file I/O. No secret value ever crosses a frame/log/proof.
+	 * Issue #29 — /login //logout provider face backed by the host credentials
+	 * plane (`credentials.describe|set|unset` -> `$DSH_HOME/.credentials.yaml`)
+	 * and host settings (`settings.describe|mutate`). No secret value ever
+	 * crosses a frame/log/proof; `login`/`logout` preserve synchronous
+	 * `#assertProfileConsistency()` throws before returning the transport Promise.
 	 */
 	login: NonNullable<SessionSeam["login"]> = {
-		credentialStatus: (ref) => Promise.resolve(this.#localLogin.credentialStatus(ref)),
-		login: (ref, apiKey) => { this.#assertProfileConsistency(); this.#localLogin.login(ref, apiKey); return Promise.resolve() },
-		logout: (ref) => { this.#assertProfileConsistency(); this.#localLogin.logout(ref); return Promise.resolve() },
-		routes: () => Promise.resolve(this.#localLogin.routes()),
+		credentialStatus: async (ref) => {
+			const reply = await this.#transport.request("credentials.describe", { refs: [ref] })
+			const entry = asRecord(asRecord(reply)[ref])
+			return { configured: entry.configured === true }
+		},
+		login: (ref, apiKey) => {
+			this.#assertProfileConsistency()
+			return this.#transport.request("credentials.set", { ref, value: apiKey }).then(() => undefined)
+		},
+		logout: (ref) => {
+			this.#assertProfileConsistency()
+			return this.#transport.request("credentials.unset", { ref }).then(() => undefined)
+		},
+		routes: async () => {
+			const doc = await this.#describeSettings()
+			if (doc.source !== "host") return this.#localLogin.routes()
+			const out: SeamLoginRoute[] = []
+			const piAi = doc.namespaces.find((n) => n.ns === "llm-pi-ai")
+			const providers = asRecord(asRecord(piAi?.value).providers)
+			for (const [id, rawProfile] of Object.entries(providers)) {
+				if (!rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) continue
+				const p = rawProfile as Record<string, unknown>
+				const apiKeyEnv = typeof p.apiKeyEnv === "string" && p.apiKeyEnv ? p.apiKeyEnv : undefined
+				const displayName = typeof p.displayName === "string" && p.displayName ? p.displayName : undefined
+				const declared = p.api !== undefined || p.baseURL !== undefined || p.models !== undefined
+				out.push({
+					id,
+					...(apiKeyEnv ? { apiKeyEnv } : {}),
+					...(displayName ? { displayName } : {}),
+					declared,
+				})
+			}
+			const deepseekRow = doc.namespaces.find((n) => n.ns === "llm-deepseek")
+			if (deepseekRow !== undefined) {
+				const rawEnv = asRecord(deepseekRow.value).apiKeyEnv
+				const apiKeyEnv = typeof rawEnv === "string" && rawEnv.trim() !== "" ? rawEnv.trim() : "DEEPSEEK_API_KEY"
+				out.push({ id: "deepseek-official", apiKeyEnv, displayName: "DeepSeek", declared: true })
+			}
+			return out
+		},
 		registerRoute: async (providerId, profile) => {
 			this.#assertProfileConsistency()
 			return this.#localLogin.registerRoute(providerId, profile)
