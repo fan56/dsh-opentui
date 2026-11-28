@@ -1137,6 +1137,11 @@ const BRIDGE_SUBAGENT_SETTLED = "subagent-settled"
 /** The catalog family's synthetic runId namespace (also the P3-1 collision guard). */
 const BRIDGE_CATALOG_RUN_PREFIX = "catalog:"
 
+/** External rows without a settle frame become unknown fifteen minutes after
+ * live discovery (or durable `createdAt` on replay). */
+export const EXTERNAL_UNKNOWN_MS = 15 * 60 * 1000
+const EXTERNAL_SETTLED_CAP = 20
+
 function bridgeAgentRunKey(runId: string, seq: number): string {
 	return `${runId}:${seq}`
 }
@@ -1156,6 +1161,15 @@ function bridgeSettledStatus(outcome: unknown): SeamSubagentView["status"] {
 	if (outcome === "failed" || outcome === "cancelled") return outcome
 	if (outcome === "aborted") return "interrupted"
 	return "completed"
+}
+
+/** Frozen ACP/agy terminal mapping. Unlike local children, an unrecognised or
+ * missing external stop reason is explicitly unknown, never completed. */
+export function bridgeExternalSettledStatus(stopReason: unknown): SeamSubagentView["status"] {
+	if (stopReason === "completed") return "completed"
+	if (stopReason === "aborted") return "interrupted"
+	if (stopReason === "error" || stopReason === "max-tokens" || stopReason === "refusal") return "failed"
+	return "unknown"
 }
 
 /** Freeze a running child into the settled projection: drop `startedAt`, carry
@@ -1242,6 +1256,10 @@ function bridgeFoldAgentRecord(
 	// Plain `subagent` calls emit `subagent/catalog` (childId + label/name) on the
 	// parent, never tool-workflow/agent-* (those belong to the `workflow` tool).
 	if (type === BRIDGE_SUBAGENT_CATALOG) {
+		// External catalog rows belong to the standalone external map. Folding
+		// them here would duplicate #subagentViews and schedule child journal
+		// reads for ids that have no local child session.
+		if (data.mode === "external") return false
 		const childId = typeof data.childId === "string" ? data.childId : ""
 		if (!childId) return false
 		const label = typeof data.label === "string" && data.label
@@ -2769,6 +2787,19 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #subagentViews = new Map<string, SeamSubagentView>()
 	readonly #subagentRunSeq = new Map<string, string>()
 	readonly #subagentLiveStarts = new Set<string>()
+	/** ACP/agy rows are deliberately outside the local child map/index. */
+	readonly #externalSubagentViews = new Map<string, SeamSubagentView>()
+	#externalSessionId: string | undefined
+	/** External settle may precede spawn; retain the terminal until its row lands. */
+	readonly #externalPendingSettles = new Map<string, Record<string, unknown>>()
+	/** Timeout anchor: live discovery time, or durable createdAt during replay. */
+	readonly #externalUnknownAt = new Map<string, number>()
+	/** External rows already terminalized by an actual settle frame/row. */
+	readonly #externalSettledIds = new Set<string>()
+	/** External ids whose timeout anchor came from a live observation. Repeated
+	 * live spawns must not keep extending the fifteen-minute deadline. */
+	readonly #externalLiveIds = new Set<string>()
+	#externalUnknownTimer: ReturnType<typeof setTimeout> | undefined
 	readonly #subagentListeners = new Set<(views: SeamSubagentView[]) => void>()
 	/**
 	 * B3 — latest host-driven live progress per running child, from additive
@@ -3218,6 +3249,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		// currentSessionId() === undefined. #sessionAttached intentionally stays
 		// true to remember that the close is owed; do NOT clear it here.
 		this.#currentSessionId = undefined
+		if (this.#resetExternalSubagents()) this.#emitSubagentViews()
 		this.#resetHostCommands()
 		this.#resetModelRoute()
 		this.#pendingOpen = { mode: "new" }
@@ -3356,6 +3388,7 @@ export class BridgeSessionSeam implements SessionSeam {
 
 		const boundId = typeof opened.sessionId === "string" ? opened.sessionId : sessionId
 		this.#currentSessionId = boundId
+		if (this.#rebindExternalSession(boundId)) this.#emitSubagentViews()
 		this.#resetHostCommands()
 		if (this.#pendingOpen?.mode === "resume" && this.#pendingOpen.id === boundId) this.#pendingOpen = undefined
 		if (this.#lastAppliedSessionId !== boundId) {
@@ -3804,6 +3837,9 @@ export class BridgeSessionSeam implements SessionSeam {
 					this.#resetModelRoute()
 					from = 1
 					drained = await this.#drainJournal(sessionId, 1)
+					// A reset invalidates external lifecycle caches as well. The
+					// authoritative re-read below re-seeds them from the new log.
+					if (this.#resetExternalSubagents()) this.#emitSubagentViews()
 				}
 
 			// RESTORE: these SAME drained rows establish/update the live route
@@ -3988,7 +4024,196 @@ export class BridgeSessionSeam implements SessionSeam {
 	 *  roster entries (so a later settle carries them via `bridgeSettleChild`);
 	 *  the view itself stays a pure copy. */
 	subagentViews(): SeamSubagentView[] {
-		return [...this.#subagentViews.values()].map((view) => ({ ...view }))
+		const expired = this.#expireExternalUnknowns()
+		const snapshot = this.#snapshotSubagentViews()
+		if (expired) this.#emitSubagentViews()
+		return snapshot
+	}
+
+	/** Raw combined snapshot. External rows never enter #subagentViews. */
+	#snapshotSubagentViews(): SeamSubagentView[] {
+		return [
+			...[...this.#subagentViews.values()].map((view) => ({ ...view })),
+			...[...this.#externalSubagentViews.values()].map((view) => ({ ...view })),
+		]
+	}
+
+	/** Clear every external-lifecycle cache. The caller owns the single emit. */
+	#resetExternalSubagents(): boolean {
+		const changed = this.#externalSubagentViews.size > 0 || this.#externalPendingSettles.size > 0
+		this.#externalSubagentViews.clear()
+		this.#externalPendingSettles.clear()
+		this.#externalSessionId = undefined
+		this.#externalUnknownAt.clear()
+		this.#externalSettledIds.clear()
+		this.#externalLiveIds.clear()
+		if (this.#externalUnknownTimer !== undefined) {
+			clearTimeout(this.#externalUnknownTimer)
+			this.#externalUnknownTimer = undefined
+		}
+		return changed
+	}
+
+	/** Rebind external state at the actual session.open boundary, before any
+	 * replay/live frame for the new parent can arrive. */
+	#rebindExternalSession(sessionId: string): boolean {
+		if (sessionId === this.#externalSessionId) return false
+		const changed = this.#resetExternalSubagents()
+		this.#externalSessionId = sessionId
+		return changed
+	}
+
+	/** Fold one external spawn. Live rows anchor timeout at discovery; replay
+	 * rows anchor only at durable createdAt and never synthesize a clock. */
+	#foldExternalSpawn(data: Record<string, unknown>, now: number, live: boolean): boolean {
+		const childId = typeof data.childId === "string" ? data.childId : ""
+		if (childId === "") return false
+		const label = typeof data.label === "string" && data.label !== ""
+			? data.label
+			: (typeof data.name === "string" && data.name !== "" ? data.name : `external ${childId.slice(0, 8)}`)
+		const name = typeof data.name === "string" && data.name !== "" ? data.name : undefined
+		const createdAt = typeof data.createdAt === "number" && Number.isFinite(data.createdAt)
+			? data.createdAt
+			: undefined
+		const existing = this.#externalSubagentViews.get(childId)
+		let changed = false
+		if (existing === undefined) {
+			this.#externalSubagentViews.set(childId, {
+				id: childId, label, status: "running", rounds: 0,
+				...(name !== undefined ? { name } : {}),
+				...(createdAt !== undefined ? { createdAt } : {}),
+				mode: "external", noTranscript: true,
+			})
+			if (live) {
+				this.#externalLiveIds.add(childId)
+				this.#externalUnknownAt.set(childId, now)
+			} else if (createdAt !== undefined) {
+				this.#externalUnknownAt.set(childId, createdAt)
+			}
+			changed = true
+		} else if (existing.status === "running" && !this.#externalSettledIds.has(childId)) {
+			const labelChanged = label !== existing.label
+			const nameChanged = name !== undefined && name !== existing.name
+			const createdChanged = createdAt !== undefined && createdAt !== existing.createdAt
+			if (labelChanged || nameChanged || createdChanged) {
+				this.#externalSubagentViews.set(childId, {
+					...existing,
+					label,
+					...(name !== undefined ? { name } : {}),
+					...(createdAt !== undefined ? { createdAt } : {}),
+				})
+				changed = true
+			}
+			// A replay-created running row gets ONE live-discovery anchor. Duplicate
+			// live spawns cannot postpone its deadline indefinitely.
+			if (live && !this.#externalLiveIds.has(childId)) {
+				this.#externalLiveIds.add(childId)
+				this.#externalUnknownAt.set(childId, now)
+			} else if (!live && !this.#externalUnknownAt.has(childId) && createdAt !== undefined) {
+				this.#externalUnknownAt.set(childId, createdAt)
+			}
+		}
+		const pending = this.#externalPendingSettles.get(childId)
+		if (pending !== undefined && !this.#externalSettledIds.has(childId)) {
+			if (this.#foldExternalSettleData(childId, pending)) changed = true
+		}
+		this.#scheduleExternalUnknownTimer()
+		return changed
+	}
+
+	/** Apply a settle only to the standalone external map. Missing spawns cache
+	 * the first terminal; duplicate terminals are idempotent. */
+	#foldExternalSettleData(childId: string, data: Record<string, unknown>): boolean {
+		if (childId === "") return false
+		const existing = this.#externalSubagentViews.get(childId)
+		if (existing === undefined) {
+			if (!this.#externalPendingSettles.has(childId)) {
+				this.#externalPendingSettles.set(childId, { ...data })
+			}
+			return false
+		}
+		if (this.#externalSettledIds.has(childId)) return false
+		const endedAt = typeof data.endedAt === "number" && Number.isFinite(data.endedAt)
+			? data.endedAt
+			: undefined
+		const summary = typeof data.summary === "string" && data.summary !== "" ? data.summary : undefined
+		this.#externalSubagentViews.set(childId, {
+			...existing,
+			status: bridgeExternalSettledStatus(data.stopReason),
+			...(summary !== undefined ? { summary } : {}),
+			...(endedAt !== undefined ? { endedAt } : {}),
+		})
+		this.#externalPendingSettles.delete(childId)
+		this.#externalUnknownAt.delete(childId)
+		this.#externalLiveIds.delete(childId)
+		this.#externalSettledIds.add(childId)
+		this.#capExternalSettled()
+		this.#scheduleExternalUnknownTimer()
+		return true
+	}
+
+	/** Keep the newest twenty terminal external rows by endedAt ?? createdAt. */
+	#capExternalSettled(): void {
+		const terminal = [...this.#externalSubagentViews.entries()]
+			.filter(([id]) => this.#externalSettledIds.has(id))
+			.map(([id, view], index) => ({ id, at: view.endedAt ?? view.createdAt ?? -Infinity, index }))
+			.sort((a, b) => a.at - b.at || a.index - b.index)
+		const overflow = terminal.length - EXTERNAL_SETTLED_CAP
+		if (overflow <= 0) return
+		for (const row of terminal.slice(0, overflow)) {
+			this.#externalSubagentViews.delete(row.id)
+			this.#externalUnknownAt.delete(row.id)
+			this.#externalLiveIds.delete(row.id)
+			this.#externalSettledIds.delete(row.id)
+		}
+	}
+
+	/** Timeout is a display transition, never a fabricated settle/endedAt. */
+	#expireExternalUnknowns(now = Date.now()): boolean {
+		let changed = false
+		for (const [id, view] of this.#externalSubagentViews) {
+			if (view.status !== "running") continue
+			const anchor = this.#externalUnknownAt.get(id)
+			if (anchor === undefined || now - anchor < EXTERNAL_UNKNOWN_MS) continue
+			this.#externalSubagentViews.set(id, { ...view, status: "unknown" })
+			this.#externalUnknownAt.delete(id)
+			changed = true
+		}
+		if (changed) this.#capExternalSettled()
+		return changed
+	}
+
+	/** One unref'd timer for the earliest external timeout. Snapshot reads also
+	 * expire lazily, so a suspended process converges immediately on resume. */
+	#scheduleExternalUnknownTimer(): void {
+		if (this.#externalUnknownTimer !== undefined) {
+			clearTimeout(this.#externalUnknownTimer)
+			this.#externalUnknownTimer = undefined
+		}
+		let deadline = Number.POSITIVE_INFINITY
+		for (const anchor of this.#externalUnknownAt.values()) deadline = Math.min(deadline, anchor + EXTERNAL_UNKNOWN_MS)
+		if (!Number.isFinite(deadline)) return
+		const timer = setTimeout(() => {
+			this.#externalUnknownTimer = undefined
+			if (this.#expireExternalUnknowns()) this.#emitSubagentViews()
+			this.#scheduleExternalUnknownTimer()
+		}, Math.max(0, deadline - Date.now()))
+		;(timer as { unref?: () => void }).unref?.()
+		this.#externalUnknownTimer = timer
+	}
+
+	/** Fold the two frozen external frames without touching local child state. */
+	#foldExternalFrame(frame: BridgeEventFrame): void {
+		const payload = asRecord(frame.payload)
+		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
+		if (this.#externalSessionId !== undefined && frameSession !== "" && frameSession !== this.#externalSessionId) return
+		const childId = typeof payload.childId === "string" ? payload.childId : ""
+		if (childId === "") return
+		if (this.#externalSessionId === undefined && frameSession !== "") this.#externalSessionId = frameSession
+		const changed = frame.type === "agent.external.spawn"
+			? this.#foldExternalSpawn(payload, Date.now(), true)
+			: this.#foldExternalSettleData(childId, payload)
+		if (changed) this.#emitSubagentViews()
 	}
 
 	/**
@@ -4008,6 +4233,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * `ready` means real rows exist (live and/or journal baseline). Never a mock.
 	 */
 	subagentTranscriptStatus(id: string): SubagentTranscriptStatus {
+		if (this.#externalSubagentViews.has(id)) return "not-running"
 		const lines = this.#subagentTranscripts.get(id)
 		if (lines !== undefined && lines.length > 0) return "ready"
 		if (this.#subagentTranscriptReadFailed.has(id)) return "read-failed"
@@ -4026,6 +4252,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * from the binding-gated `subagents.interrupt` / `stopChildren` stop path.
 	 */
 	steerChild(id: string, text: string): boolean {
+		if (this.#externalSubagentViews.has(id)) return false
 		const view = this.#subagentViews.get(id)
 		if (view === undefined || view.status !== "running") return false
 		const requestId = `${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -4064,7 +4291,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		const generation = ++this.#interruptGeneration
 		const sessionAtStart = this.#subagentSessionId
-		this.#interruptInFlight.set(childId, generation)
+		const external = this.#externalSubagentViews.has(childId)
+		if (!external) this.#interruptInFlight.set(childId, generation)
 		let value: Record<string, unknown>
 		try {
 			value = asRecord(await this.#transport.request("subagents.interrupt", { parentSessionId, childId }))
@@ -4076,9 +4304,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 		const disposition = value.disposition
 		if (disposition === "cancel-issued") {
-			// C3: a cancel was issued but the child may still be host-running.
-			// Confirm running===false, read the real reason, emit ONE settle.
-			void this.#confirmChildStop(childId, generation, sessionAtStart)
+			// External ids have no local session.list row. Only the frozen
+			// agent.external.settle frame may terminalize them.
+			if (!external) void this.#confirmChildStop(childId, generation, sessionAtStart)
 			return
 		}
 		if (disposition === "already-settled") {
@@ -4133,6 +4361,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		// was proven (the normal sweep may still converge the latter).
 		for (const row of rows) {
 			if (row.disposition !== "cancel-issued" || row.childId === "") continue
+			// External rows have no local session.list/journal terminal. Keep the
+			// response shape, but let only agent.external.settle settle the row.
+			if (this.#externalSubagentViews.has(row.childId)) continue
 			const generation = ++this.#interruptGeneration
 			this.#interruptInFlight.set(row.childId, generation)
 			void this.#confirmChildStop(row.childId, generation, sessionAtStart)
@@ -4825,11 +5056,40 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentSessionId = sessionId
 			rosterReset = true
 		}
+		if (sessionId !== this.#externalSessionId) {
+			if (this.#rebindExternalSession(sessionId)) rosterReset = true
+			rosterReset = true
+		}
 		let changed = false
 		const now = Date.now()
+		// Pre-scan ownership so an exact settle row can be routed external even
+		// when it appears before its catalog row in a malformed/out-of-order log.
+		const externalIds = new Set<string>()
 		for (const row of rows) {
-			if (this.#foldWithFrozenSettle(row.type, asRecord(row.payload), now, false)) changed = true
+			const data = asRecord(row.payload)
+			if (row.type === BRIDGE_SUBAGENT_CATALOG && data.mode === "external" && typeof data.childId === "string") {
+				externalIds.add(data.childId)
+			}
 		}
+		for (const row of rows) {
+			const data = asRecord(row.payload)
+			if (row.type === BRIDGE_SUBAGENT_CATALOG && data.mode === "external") {
+				if (this.#foldExternalSpawn(data, now, false)) changed = true
+				continue
+			}
+			if (row.type === "user/message") {
+				const source = asRecord(data.source)
+				if (source.kind === BRIDGE_SUBAGENT_SETTLED) {
+					const childId = typeof source.senderSessionId === "string" ? source.senderSessionId : ""
+					if (childId !== "" && (externalIds.has(childId) || this.#externalSubagentViews.has(childId))) {
+						if (this.#foldExternalSettleData(childId, source)) changed = true
+						continue
+					}
+				}
+			}
+			if (this.#foldWithFrozenSettle(row.type, data, now, false)) changed = true
+		}
+		if (this.#expireExternalUnknowns(now)) changed = true
 		// P3-2: a session switch must repaint the roster EVEN IF the new session
 		// has no agent rows — otherwise a mounted viewer keeps the old session's
 		// rows until the next live frame / replay that actually changes the map.
@@ -5391,10 +5651,12 @@ export class BridgeSessionSeam implements SessionSeam {
 				// NOT restored, so the next ensure/turn() re-stages {mode:"new"}
 				// via the !sessionAttached branch above and self-heals.
 				const opened = asRecord(await this.#transport.request("session.open", params))
-				if (typeof opened.sessionId === "string") {
-					this.#currentSessionId = opened.sessionId
-					this.#resetHostCommands()
-				}
+					if (typeof opened.sessionId === "string") {
+						this.#currentSessionId = opened.sessionId
+						if (this.#rebindExternalSession(opened.sessionId)) this.#emitSubagentViews()
+						this.#resetHostCommands()
+					}
+
 				// A4: lastAppliedSeq is per-session. A different binding starts a
 				// fresh journal, so the next recovery must replay from 1.
 				if (this.#lastAppliedSessionId !== this.#currentSessionId) {
@@ -5509,6 +5771,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#listeners.length = 0
 		this.#subagentListeners.clear()
 		this.#subagentViews.clear()
+		this.#resetExternalSubagents()
 		this.#subagentRunSeq.clear()
 		this.#subagentLiveStarts.clear()
 		this.#subagentProgress.clear()
@@ -6137,6 +6400,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		// An unknown frame is a no-op.
 		if (frame.type === "agent.spawn" || frame.type === "agent.settle") {
 			this.#foldAgentFrame(frame)
+			return
+		}
+		if (frame.type === "agent.external.spawn" || frame.type === "agent.external.settle") {
+			this.#foldExternalFrame(frame)
 			return
 		}
 		if (frame.type === "agent.progress") {

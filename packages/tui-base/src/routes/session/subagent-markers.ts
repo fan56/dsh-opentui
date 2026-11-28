@@ -14,7 +14,7 @@ export interface SubagentMarkerView {
 	label: string
 	/** Batch F5: optional host child reservation name (SeamSubagentView.name). */
 	name?: string
-	status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
+	status: "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unknown"
 	rounds: number
 	injectedRound?: number
 	hardStopRound?: number
