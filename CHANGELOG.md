@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.3] - 2026-11-28
+
+### Added
+
+- Surface external ACP agents in the subagent viewer and dock (#28).
+
+### Fixed
+
+- `/login deepseek-official` and fresh-process `/login` failures: wire the
+  inproc host `ctx.credentials` plane (`credentials.describe`/`set`/`unset`
+  over `$DSH_HOME/.credentials.yaml`), auto-probe `settings.describe()` before
+  the first `settings.mutate()`, surface route registration failure reasons in
+  the UI, and route `deepseek-official` (`llm-deepseek`) directly to
+  `DEEPSEEK_API_KEY` (#29, #30).
+- Admit `@aiwayds/dsh-subagent-registry` `0.25.x` (`^0.25.0`) in the inproc
+  companion guard range.
+
 ## [0.30.2] - 2026-11-27
 
 ### Fixed
